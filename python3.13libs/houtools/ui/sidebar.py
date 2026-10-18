@@ -2,8 +2,8 @@
 
 行结构：行首图标 + 名称 + 右对齐计数；选中行蓝底圆角高亮；树形视图的
 段头行带折叠箭头（收拢态整行调暗）。图标默认 QPainter 手绘的扁平线稿
-（grid/star/folder/tag/level/sliders/code），toolbox 为矢量文件渲染
-（icons/toolbox.svg，QSvgRenderer，同 favorite_badge 先例），按
+（grid/star/folder/tag/level/sliders/code），toolbox/tag 为矢量文件
+渲染（icons/*.svg，QSvgRenderer，同 favorite_badge 先例），按
 (种类, 尺寸, DPR, tint) 缓存。
 
 数据协议（条目经 ItemRole 携带，QListWidget / QTreeWidget 通用）：
@@ -35,57 +35,74 @@ _FAV_SVG_PATH = (Path(__file__).resolve().parent.parent / "icons"
 _FAV_SVG_RENDERER = False   # False=未初始化；None=不可用
 _SIDEBAR_ICON_CACHE = {}    # (kind, size, dpr, tint) -> QPixmap
 
-# 工具箱图标（用户矢量图定稿 D1 配色，去 iconfont 装饰圆）；渲染器按
-# tint 缓存（tint 语义 = 全部 fill 替换成单色，开关关闭态整体调暗）
+# 矢量图标注册表：kind -> (文件, 内容 viewBox 或 None=整画布)。
+# - toolbox：用户矢量图定稿 D1 配色（去 iconfont 装饰圆），tint=None 时
+#   用文件原配色（白箱体+#F88E20 橙），tint 时全部 fill 替换（开关关闭态）
+# - tag：用户矢量图，**填充永远整体替换**——标签可自定义颜色（用户指定），
+#   tint=标签色（delegate 已做 readable_on_dark 提亮），无色用默认蓝；
+#   文件原配色 #FCBD3F 不参与显示
+# 内容均未铺满 1024 画布（~83%），viewBox 裁到内容外扩 6 单位再渲染
 _TOOLBOX_SVG_PATH = (Path(__file__).resolve().parent.parent / "icons"
                      / "toolbox.svg")
-_TOOLBOX_SVG_TEXT = None        # False=不可用；str=文件文本
-_TOOLBOX_SVG_RENDERERS = {}     # tint("")=本色 -> QSvgRenderer
-# 内容实际占 1024 画布的 x 78.9..926.3 / y 126.2..886.2（四边留白约
-# 13%），直接整画布渲染进 14px 格子只有 ~11.6px——viewBox 裁到内容
-# 外扩 6 单位，工具箱铺满格子（与线稿图标的视觉尺寸拉平）
-_TOOLBOX_VIEWBOX = QtCore.QRectF(72.0, 120.0, 861.0, 772.0)
-# 工具箱是实心填充图形、细节碎，同 px 下比线稿显小：行/开关渲染再
-# 放大 2px（2026-10 用户反馈"图标小了看不清"）
-TOOLBOX_ICON_BOOST = 2
+_TAG_SVG_PATH = (Path(__file__).resolve().parent.parent / "icons" / "tag.svg")
+_TOOLBOX_VIEWBOX = QtCore.QRectF(72.0, 120.0, 861.0, 772.0)   # x 78.9..926.3 / y 126.2..886.2
+_TAG_VIEWBOX = QtCore.QRectF(79.0, 78.0, 865.0, 866.0)        # x 85..937 / y 84..937
+_SVG_ICONS = {
+    "toolbox": (_TOOLBOX_SVG_PATH, _TOOLBOX_VIEWBOX),
+    "tag": (_TAG_SVG_PATH, _TAG_VIEWBOX),
+}
+SVG_ICON_KINDS = frozenset(_SVG_ICONS)
+# 实心填充图形同 px 下比线稿显小（2026-10 用户反馈"图标小了看不清"）：
+# 行/开关渲染放大 2px，delegate 的占位/推进量同步用实际尺寸
+SVG_ICON_BOOST = 2
+_SVG_TEXTS = {}        # kind -> str（False=不可用）
+_SVG_RENDERERS = {}    # (kind, replace_color) -> QSvgRenderer
 
 
-def _toolbox_svg_text():
-    """工具箱 SVG 文本；文件缺失/读失败返回 False（降级 folder 线稿）。"""
-    global _TOOLBOX_SVG_TEXT
-    if _TOOLBOX_SVG_TEXT is None:
+def _svg_icon_text(kind):
+    """矢量图文件文本；缺失/读失败返回 False（降级线稿）。"""
+    text = _SVG_TEXTS.get(kind)
+    if text is None:
+        path = _SVG_ICONS[kind][0]
         try:
-            text = _TOOLBOX_SVG_PATH.read_text(encoding="utf-8")
-            _TOOLBOX_SVG_TEXT = text if text.strip() else False
+            loaded = path.read_text(encoding="utf-8")
+            _SVG_TEXTS[kind] = loaded if loaded.strip() else False
         except OSError as exc:
-            log.warning("toolbox svg unreadable: %s", exc)
-            _TOOLBOX_SVG_TEXT = False
-    return _TOOLBOX_SVG_TEXT
+            log.warning("%s svg unreadable: %s", path.name, exc)
+            _SVG_TEXTS[kind] = False
+    return _SVG_TEXTS[kind]
 
 
-def _toolbox_renderer(tint):
-    """tint 键控的 QSvgRenderer；QtSvg/文件不可用返回 None。"""
+def _svg_renderer(kind, replace_color):
+    """(kind, 替换色) 键控的 QSvgRenderer。
+
+    replace_color=None 用文件原配色；非空把全部 fill 替换成该色
+    （QSvgRenderer 无逐元素换色 API，直接改 SVG 文本，渲染器按色缓存）。
+    QtSvg/文件不可用返回 None（调用方降级线稿）。"""
     try:
         from PySide6 import QtSvg
     except ImportError:
-        log.warning("QtSvg unavailable, toolbox icon falls back to folder")
+        log.warning("QtSvg unavailable, %s icon falls back to line art",
+                    kind)
         return None
-    key = tint or ""
-    renderer = _TOOLBOX_SVG_RENDERERS.get(key)
+    key = (kind, replace_color or "")
+    renderer = _SVG_RENDERERS.get(key)
     if renderer is None:
-        text = _toolbox_svg_text()
+        text = _svg_icon_text(kind)
         if not text:
             return None
-        if tint:
-            text = re.sub(r'fill="#[0-9A-Fa-f]{6}"', 'fill="%s"' % tint,
-                          text)
+        if replace_color:
+            text = re.sub(r'fill="#[0-9A-Fa-f]{6}"',
+                          'fill="%s"' % replace_color, text)
         candidate = QtSvg.QSvgRenderer(
             QtCore.QByteArray(text.encode("utf-8")))
         if not candidate.isValid():
-            log.warning("toolbox svg invalid: %s", _TOOLBOX_SVG_PATH)
+            log.warning("%s svg invalid", _SVG_ICONS[kind][0])
             return None
-        candidate.setViewBox(_TOOLBOX_VIEWBOX)   # 裁掉画布留白
-        _TOOLBOX_SVG_RENDERERS[key] = renderer = candidate
+        viewbox = _SVG_ICONS[kind][1]
+        if viewbox is not None:
+            candidate.setViewBox(viewbox)   # 裁掉画布留白
+        _SVG_RENDERERS[key] = renderer = candidate
     return renderer
 
 
@@ -139,13 +156,34 @@ def _favorite_svg_renderer():
     return _FAV_SVG_RENDERER
 
 
-def sidebar_icon_pixmap(kind, size, dpr, tint=None):
-    """侧栏行首图标（扁平线稿风，参考外部蓝图管理面板）：grid/star/folder/tag/level。
+def _draw_tag_icon(p, color):
+    """tag 线稿（矢量 tag 的降级 fallback 同用）。"""
+    path = QtGui.QPainterPath()
+    path.moveTo(3.0, 2.5)
+    path.lineTo(7.0, 2.5)
+    path.quadTo(7.6, 2.5, 8.0, 2.9)
+    path.lineTo(12.1, 6.3)
+    path.quadTo(12.5, 7.0, 12.1, 7.7)
+    path.lineTo(8.0, 11.1)
+    path.quadTo(7.6, 11.5, 7.0, 11.5)
+    path.lineTo(3.0, 11.5)
+    path.quadTo(2.0, 11.5, 2.0, 10.5)
+    path.lineTo(2.0, 3.5)
+    path.quadTo(2.0, 2.5, 3.0, 2.5)
+    pen = QtGui.QPen(QtGui.QColor(color), 1.2)
+    pen.setJoinStyle(QtCore.Qt.RoundJoin)
+    p.strokePath(path, pen)
+    p.drawEllipse(QtCore.QRectF(4.0, 5.9, 2.2, 2.2))
 
-    QPainter 手绘而非 SVG 文件：颜色随主题写死在函数里、不新增资源文件；
-    统一在 14×14 逻辑坐标绘制后缩放，按 (种类, 尺寸, DPR, tint) 缓存保证
-    高分屏不糊。tint 非空时线稿整体改用该色（标签色等场景），None 用
-    各 kind 的默认色。
+
+def sidebar_icon_pixmap(kind, size, dpr, tint=None):
+    """侧栏行首图标：grid/star/folder/tag/level/sliders/code 扁平线稿，
+    toolbox/tag 为矢量文件渲染（icons/*.svg，见 _SVG_ICONS 注册表）。
+
+    线稿 QPainter 手绘（颜色随主题写死在函数里、不新增资源文件）；矢量
+    图 QSvgRenderer 直渲染，fill 整体替换实现着色。统一在 14×14 逻辑
+    坐标绘制后缩放，按 (种类, 尺寸, DPR, tint) 缓存保证高分屏不糊。
+    tint 非空时线稿整体改用该色（标签色等场景），None 用各 kind 的默认色。
     """
     key = (kind, size, round(dpr, 2), tint)
     pm = _SIDEBAR_ICON_CACHE.get(key)
@@ -172,12 +210,17 @@ def sidebar_icon_pixmap(kind, size, dpr, tint=None):
                 p.drawRoundedRect(QtCore.QRectF(gx, gy, 5.0, 5.0), 1.2, 1.2)
     elif kind == "folder":
         _draw_folder_icon(p, color)
-    elif kind == "toolbox":
-        # 工具箱矢量图（QSvgRenderer 直渲染，随 viewBox 缩放无损）；
-        # QtSvg/文件缺失时降级 folder 线稿，不空手
-        renderer = _toolbox_renderer(tint)
+    elif kind in _SVG_ICONS:
+        # 矢量图（QSvgRenderer 直渲染，随 viewBox 缩放无损）：toolbox
+        # tint=None 用文件原配色、tint 时全部替换（开关关闭态）；tag
+        # **永远整体替换**成标签色（color 已含"tint 或默认蓝"语义）。
+        # QtSvg/文件缺失降级手绘线稿，不空手
+        replace_color = color if kind == "tag" else tint
+        renderer = _svg_renderer(kind, replace_color)
         if renderer is not None:
             renderer.render(p, QtCore.QRectF(0, 0, 14, 14))
+        elif kind == "tag":
+            _draw_tag_icon(p, color)
         else:
             _draw_folder_icon(p, color)
     elif kind == "sliders":
@@ -194,23 +237,6 @@ def sidebar_icon_pixmap(kind, size, dpr, tint=None):
             p.setBrush(QtCore.Qt.NoBrush)
             p.drawLine(QtCore.QPointF(4.5, yy), QtCore.QPointF(12.0, yy))
             p.drawRect(QtCore.QRectF(knob_x, yy - 1.75, 3.5, 3.5))  # 空心滑块
-    elif kind == "tag":
-        path = QtGui.QPainterPath()
-        path.moveTo(3.0, 2.5)
-        path.lineTo(7.0, 2.5)
-        path.quadTo(7.6, 2.5, 8.0, 2.9)
-        path.lineTo(12.1, 6.3)
-        path.quadTo(12.5, 7.0, 12.1, 7.7)
-        path.lineTo(8.0, 11.1)
-        path.quadTo(7.6, 11.5, 7.0, 11.5)
-        path.lineTo(3.0, 11.5)
-        path.quadTo(2.0, 11.5, 2.0, 10.5)
-        path.lineTo(2.0, 3.5)
-        path.quadTo(2.0, 2.5, 3.0, 2.5)
-        pen = QtGui.QPen(QtGui.QColor(color), 1.2)
-        pen.setJoinStyle(QtCore.Qt.RoundJoin)
-        p.strokePath(path, pen)
-        p.drawEllipse(QtCore.QRectF(4.0, 5.9, 2.2, 2.2))
     elif kind == "level":
         # 迷你节点图：两个圆角方节点 + 折线连线（网络层级语义）
         pen = QtGui.QPen(QtGui.QColor(color), 1.2)
@@ -354,11 +380,15 @@ class SidebarDelegate(QtWidgets.QStyledItemDelegate):
         if kind:
             widget = option.widget
             dpr = widget.devicePixelRatioF() if widget is not None else 1.0
-            # toolbox 实心图形显小，渲染放大 2px（TOOLBOX_ICON_BOOST），
-            # 占位与推进量同步用实际尺寸，防 16px 图标压住文字
-            icon_px = self.ICON_PX + (TOOLBOX_ICON_BOOST
-                                      if kind == "toolbox" else 0)
-            pm = sidebar_icon_pixmap(kind, icon_px, dpr, tint=color_hint)
+            # 矢量实心图形显小，渲染放大 2px（SVG_ICON_BOOST），占位与
+            # 推进量同步用实际尺寸，防 16px 图标压住文字
+            icon_px = self.ICON_PX + (SVG_ICON_BOOST
+                                      if kind in SVG_ICON_KINDS else 0)
+            # 带色行（标签）：图标与文字同用 readable_on_dark 提亮色——
+            # 过暗的自定义色当线稿时勉强可见，填充大面积后必须提亮
+            tint = readable_on_dark(color_hint).name() if color_hint \
+                else None
+            pm = sidebar_icon_pixmap(kind, icon_px, dpr, tint=tint)
             painter.drawPixmap(
                 int(round(x)),
                 int(round(rect.center().y() - icon_px / 2)), pm)

@@ -32,8 +32,9 @@ from houtools.recipelib.docs import DocEditorDialog, MarkdownMediaView, MediaDia
 from houtools.ui import fonts as tool_fonts
 from houtools.ui.sidebar import (SIDEBAR_COLOR_ROLE, SIDEBAR_COUNT_ROLE,
                                  SIDEBAR_HEADER_ROLE, SIDEBAR_ICON_ROLE,
-                                 TOOLBOX_ICON_BOOST, SidebarDelegate,
-                                 readable_on_dark, sidebar_icon_pixmap)
+                                 SVG_ICON_BOOST, SVG_ICON_KINDS,
+                                 SidebarDelegate, readable_on_dark,
+                                 sidebar_icon_pixmap)
 from houtools.ui.badge import FavoriteBadge
 from houtools.ui.dialogs import info, localize_buttons, localize_color_dialog, warn
 from houtools.ui.taskbar import apply_appwindow_flags
@@ -1207,7 +1208,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             btn.setFocusPolicy(QtCore.Qt.NoFocus)   # 不抢侧栏的键盘焦点
             btn.setToolTip("显示/隐藏「{}」类型的卡片".format(
                 "节点参数" if key == "show_nodeparm" else label))
-            icon_px = 12 + (TOOLBOX_ICON_BOOST if kind == "toolbox" else 0)
+            icon_px = 12 + (SVG_ICON_BOOST if kind in SVG_ICON_KINDS
+                            else 0)
             btn.setProperty("ht_icon_px", icon_px)
             btn.setIconSize(QtCore.QSize(icon_px, icon_px))
             self._refresh_toggle_icon(btn)

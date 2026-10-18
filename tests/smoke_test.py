@@ -1343,6 +1343,26 @@ def main():
                 assert has_orange, "toolbox 图标应含 SVG 橙色填充"
                 assert not rl_browser.sidebar_icon_pixmap(
                     "toolbox", 12, 1.0, tint="#6f6f78").isNull()
+                # 标签 SVG 图标（用户矢量图）：填充永远整体替换——无色=
+                # 默认蓝 #5b9bd5，随任意标签色换色（用户指定）
+                pm_tag = rl_browser.sidebar_icon_pixmap("tag", 14, 1.0)
+                assert not pm_tag.isNull()
+                img_tag = pm_tag.toImage()
+
+                def _has_px(img, pred):
+                    return any(pred(img.pixelColor(x, y))
+                               for y in range(img.height())
+                               for x in range(img.width()))
+
+                assert _has_px(img_tag, lambda c: c.red() < 130
+                               and 120 < c.green() < 190
+                               and c.blue() > 170), \
+                    "tag 图标默认应为 #5b9bd5 蓝填充"
+                pm_red = rl_browser.sidebar_icon_pixmap(
+                    "tag", 14, 1.0, tint="#ff0000")
+                assert _has_px(pm_red.toImage(), lambda c: c.red() > 180
+                               and c.green() < 90 and c.blue() < 90), \
+                    "tag 图标应随标签色整体换色"
                 win.type_toggles["show_nodeparm"].setChecked(False)
                 assert win.list.count() == 2, win.list.count()
                 names = {win.list.item(i).data(QtCore.Qt.UserRole)
