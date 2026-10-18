@@ -651,7 +651,6 @@ class CodeEditorDialog(QtWidgets.QDialog):
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
-        localize_buttons(buttons)   # OK/Cancel → 确定/取消
         self._ok_btn = buttons.button(QtWidgets.QDialogButtonBox.Ok)
 
         lay = QtWidgets.QVBoxLayout(self)
@@ -659,6 +658,11 @@ class CodeEditorDialog(QtWidgets.QDialog):
         lay.addWidget(self.name_hint)
         lay.addWidget(self.editor, 1)
         lay.addWidget(buttons)
+        # 必须在按钮盒挂进布局之后调用：localize_buttons 走
+        # findChildren(QDialogButtonBox)，盒子得已是 dialog 的孩子才找得
+        # 到；旧版把按钮盒自身当 dialog 传入——在自己身上找自己，按钮
+        # 永远留英文（2026-10 用户反馈「新建代码块」弹窗按钮是英文）
+        localize_buttons(self)   # OK/Cancel → 确认/取消
 
         if info is not None:
             self.name_edit.setText(info.name)

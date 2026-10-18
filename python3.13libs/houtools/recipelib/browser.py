@@ -316,10 +316,13 @@ class _CardDelegate(QtWidgets.QStyledItemDelegate):
 
     @staticmethod
     def _type_line(info):
-        """第二行：网络类别（缺省用类别短名）+ 节点数；代码块 = 语言。"""
+        """第二行：网络类别（缺省用类别短名）+ 节点数；代码块 = 语言 +
+        行数（2026-10 用户指定卡片上写行数，与预览元信息同口径）。"""
         if getattr(info, "is_code", False):
-            return "代码块 • {}".format(codeblock.LANGUAGE_LABELS.get(
-                info.language, info.language))
+            lines = info.code.count("\n") + 1 if info.code else 0
+            return "代码块 • {} • {} 行".format(
+                codeblock.LANGUAGE_LABELS.get(info.language, info.language),
+                lines)
         parts = []
         cat = info.net_category or {
             "tool": "Tool", "node": "Node", "parm": "Parm",
@@ -338,8 +341,21 @@ _UI_SETTINGS = JsonStore("recipelib_ui.json", defaults={
     "tag_expanded": True,   # 「标签」段折叠状态
     "level_expanded": True,   # 「层级」段折叠状态
     "last_export_dir": "",  # 上次导出的目录（导出对话框起始位置）
-    "hide_nodeparm_in_all": False,  # 「常规」设置：全部视图隐藏节点参数类型
+    # 侧栏顶部三个显示开关（工具/代码块/参数）：对应类型的卡片是否显示，
+    # 默认全开（2026-10 用户指定）
+    "show_tools": True,       # 有 submenu 的 recipe（子菜单分组）
+    "show_code": True,        # 代码块卡片
+    "show_nodeparm": True,    # 无 submenu 的 recipe（节点参数分组）
 })
+
+# 显示开关定义（key / 按钮文字 / 图标种类）：顺序即侧栏按钮条排列序；
+# 「参数」是「节点参数」的缩写（用户指定），图标与对应侧栏行同款——
+# 工具用子菜单选项的文件夹图标
+_TYPE_TOGGLES = (
+    ("show_tools", "工具", "folder"),
+    ("show_code", "代码块", "code"),
+    ("show_nodeparm", "参数", "sliders"),
+)
 
 
 class _Grid(QtWidgets.QListWidget):
@@ -774,78 +790,6 @@ class _LibDirsPage(QtWidgets.QWidget):
         return [self.list.item(i).text() for i in range(self.list.count())]
 
 
-class _ClickToggleLabel(QtWidgets.QLabel):
-    """点击等同切换目标勾选框的标签（勾选文案拆段后保持整体可点）。"""
-
-    def __init__(self, target):
-        super().__init__()
-        self._target = target
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == QtCore.Qt.LeftButton:
-            self._target.toggle()
-        super().mouseReleaseEvent(event)
-
-
-class _GeneralPage(QtWidgets.QWidget):
-    """设置面板「常规」页：显示过滤偏好。
-
-    勾选文案"隐藏全部分组中的节点参数类型"里「全部」要求带侧栏分组
-    板块同款图标——QCheckBox 的文本画不了图，行拆四段横排、段距统一：
-    无文字勾选指示器 / 「隐藏」/ 图标 / 「全部分组中的节点参数类型」，
-    后三段均为 _ClickToggleLabel（点击等同切换勾选框）。「隐藏」不能
-    写进 QCheckBox：Houdini 样式下勾选框给文本多占一段虚宽，图标前
-    会空一大截、与图标后间距失衡（实测截图）。
-    """
-
-    def __init__(self, on_hide_nodeparm_changed=None):
-        super().__init__()
-        lay = QtWidgets.QVBoxLayout(self)
-        lay.setSpacing(6)
-
-        title = QtWidgets.QLabel("显示")
-        title.setStyleSheet("font-weight: bold; font-size: 13px;")
-        lay.addWidget(title)
-
-        chk = QtWidgets.QCheckBox()
-        # 指示器宽度钉死为原生指标（+2 留描边余量）：勾选框的 sizeHint
-        # 带样式不可控的虚宽，不钉死则指示器与「隐藏」之间会多出空隙
-        chk.setFixedWidth(chk.style().pixelMetric(
-            QtWidgets.QStyle.PM_IndicatorWidth, None, chk) + 2)
-        # 只在连接信号前回填持久化状态：toggled 只上报用户操作
-        chk.setChecked(bool(_UI_SETTINGS.get("hide_nodeparm_in_all")))
-        text = _ClickToggleLabel(chk)
-        text.setText("隐藏")
-        icon = _ClickToggleLabel(chk)
-        # 侧栏「全部」行同款图标（grid 种类，尺寸对齐 SidebarDelegate.ICON_PX）
-        icon.setPixmap(sidebar_icon_pixmap(
-            "grid", 14, self.devicePixelRatioF()))
-        body = _ClickToggleLabel(chk)
-        body.setText("全部分组中的节点参数类型")
-        row = QtWidgets.QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(8)   # 四段等距（间距全部交给布局，见类 docstring）
-        row.addWidget(chk)
-        row.addWidget(text)
-        row.addWidget(icon)
-        row.addWidget(body)
-        row.addStretch(1)
-        lay.addLayout(row)
-
-        hint = QtWidgets.QLabel(
-            "勾选后，「全部」分组不再显示「节点参数」类型的卡片，"
-            "「节点参数」等其余分组不受影响。")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #888888;")
-        lay.addWidget(hint)
-        lay.addStretch(1)
-
-        self.hide_chk = chk   # 测试入口
-        self.icon_lbl = icon
-        if on_hide_nodeparm_changed is not None:
-            chk.toggled.connect(on_hide_nodeparm_changed)
-
-
 class _DataPage(QtWidgets.QWidget):
     """设置面板「数据」页：导出 / 导入 .zip 交换包（迁移与分享）。"""
 
@@ -890,16 +834,15 @@ class _DataPage(QtWidgets.QWidget):
 class _SettingsDialog(QtWidgets.QDialog):
     """设置面板：左分类列表 + 右内容页（参考 ShareX 设置布局）。
 
-    三类：库目录（原独立对话框迁入，改动即时生效）、常规（显示过滤
-    偏好，勾选即时生效）、数据（导入/导出交换包）。后续设置项往
-    _PAGES 追加名称，并在 __init__ 里按同序 addWidget 对应页面即可。
-    改动即时生效，底部只有「关闭」。
+    两类：库目录（原独立对话框迁入，改动即时生效）、数据（导入/导出
+    交换包）。显示过滤走侧栏顶部三个开关（工具/代码块/参数），不占
+    设置页。后续设置项往 _PAGES 追加名称，并在 __init__ 里按同序
+    addWidget 对应页面即可。改动即时生效，底部只有「关闭」。
     """
 
-    _PAGES = ("库目录", "常规", "数据")
+    _PAGES = ("库目录", "数据")
 
-    def __init__(self, parent, on_lib_dirs_changed, on_general_changed,
-                 on_export, on_import):
+    def __init__(self, parent, on_lib_dirs_changed, on_export, on_import):
         super().__init__(parent)
         self.setWindowTitle("设置 - Recipe Library")
         self.resize(680, 430)
@@ -911,7 +854,6 @@ class _SettingsDialog(QtWidgets.QDialog):
             self.cats.addItem(QtWidgets.QListWidgetItem(label))
         self.stack = QtWidgets.QStackedWidget()
         self.stack.addWidget(_LibDirsPage(on_lib_dirs_changed))
-        self.stack.addWidget(_GeneralPage(on_general_changed))
         self.stack.addWidget(_DataPage(on_export, on_import))
         self.cats.currentRowChanged.connect(self.stack.setCurrentIndex)
 
@@ -1112,6 +1054,19 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         QTreeWidget { outline: 0; }
         /* 侧栏树：比面板标准底色亮一档（用户指定），文字 delegate 加粗提亮 */
         QTreeWidget#sidebarTree { background-color: #26262b; }
+        /* 侧栏顶部三个显示开关（工具/代码块/参数）：与侧栏同底色；
+           关闭态文字调暗（同段头收拢态的调暗约定），开启态蓝底白字 */
+        QWidget#sidebarToggleStrip { background-color: #26262b; }
+        QPushButton#sidebarToggleBtn {
+            background-color: #2d2d32; border: 1px solid #3a3a41;
+            border-radius: 4px; padding: 2px 4px; color: #d8d8de;
+        }
+        QPushButton#sidebarToggleBtn:hover { border-color: #0d6399; }
+        QPushButton#sidebarToggleBtn:checked {
+            background-color: rgba(13, 99, 153, 110);
+            border-color: #2e7cb8; color: #ffffff;
+        }
+        QPushButton#sidebarToggleBtn:!checked { color: #8f8f97; }
         QListWidget::item { color: #bbbbbb; }
         QListWidget::item:selected { background-color: #0d6399; }
         QLineEdit {
@@ -1163,6 +1118,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self.search.setPlaceholderText(
             "搜索 名称 / 标签 / 备注 / 代码...（#前缀 仅搜标签）")
         self.search.setClearButtonEnabled(True)
+        # 右键不弹 Qt 自带标准菜单（撤销/剪切/粘贴等英文项，2026-10 用户
+        # 指定取消）；NoContextMenu 下右键事件直接丢弃
+        self.search.setContextMenuPolicy(QtCore.Qt.NoContextMenu)
         self.pin_chk = QtWidgets.QCheckBox("全局置顶")
         self.pin_chk.setChecked(bool(_UI_SETTINGS.get("pin_on_top")))
         self.size_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -1218,6 +1176,41 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self.sidebar.itemClicked.connect(self._on_sidebar_clicked)
         self.sidebar.expanded.connect(self._on_section_toggle)
         self.sidebar.collapsed.connect(self._on_section_toggle)
+
+        # ---- 侧栏顶部：三个显示开关（工具/代码块/参数，2026-10 用户指定）----
+        # 并排横排在「全部」分组上方，图标与对应侧栏行同款（工具用子菜单
+        # 选项的文件夹图标）；开启显示对应卡片、关闭隐藏，默认全开，状态
+        # 存 _UI_SETTINGS 持久化。计数与网格都按开关过滤（_type_visible）
+        self.type_toggles = {}
+        strip = QtWidgets.QWidget()
+        strip.setObjectName("sidebarToggleStrip")
+        toggle_lay = QtWidgets.QHBoxLayout(strip)
+        toggle_lay.setContentsMargins(4, 4, 4, 4)
+        toggle_lay.setSpacing(4)
+        for key, label, kind in _TYPE_TOGGLES:
+            btn = QtWidgets.QPushButton(label)
+            btn.setObjectName("sidebarToggleBtn")
+            btn.setProperty("ht_icon_kind", kind)
+            btn.setCheckable(True)
+            # 只在连接信号前回填持久化状态：toggled 只上报用户操作
+            btn.setChecked(bool(_UI_SETTINGS.get(key)))
+            btn.setFocusPolicy(QtCore.Qt.NoFocus)   # 不抢侧栏的键盘焦点
+            btn.setToolTip("显示/隐藏「{}」类型的卡片".format(
+                "节点参数" if key == "show_nodeparm" else label))
+            btn.setIconSize(QtCore.QSize(12, 12))
+            self._refresh_toggle_icon(btn)
+            btn.toggled.connect(
+                lambda on, k=key: self._on_type_toggle(k, on))
+            toggle_lay.addWidget(btn, 1)
+            self.type_toggles[key] = btn
+
+        # 侧栏 = 开关条 + 树（同一个分割格子；树属性/宽度约束不变）
+        side_panel = QtWidgets.QWidget()
+        side_lay = QtWidgets.QVBoxLayout(side_panel)
+        side_lay.setContentsMargins(0, 0, 0, 0)
+        side_lay.setSpacing(0)
+        side_lay.addWidget(strip)
+        side_lay.addWidget(self.sidebar, 1)
 
         # ---- 中部网格 ----
         self.list = _Grid()
@@ -1401,7 +1394,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.splitter.setHandleWidth(4)
-        self.splitter.addWidget(self.sidebar)
+        self.splitter.addWidget(side_panel)
         self.splitter.addWidget(self.list)
         self.splitter.addWidget(preview_panel)
         self.splitter.setStretchFactor(1, 1)
@@ -1481,7 +1474,6 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         dlg = _SettingsDialog(
             self,
             on_lib_dirs_changed=self._apply_lib_dirs,
-            on_general_changed=self._apply_general_settings,
             on_export=self._export_recipes,
             on_import=self._import_recipes)
         dlg.exec_()
@@ -1492,13 +1484,21 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self._category_key = KEY_ALL
         self.reload()
 
-    def _apply_general_settings(self, hide_nodeparm):
-        """设置面板「常规」页即时生效：落盘并按新过滤重建侧栏与网格。
+    def _refresh_toggle_icon(self, btn):
+        """开关按钮图标随开关态着色：开启用侧栏行同款本色，关闭整体
+        调暗（sidebar_icon_pixmap 的 tint，缓存按 tint 分键不互踩）。"""
+        kind = btn.property("ht_icon_kind")
+        tint = None if btn.isChecked() else "#6f6f78"
+        btn.setIcon(QtGui.QIcon(sidebar_icon_pixmap(
+            kind, 12, btn.devicePixelRatioF(), tint=tint)))
 
-        只改显示过滤、不涉及 recipe 枚举，走轻量重建（rebuild +
-        apply_filter），不做整趟 reload（不重扫库文件）。
-        """
-        _UI_SETTINGS.set("hide_nodeparm_in_all", bool(hide_nodeparm))
+    def _on_type_toggle(self, key, on):
+        """侧栏顶部显示开关切换：落盘 + 轻量重建侧栏与网格（只改显示
+        过滤，不重扫库文件；同原「常规」页的即时生效路径）。"""
+        _UI_SETTINGS.set(key, bool(on))
+        btn = self.type_toggles.get(key)
+        if btn is not None:
+            self._refresh_toggle_icon(btn)
         self._rebuild_sidebar()
         self._apply_filter()
 
@@ -1642,22 +1642,41 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self.status.setText("导入完成：配方 {} 个".format(len(s["recipes"])))
         info(parent, "导入完成", msg)
 
-    def _rebuild_sidebar(self):
-        """树形侧栏：全部 / 收藏 / 节点参数 / 子菜单▸ / 标签▸ / 层级▸（可折叠）。
+    def _type_visible(self, info):
+        """侧栏顶部三个显示开关（工具/代码块/参数）对该卡片是否生效。
 
-        子菜单取自官方字段（node preset 的 submenu、tool 的 tab_submenu），
-        无任何子菜单的 recipe 归入「节点参数」；标签是本工具自己的元数据
-        层；层级取官方 net_category（network_categories[0]），按库内实际
-        出现的层级动态生成、无层级的 recipe 不入段。段头行尾计数 = 段内
-        条目数（参考图语义），普通行 = 归入该组的 recipe 数。折叠状态存
-        _UI_SETTINGS 跨会话记忆。
+        全局显示过滤：关闭的类型在所有分组视图里都不显示（2026-10 用户
+        指定"开启则显示对应的卡片，关闭则不显示"）。"""
+        if getattr(info, "is_code", False):
+            return bool(_UI_SETTINGS.get("show_code"))
+        if self._submenus_of(info):
+            return bool(_UI_SETTINGS.get("show_tools"))
+        return bool(_UI_SETTINGS.get("show_nodeparm"))
+
+    def _rebuild_sidebar(self):
+        """树形侧栏：全部 / 收藏 / 代码块 / 节点参数 / 子菜单▸ / 标签▸ /
+        层级▸（可折叠）。
+
+        「代码块」「节点参数」两行**恒显**（2026-10 用户指定统一语义，
+        空段也保留，计数 0）；子菜单/标签/层级段仍按库内实际数据动态
+        生成。子菜单取自官方字段（node preset 的 submenu、tool 的
+        tab_submenu），无任何子菜单的 recipe 归入「节点参数」；标签是
+        本工具自己的元数据层；层级取官方 net_category
+        （network_categories[0]）。段头行尾计数 = 段内条目数（参考图
+        语义），普通行 = 归入该组的条目数——都按三个显示开关过滤后的
+        实际显示条数计（保持"计数 = 该组实际显示条数"约定）。折叠状态
+        存 _UI_SETTINGS 跨会话记忆。
         """
         cat_counts = {}
         tag_counts = {}
         level_counts = {}
         fav_count = 0
         ungrouped = 0
+        all_count = 0
         for r in self._recipes:
+            if not self._type_visible(r):
+                continue
+            all_count += 1
             subs = self._submenus_of(r)
             if subs:
                 for sub in subs:
@@ -1673,19 +1692,17 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             if metadata.is_favorite(r.name):
                 fav_count += 1
 
-        # 代码块并入标签/收藏计数；自身单独成段
-        code_count = len(self._code_infos)
+        # 代码块并入标签/收藏计数；自身单独成段（恒显，空段计 0）
+        code_count = 0
         for c in self._code_infos:
+            if not self._type_visible(c):
+                continue
+            code_count += 1
+            all_count += 1
             for t in metadata.get_tags(c.name):
                 tag_counts[t] = tag_counts.get(t, 0) + 1
             if metadata.is_favorite(c.name):
                 fav_count += 1
-
-        # 「常规」设置勾选时全部视图不含「节点参数」类型：行计数同步
-        # 扣减，保持"计数 = 该组实际显示条数"
-        all_count = len(self._recipes) + code_count
-        if _UI_SETTINGS.get("hide_nodeparm_in_all"):
-            all_count -= ungrouped
 
         self.sidebar.blockSignals(True)
         self.sidebar.clear()
@@ -1710,8 +1727,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
         _add(None, "全部", all_count, KEY_ALL, "grid")
         _add(None, "收藏", fav_count, KEY_FAV, "star")
-        if code_count:
-            _add(None, "代码块", code_count, KEY_CODE, "code")
+        # 「代码块」「节点参数」恒显（空段计 0，2026-10 用户指定统一语义）
+        _add(None, "代码块", code_count, KEY_CODE, "code")
         _add(None, "节点参数", ungrouped, CAT_PREFIX, "sliders")
         if cat_counts:
             grp = _add(None, "子菜单", len(cat_counts), KEY_GRP_HDR,
@@ -1839,12 +1856,6 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
     def _match_category(self, info):
         key = self._category_key
         if key in (KEY_ALL, None):
-            # 「常规」设置勾选时全部视图隐藏「节点参数」类型（无 submenu
-            # 的 recipe）；代码块有自己的侧栏段，不受该设置影响
-            if _UI_SETTINGS.get("hide_nodeparm_in_all") \
-                    and not getattr(info, "is_code", False) \
-                    and not self._submenus_of(info):
-                return False
             return True
         if key == KEY_FAV:
             return metadata.is_favorite(info.name)
@@ -1878,10 +1889,14 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         current = self.list.currentItem()
         if current is not None:
             keep_name = current.data(QtCore.Qt.UserRole)
+        # 三个显示开关（工具/代码块/参数）是全局过滤：任何分组视图都
+        # 先按 _type_visible 筛掉关闭类型的卡片
         entries = [r for r in self._recipes
-                   if self._match_category(r) and self._match_search(r)]
+                   if self._type_visible(r) and self._match_category(r)
+                   and self._match_search(r)]
         entries += [c for c in self._code_infos
-                    if self._match_category(c) and self._match_search(c)]
+                    if self._type_visible(c) and self._match_category(c)
+                    and self._match_search(c)]
         total = len(self._recipes) + len(self._code_infos)
         self.list.setUpdatesEnabled(False)
         self.list.blockSignals(True)
@@ -2554,6 +2569,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         menu.addSeparator()
         # 恢复默认显示名不进菜单：自定义显示名留空确认即恢复
         act_rename = menu.addAction("自定义显示名")
+        act_tags = menu.addAction("标签设置")
         menu.addSeparator()
         act_doc = menu.addAction("编辑文档")
         menu.addSeparator()
@@ -2572,10 +2588,13 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         if not info.under_hfs:
             act_del = menu.addAction("删除 Recipe")
         act = menu.exec_(self.list.mapToGlobal(pos))
+        menu.deleteLater()   # exec_ 的模态菜单用完即释放，防积存
         if act is act_fav:
             self._set_favorite(info, not fav)
         elif act is act_rename:
             self._rename_selected()
+        elif act is act_tags:
+            self._edit_tags(info)
         elif act is act_doc:
             self._open_doc_for(info)
         elif act is act_thumb:
@@ -2602,6 +2621,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         # 恢复默认显示名不进菜单：自定义显示名留空确认即恢复
         act_edit = menu.addAction("编辑代码")
         act_rename = menu.addAction("自定义显示名")
+        act_tags = menu.addAction("标签设置")
         act_doc = menu.addAction("编辑文档")
         menu.addSeparator()
         act_thumb = menu.addAction("设置缩略图")
@@ -2623,6 +2643,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self._edit_code(info)
         elif act is act_rename:
             self._rename_selected()
+        elif act is act_tags:
+            self._edit_tags(info)
         elif act is act_doc:
             self._open_doc_for(info)
         elif act is act_thumb:
@@ -2864,9 +2886,13 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         if act is act_edit:
             self._edit_tags()
 
-    def _edit_tags(self):
-        """「标签设置」弹窗：确认后才写入（展示区保持只读）。"""
-        info = self._selected_info()
+    def _edit_tags(self, info=None):
+        """「标签设置」弹窗：确认后才写入（展示区保持只读）。
+
+        info 缺省取当前选中（标签栏右键入口）；卡片右键必须传命中
+        卡片的 info——右键不改选中，取 current 会改到别的配方。"""
+        if info is None:
+            info = self._selected_info()
         if info is None:
             return
         dlg = _PromptDialog(

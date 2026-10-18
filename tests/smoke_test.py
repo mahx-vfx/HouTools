@@ -1178,8 +1178,8 @@ def main():
                                     category="tool", submenu=""),
             ]
             # _UI_SETTINGS 打桩到临时 store（沿用 browser 代码内默认值）：
-            # 本块全部断言按 hide_nodeparm_in_all=False 语义编写，不能随
-            # 用户真实「常规」设置漂移
+            # 本块全部断言按侧栏三个显示开关（工具/代码块/参数）默认全开
+            # 语义编写，不随用户真实设置漂移
             ui_store = houtools.core.settings.JsonStore(
                 "_smoke_rl_ui.json",
                 defaults=dict(rl_browser._UI_SETTINGS._defaults))
@@ -1241,11 +1241,14 @@ def main():
                         walk(win.sidebar.topLevelItem(t))
                     return keys
 
-                # 侧栏树结构：全部 / 收藏 / 节点参数 / 子菜单头 / 分类x2
-                # （此时尚无标签，不出现标签段头）
+                # 侧栏树结构：全部 / 收藏 / 代码块 / 节点参数 / 子菜单头 /
+                # 分类x2（此时尚无标签，不出现标签段头）
                 keys = _sidebar_keys()
                 assert keys[0] == rl_browser.KEY_ALL, keys
                 assert keys[1] == rl_browser.KEY_FAV, keys
+                # 代码块/节点参数行恒显（2026-10 统一语义：空段也保留；
+                # 本块无代码文件，代码块行计 0）
+                assert rl_browser.KEY_CODE in keys, keys
                 assert "cat::" in keys, keys   # 无 submenu 的归「节点参数」
                 assert sorted(k for k in keys
                               if k and k.startswith("cat::")
@@ -1312,49 +1315,45 @@ def main():
                 win.search.setText("")
                 win._apply_filter()
                 assert win.list.count() == 3
-                # 「常规」设置：全部视图隐藏「节点参数」类型（默认不勾选；
-                # 勾选即时生效——KEY_ALL 过滤 + 侧栏全部行计数同步扣减，
-                # 「节点参数」等其余分组不受影响）。_UI_SETTINGS 打桩到
-                # 临时 store，不写真实 settings/
-                gen_store = houtools.core.settings.JsonStore(
-                    "_smoke_rl_general.json",
-                    defaults={"hide_nodeparm_in_all": False})
-                _track_rm(gen_store.path)
-                with patch.object(rl_browser, "_UI_SETTINGS", gen_store):
-                    win._select_category(rl_browser.KEY_ALL)
-                    assert win.list.count() == 3, win.list.count()
-                    win._apply_general_settings(True)
-                    assert win.list.count() == 2, win.list.count()
-                    names = {win.list.item(i).data(QtCore.Qt.UserRole)
-                             for i in range(win.list.count())}
-                    assert "houtools::plain::c" not in names, names
-                    all_item = win.sidebar.topLevelItem(0)
-                    assert all_item.data(0, QtCore.Qt.UserRole) \
-                        == rl_browser.KEY_ALL
-                    assert all_item.data(0, rl_browser.SIDEBAR_COUNT_ROLE) \
-                        == 2, all_item.data(0, rl_browser.SIDEBAR_COUNT_ROLE)
-                    win._select_category("cat::")   # 节点参数分组照常显示
-                    assert win.list.count() == 1, win.list.count()
-                    win._select_category(rl_browser.KEY_ALL)
-                    win._apply_general_settings(False)
-                    assert win.list.count() == 3, win.list.count()
+                # 侧栏顶部三个显示开关（工具/代码块/参数，2026-10）：
+                # 默认全开；关闭即隐藏对应类型卡片（所有分组视图），侧栏
+                # 计数同步扣减但「节点参数」行保留（恒显）；状态落
+                # _UI_SETTINGS（本块已打桩到临时 store，不写真实 settings/）
+                win._select_category(rl_browser.KEY_ALL)
+                assert win.list.count() == 3, win.list.count()
+                assert all(btn.isChecked()
+                           for btn in win.type_toggles.values())
+                win.type_toggles["show_nodeparm"].setChecked(False)
+                assert win.list.count() == 2, win.list.count()
+                names = {win.list.item(i).data(QtCore.Qt.UserRole)
+                         for i in range(win.list.count())}
+                assert "houtools::plain::c" not in names, names
+                all_item = win.sidebar.topLevelItem(0)
+                assert all_item.data(0, QtCore.Qt.UserRole) \
+                    == rl_browser.KEY_ALL
+                assert all_item.data(0, rl_browser.SIDEBAR_COUNT_ROLE) \
+                    == 2, all_item.data(0, rl_browser.SIDEBAR_COUNT_ROLE)
+                nodeparm_item = win._find_key_item("cat::")
+                assert nodeparm_item is not None, "节点参数行必须恒显"
+                assert nodeparm_item.data(
+                    0, rl_browser.SIDEBAR_COUNT_ROLE) == 0
+                win._select_category("cat::")   # 分组视图同样被开关过滤
+                assert win.list.count() == 0, win.list.count()
+                assert ui_store.get("show_nodeparm") is False   # 持久化
+                win.type_toggles["show_nodeparm"].setChecked(True)
+                assert ui_store.get("show_nodeparm") is True
+                assert win.list.count() == 1, win.list.count()   # 仍在 cat::
+                win._select_category(rl_browser.KEY_ALL)
+                assert win.list.count() == 3, win.list.count()
 
-                    # 设置对话框：三页（库目录/常规/数据）；常规页勾选文案
-                    # 带「全部」行同款 grid 图标，勾选切换即发回调
-                    gen_pages = []
-                    dlg = rl_browser._SettingsDialog(
-                        win, on_lib_dirs_changed=lambda _d: None,
-                        on_general_changed=gen_pages.append,
-                        on_export=None, on_import=None)
-                    assert [dlg.cats.item(i).text() for i in range(3)] \
-                        == ["库目录", "常规", "数据"]
-                    page = dlg.stack.widget(1)
-                    assert not page.icon_lbl.pixmap().isNull()
-                    page.hide_chk.setChecked(True)
-                    assert gen_pages == [True], gen_pages
-                    page.hide_chk.setChecked(False)
-                    assert gen_pages == [True, False], gen_pages
-                    dlg.deleteLater()
+                # 设置对话框：两页（库目录/数据）——「常规」页已取消，
+                # 显示过滤走侧栏顶部开关
+                dlg = rl_browser._SettingsDialog(
+                    win, on_lib_dirs_changed=lambda _d: None,
+                    on_export=None, on_import=None)
+                assert [dlg.cats.item(i).text() for i in range(2)] \
+                    == ["库目录", "数据"]
+                dlg.deleteLater()
                 # 预览面板联动：选中后名称/元信息/按钮就绪；
                 # 名称走显示链，元信息第一行是内部名称
                 win.list.setCurrentRow(0)
@@ -1400,6 +1399,17 @@ def main():
                     win._rename_selected()
                 assert rl_meta.get_display_name("houtools::light::b") == ""
                 assert win.preview_name.text() == "Light B"
+                # 卡片右键「标签设置」（2026-10 新增入口）：必须写进命中
+                # 卡片的元数据——右键不改选中，不能落到 current 上
+                win.list.setCurrentRow(0)   # 选中 pyro::a
+                with patch("houtools.recipelib.browser._PromptDialog.exec_",
+                           return_value=QtWidgets.QDialog.Accepted), \
+                     patch("houtools.recipelib.browser._PromptDialog.text_value",
+                           return_value="灯光, 常用"):
+                    win._edit_tags(win._info_by_name["houtools::light::b"])
+                assert rl_meta.get_tags("houtools::light::b") \
+                    == ["灯光", "常用"]
+                assert rl_meta.get_tags("houtools::pyro::a") == []
                 # 点空白处取消选中：预览面板复位为空态（meta 卡片保留
                 # 版式、值留空——空态与选中态同格式；comment 恢复显示
                 # ——否则布局无 stretch 项、控件被拉伸错位）
@@ -1785,11 +1795,21 @@ def main():
                                 code="int x = 0;")
             assert ci.is_code and ci.display_label == "old_vex"
             assert ci.language == "vex" and ci.category == "code"
+            # 卡片第二行写行数（2026-10 用户指定；与预览元信息同口径）
+            assert rl_browser._CardDelegate._type_line(
+                rl_cb.CodeInfo(name="lc", language="vex",
+                               code="a\nb\nc")) == "代码块 • VEX • 3 行"
+            assert rl_browser._CardDelegate._type_line(
+                rl_cb.CodeInfo(name="lc0", language="python",
+                               code="")) == "代码块 • Python • 0 行"
             print("codeblock highlight/render/model OK")
 
             # ---- 编辑弹窗：创建态实时查重（重名/非法禁用确定键）/
             # 编辑态名称只读 ----
             dlg = rl_cb.CodeEditorDialog(None, info=None)
+            # 底部确认/取消按钮中文化（曾把按钮盒自身传给 localize_buttons
+            # ——findChildren 找不到自己→按钮永远留英文，2026-10 用户反馈）
+            assert dlg._ok_btn.text() == "确认", dlg._ok_btn.text()
             assert not dlg._ok_btn.isEnabled()   # 空名禁用
             dlg.name_edit.setText("烟雾")
             assert not dlg._ok_btn.isEnabled()   # 非法字符禁用
@@ -1823,6 +1843,20 @@ def main():
                  patch.object(rl_browser, "_UI_SETTINGS", cb_ui_store):
                 wcb = rl_browser._RecipeLibraryWindow()
                 wcb.reload()
+                assert wcb.list.count() == 2, wcb.list.count()
+                # 搜索框右键不弹 Qt 标准菜单（NoContextMenu，2026-10 用户指定）
+                assert wcb.search.contextMenuPolicy() \
+                    == _qtc.Qt.NoContextMenu
+                # 「代码块」开关：关闭后代码卡片隐藏（KEY_CODE 行计 0 但
+                # 行保留恒显），重开恢复；状态随开关落盘
+                wcb.type_toggles["show_code"].setChecked(False)
+                assert wcb.list.count() == 0, wcb.list.count()
+                code_item = wcb._find_key_item(rl_browser.KEY_CODE)
+                assert code_item is not None, "代码块行必须恒显"
+                assert code_item.data(
+                    0, rl_browser.SIDEBAR_COUNT_ROLE) == 0
+                assert cb_ui_store.get("show_code") is False
+                wcb.type_toggles["show_code"].setChecked(True)
                 assert wcb.list.count() == 2, wcb.list.count()
                 keys = [wcb.sidebar.topLevelItem(i).data(0, _qtc.Qt.UserRole)
                         for i in range(wcb.sidebar.topLevelItemCount())]
@@ -1897,9 +1931,11 @@ def main():
                      patch("houtools.recipelib.browser.QtWidgets.QMenu.exec_",
                            _exec_new_menu):
                     wcb._on_context_menu(_qtc.QPoint(1, 1))
-                # 代码块卡片右键菜单结构（对照 recipe 卡片：+编辑代码）
+                # 代码块卡片右键菜单结构（对照 recipe 卡片：+编辑代码；
+                # 两类卡片菜单都有「标签设置」入口，2026-10 用户指定）
                 def _exec_card_menu(menu, *_a, **_k):
                     texts = [a.text() for a in menu.actions()]
+                    assert "标签设置" in texts, texts
                     assert "编辑代码" in texts and "删除代码块" in texts, texts
                     return None
 
