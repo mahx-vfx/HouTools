@@ -1966,14 +1966,62 @@ def main():
                                  "language": "python",
                                  "code": "print('x')"}, calls
                 assert "追加到 2 个节点" in wcb.status.text()
+                # 应用成功 → 状态栏绿色脉冲动画在跑（2026-10 用户指定）
+                assert getattr(wcb, "_status_flash_anim", None) is not None \
+                    and wcb._status_flash_anim.state() \
+                    == QtCore.QAbstractAnimation.Running, \
+                    "应用成功后状态栏应闪烁"
                 # 无选中：不触 append，状态栏引导
                 with patch.object(rl_browser.store, "selected_nodes",
                                   return_value=[]), \
                      patch.object(rl_browser.codeblock, "append_to_nodes",
                                   side_effect=_fake_append) as m_ap:
+                    if getattr(wcb, "_status_flash_anim", None) is not None:
+                        wcb._status_flash_anim.stop()   # 隔离上一次闪烁
                     wcb._apply_recipe(wcb._info_by_name["smoke_py"])
                 assert m_ap.call_count == 0
                 assert "选中" in wcb.status.text()
+                # 全失败不闪（动画未启动或已停）
+                anim = getattr(wcb, "_status_flash_anim", None)
+                assert anim is None or anim.state() \
+                    != QtCore.QAbstractAnimation.Running
+                # 入口层同配方去重（0.75s 窗口，2026-10 用户反馈"闪完再
+                # 快速闪一下"= 同卡第二发漏进来）：窗口内重复双击只应用
+                # 一次；不同配方不受限；失败不占闸
+                wcb._last_apply = None
+                with patch.object(rl_browser.store, "selected_nodes",
+                                  return_value=["/obj/n1"]), \
+                     patch.object(rl_browser.codeblock, "append_to_nodes",
+                                  side_effect=_fake_append) as m_gate:
+                    wcb._on_double_click(wcb.list.item(0))
+                    wcb._on_double_click(wcb.list.item(0))
+                assert m_gate.call_count == 1, m_gate.call_count
+                with patch.object(rl_browser.store, "selected_nodes",
+                                  return_value=["/obj/n1"]), \
+                     patch.object(rl_browser.codeblock, "append_to_nodes",
+                                  side_effect=_fake_append) as m_gate2:
+                    wcb._on_double_click(wcb.list.item(1))
+                assert m_gate2.call_count == 1, m_gate2.call_count
+                # 失败不占闸：gate 层直接抛异常 → 时间戳回滚 → 立即重试放行
+                # （_apply_recipe 内部吞异常，须在 gate 层直接验证回滚）
+                wcb._last_apply = None
+
+                def _boom():
+                    raise RuntimeError("boom")
+
+                try:
+                    wcb._apply_gated(
+                        wcb._info_by_name["smoke_py"], _boom)
+                except RuntimeError:
+                    pass
+                else:
+                    raise AssertionError("异常应原样抛出")
+                with patch.object(rl_browser.store, "selected_nodes",
+                                  return_value=["/obj/n1"]), \
+                     patch.object(rl_browser.codeblock, "append_to_nodes",
+                                  side_effect=_fake_append) as m_retry:
+                    wcb._on_double_click(wcb.list.item(0))
+                assert m_retry.call_count == 1, m_retry.call_count
                 # 空白数据区右键：菜单 = 新建代码块
                 def _exec_new_menu(menu, *_a, **_k):
                     texts = [a.text() for a in menu.actions()]

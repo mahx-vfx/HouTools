@@ -2314,10 +2314,69 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
     # ---------------- 应用（双击 / 按钮） ----------------
 
+    def _status_success(self, text):
+        """成功反馈：状态栏文本 + 绿色高亮闪烁一下（2026-10 用户指定，
+        双击/拖拽应用成功时一眼可见）。失败路径不闪，保持纯文字。"""
+        self.status.setText(text)
+        self._flash_status_bar()
+
+    def _flash_status_bar(self, color="#3aa655", duration_ms=900):
+        """状态栏背景脉冲：关键帧 0→峰值→0（快速亮起再衰减淡出），
+        QVariantAnimation 驱动（走事件循环，无定时器）；重复触发直接
+        重启当前动画，不叠加。动画对象挂在窗口上，随窗口销毁。"""
+        anim = getattr(self, "_status_flash_anim", None)
+        if anim is None:
+            anim = QtCore.QVariantAnimation(self)
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.setKeyValues([(0.0, 0.0), (0.12, 1.0), (1.0, 0.0)])
+            anim.valueChanged.connect(self._on_status_flash)
+            anim.finished.connect(self._on_status_flash_finished)
+            self._status_flash_anim = anim
+        anim.stop()
+        self._flash_color = QtGui.QColor(color)
+        anim.setDuration(duration_ms)
+        anim.start()
+
+    def _on_status_flash(self, value):
+        c = getattr(self, "_flash_color", None) \
+            or QtGui.QColor("#3aa655")
+        alpha = int(200 * float(value))
+        self.status.setStyleSheet(
+            "QLabel#statusLabel {{ background-color: rgba({}, {}, {}, {});"
+            " border-radius: 4px; color: #ffffff; }}".format(
+                c.red(), c.green(), c.blue(), alpha))
+
+    def _on_status_flash_finished(self):
+        self.status.setStyleSheet("")   # 回落到窗口级样式（灰字无底色）
+
+    # 同一配方重复应用去重窗口（秒）：双击序列偶尔会漏进第二发（拖拽
+    # 落网后紧跟的平台级 DblClick、事件循环重入等），表现为状态栏连闪
+    # 两次 + 节点/代码重复创建；窗口略大于系统双击间隔（~500ms）
+    APPLY_DEDUP_WINDOW = 0.75
+
+    def _apply_gated(self, info, apply_fn):
+        """入口层同配方去重：窗口内的重复应用直接吞掉（不刷时间戳，让
+        下一次真正点击在窗口期满后正常触发）。gate 在用户入口层，
+        _apply_recipe 保持纯净（smoke test 直接调它）。应用抛异常时
+        回滚时间戳——失败不占闸，修正层级后可立即重试。"""
+        now = time.monotonic()
+        last = getattr(self, "_last_apply", None)
+        if last is not None and last[0] == info.name \
+                and now - last[1] < self.APPLY_DEDUP_WINDOW:
+            return False
+        self._last_apply = (info.name, now)
+        try:
+            apply_fn()
+        except Exception:
+            self._last_apply = last
+            raise
+        return True
+
     def _on_double_click(self, item):
         info = self._info_by_name.get(item.data(QtCore.Qt.UserRole))
         if info is not None:
-            self._apply_recipe(info)
+            self._apply_gated(info, lambda: self._apply_recipe(info))
 
     def _apply_recipe(self, info):
         """按类型分发应用；错误进状态栏不打断窗口。
@@ -2346,7 +2405,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 if skipped:
                     msg += "；跳过 {} 个（{}）".format(len(skipped),
                                                       skipped[0])
-                self.status.setText(msg)
+                if appended:
+                    self._status_success(msg)   # 全部/部分成功都闪烁
+                else:
+                    self.status.setText(msg)   # 全失败不闪
                 if not appended:
                     _push_houdini_error(msg)
             elif info.category == "tool":
@@ -2355,7 +2417,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     self.status.setText("找不到网络编辑器面板，请先打开一个网络视图")
                     return
                 store.apply_tool_recipe(info.name, pane=editor, mode="shelf")
-                self.status.setText("已把「{}」创建到当前网络".format(
+                self._status_success("已把「{}」创建到当前网络".format(
                     info.display_label))
             elif info.category == "node":
                 nodes = store.selected_nodes()
@@ -2363,21 +2425,21 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     self.status.setText("Node 预设：请先在场景中选中目标节点")
                     return
                 store.apply_node_preset(info.name, nodes[0])
-                self.status.setText("已把预设应用到 {}".format(nodes[0].path()))
+                self._status_success("已把预设应用到 {}".format(nodes[0].path()))
             elif info.category == "parm":
                 nodes = store.selected_nodes()
                 if not nodes:
                     self.status.setText("参数预设：请先在场景中选中目标节点")
                     return
                 store.apply_parm_preset(info.name, nodes[0])
-                self.status.setText("已把参数预设应用到 {}".format(nodes[0].path()))
+                self._status_success("已把参数预设应用到 {}".format(nodes[0].path()))
             elif info.category == "decoration":
                 nodes = store.selected_nodes()
                 if not nodes:
                     self.status.setText("Decoration：请先选中中心节点")
                     return
                 store.apply_decoration(info.name, nodes[0])
-                self.status.setText("已把装饰应用到 {}".format(nodes[0].path()))
+                self._status_success("已把装饰应用到 {}".format(nodes[0].path()))
             else:
                 self.status.setText(
                     "类型 {} 暂不支持面板内应用，请用官方菜单".format(info.category))
@@ -2455,11 +2517,14 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             position = pane.cursorPosition()
         except Exception as exc:
             log.debug("cursorPosition failed, fallback to apply default: %s", exc)
-        try:
+        def _do_apply():
             store.apply_tool_recipe(info.name, pane=pane, position=position,
                                     mode="drag")
-            self.status.setText("已在当前网络中创建 {}".format(
-                self._display_label(info)))
+
+        try:
+            if self._apply_gated(info, _do_apply):
+                self._status_success("已在当前网络中创建 {}".format(
+                    self._display_label(info)))
         except store.ContextMismatch as exc:
             # 预期内的操作反馈（层级点错）：红字提示即可，控制台保持安静
             self.status.setText(str(exc))
