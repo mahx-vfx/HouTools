@@ -2889,8 +2889,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
     def _edit_tags(self, info=None):
         """「标签设置」弹窗：确认后才写入（展示区保持只读）。
 
-        info 缺省取当前选中（标签栏右键入口）；卡片右键必须传命中
-        卡片的 info——右键不改选中，取 current 会改到别的配方。"""
+        info 缺省取当前选中（标签栏右键入口）；卡片右键传命中卡片的
+        info（双保险：网格右键的 Qt 原生行为是先改选中再弹菜单——用户
+        期望保留，正常时两者一致，写入目标不依赖该时序）。"""
         if info is None:
             info = self._selected_info()
         if info is None:

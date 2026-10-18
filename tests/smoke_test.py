@@ -1399,8 +1399,11 @@ def main():
                     win._rename_selected()
                 assert rl_meta.get_display_name("houtools::light::b") == ""
                 assert win.preview_name.text() == "Light B"
-                # 卡片右键「标签设置」（2026-10 新增入口）：必须写进命中
-                # 卡片的元数据——右键不改选中，不能落到 current 上
+                # 卡片右键「标签设置」（2026-10 新增入口）：写入目标以
+                # 命中卡片的 info 为准，不依赖"右键先改选中"的时序——
+                # 网格右键的 Qt 原生行为会顺带改选中（用户期望保留）。
+                # 这里故意让选中（row 0）与命中卡（light::b）不一致，
+                # 固化"按命中卡写入"的语义
                 win.list.setCurrentRow(0)   # 选中 pyro::a
                 with patch("houtools.recipelib.browser._PromptDialog.exec_",
                            return_value=QtWidgets.QDialog.Accepted), \
