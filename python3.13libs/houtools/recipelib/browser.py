@@ -32,8 +32,8 @@ from houtools.recipelib.docs import DocEditorDialog, MarkdownMediaView, MediaDia
 from houtools.ui import fonts as tool_fonts
 from houtools.ui.sidebar import (SIDEBAR_COLOR_ROLE, SIDEBAR_COUNT_ROLE,
                                  SIDEBAR_HEADER_ROLE, SIDEBAR_ICON_ROLE,
-                                 SidebarDelegate, readable_on_dark,
-                                 sidebar_icon_pixmap)
+                                 TOOLBOX_ICON_BOOST, SidebarDelegate,
+                                 readable_on_dark, sidebar_icon_pixmap)
 from houtools.ui.badge import FavoriteBadge
 from houtools.ui.dialogs import info, localize_buttons, localize_color_dialog, warn
 from houtools.ui.taskbar import apply_appwindow_flags
@@ -350,9 +350,9 @@ _UI_SETTINGS = JsonStore("recipelib_ui.json", defaults={
 
 # 显示开关定义（key / 按钮文字 / 图标种类）：顺序即侧栏按钮条排列序；
 # 「参数」是「节点参数」的缩写（用户指定），图标与对应侧栏行同款——
-# 工具用子菜单选项的文件夹图标
+# 工具用工具箱 SVG（icons/toolbox.svg，2026-10 用户定稿 D1 配色）
 _TYPE_TOGGLES = (
-    ("show_tools", "工具", "folder"),
+    ("show_tools", "工具", "toolbox"),
     ("show_code", "代码块", "code"),
     ("show_nodeparm", "参数", "sliders"),
 )
@@ -1188,9 +1188,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self.sidebar.collapsed.connect(self._on_section_toggle)
 
         # ---- 侧栏顶部：三个显示开关（工具/代码块/参数，2026-10 用户指定）----
-        # 并排横排在「全部」分组上方，图标与对应侧栏行同款（工具用子菜单
-        # 选项的文件夹图标）；开启显示对应卡片、关闭隐藏，默认全开，状态
-        # 存 _UI_SETTINGS 持久化。计数与网格都按开关过滤（_type_visible）
+        # 并排横排在「全部」分组上方，图标与对应侧栏行同款（工具=工具箱
+        # SVG，见 _TYPE_TOGGLES）；开启显示对应卡片、关闭隐藏，默认全开，
+        # 状态存 _UI_SETTINGS 持久化。计数与网格都按开关过滤（_type_visible）
         self.type_toggles = {}
         strip = QtWidgets.QWidget()
         strip.setObjectName("sidebarToggleStrip")
@@ -1207,7 +1207,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             btn.setFocusPolicy(QtCore.Qt.NoFocus)   # 不抢侧栏的键盘焦点
             btn.setToolTip("显示/隐藏「{}」类型的卡片".format(
                 "节点参数" if key == "show_nodeparm" else label))
-            btn.setIconSize(QtCore.QSize(12, 12))
+            icon_px = 12 + (TOOLBOX_ICON_BOOST if kind == "toolbox" else 0)
+            btn.setProperty("ht_icon_px", icon_px)
+            btn.setIconSize(QtCore.QSize(icon_px, icon_px))
             self._refresh_toggle_icon(btn)
             btn.toggled.connect(
                 lambda on, k=key: self._on_type_toggle(k, on))
@@ -1501,11 +1503,13 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
     def _refresh_toggle_icon(self, btn):
         """开关按钮图标随开关态着色：开启用侧栏行同款本色，关闭整体
-        调暗（sidebar_icon_pixmap 的 tint，缓存按 tint 分键不互踩）。"""
+        调暗（sidebar_icon_pixmap 的 tint，缓存按 tint 分键不互踩）。
+        尺寸取建按钮时记下的 ht_icon_px（toolbox 比其他种类大 2px）。"""
         kind = btn.property("ht_icon_kind")
+        px = btn.property("ht_icon_px") or 12
         tint = None if btn.isChecked() else "#6f6f78"
         btn.setIcon(QtGui.QIcon(sidebar_icon_pixmap(
-            kind, 12, btn.devicePixelRatioF(), tint=tint)))
+            kind, px, btn.devicePixelRatioF(), tint=tint)))
 
     def _on_type_toggle(self, key, on):
         """侧栏顶部显示开关切换：落盘 + 轻量重建侧栏与网格（只改显示
@@ -1749,7 +1753,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             grp = _add(None, "子菜单", len(cat_counts), KEY_GRP_HDR,
                        header=True)
             for sub in sorted(cat_counts, key=str.lower):
-                _add(grp, sub, cat_counts[sub], CAT_PREFIX + sub, "folder")
+                _add(grp, sub, cat_counts[sub], CAT_PREFIX + sub, "toolbox")
             grp.setExpanded(bool(_UI_SETTINGS.get("grp_expanded")))
         if tag_counts:
             tag = _add(None, "标签", len(tag_counts), KEY_TAG_HDR, header=True)

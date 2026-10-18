@@ -1,8 +1,10 @@
 """侧栏行绘制共享组件（Recipe Library / HDR Library 分类板块同款）。
 
 行结构：行首图标 + 名称 + 右对齐计数；选中行蓝底圆角高亮；树形视图的
-段头行带折叠箭头（收拢态整行调暗）。图标为 QPainter 手绘的扁平线稿
-（grid/star/folder/tag/level/sliders/code），按 (种类, 尺寸, DPR) 缓存。
+段头行带折叠箭头（收拢态整行调暗）。图标默认 QPainter 手绘的扁平线稿
+（grid/star/folder/tag/level/sliders/code），toolbox 为矢量文件渲染
+（icons/toolbox.svg，QSvgRenderer，同 favorite_badge 先例），按
+(种类, 尺寸, DPR, tint) 缓存。
 
 数据协议（条目经 ItemRole 携带，QListWidget / QTreeWidget 通用）：
 - SIDEBAR_HEADER_ROLE（bool）：段头行（画折叠箭头；不可选中由条目 flags 保证）
@@ -13,6 +15,7 @@
 """
 
 import math
+import re
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -31,6 +34,79 @@ _FAV_SVG_PATH = (Path(__file__).resolve().parent.parent / "icons"
                  / "favorite_badge.svg")
 _FAV_SVG_RENDERER = False   # False=未初始化；None=不可用
 _SIDEBAR_ICON_CACHE = {}    # (kind, size, dpr, tint) -> QPixmap
+
+# 工具箱图标（用户矢量图定稿 D1 配色，去 iconfont 装饰圆）；渲染器按
+# tint 缓存（tint 语义 = 全部 fill 替换成单色，开关关闭态整体调暗）
+_TOOLBOX_SVG_PATH = (Path(__file__).resolve().parent.parent / "icons"
+                     / "toolbox.svg")
+_TOOLBOX_SVG_TEXT = None        # False=不可用；str=文件文本
+_TOOLBOX_SVG_RENDERERS = {}     # tint("")=本色 -> QSvgRenderer
+# 内容实际占 1024 画布的 x 78.9..926.3 / y 126.2..886.2（四边留白约
+# 13%），直接整画布渲染进 14px 格子只有 ~11.6px——viewBox 裁到内容
+# 外扩 6 单位，工具箱铺满格子（与线稿图标的视觉尺寸拉平）
+_TOOLBOX_VIEWBOX = QtCore.QRectF(72.0, 120.0, 861.0, 772.0)
+# 工具箱是实心填充图形、细节碎，同 px 下比线稿显小：行/开关渲染再
+# 放大 2px（2026-10 用户反馈"图标小了看不清"）
+TOOLBOX_ICON_BOOST = 2
+
+
+def _toolbox_svg_text():
+    """工具箱 SVG 文本；文件缺失/读失败返回 False（降级 folder 线稿）。"""
+    global _TOOLBOX_SVG_TEXT
+    if _TOOLBOX_SVG_TEXT is None:
+        try:
+            text = _TOOLBOX_SVG_PATH.read_text(encoding="utf-8")
+            _TOOLBOX_SVG_TEXT = text if text.strip() else False
+        except OSError as exc:
+            log.warning("toolbox svg unreadable: %s", exc)
+            _TOOLBOX_SVG_TEXT = False
+    return _TOOLBOX_SVG_TEXT
+
+
+def _toolbox_renderer(tint):
+    """tint 键控的 QSvgRenderer；QtSvg/文件不可用返回 None。"""
+    try:
+        from PySide6 import QtSvg
+    except ImportError:
+        log.warning("QtSvg unavailable, toolbox icon falls back to folder")
+        return None
+    key = tint or ""
+    renderer = _TOOLBOX_SVG_RENDERERS.get(key)
+    if renderer is None:
+        text = _toolbox_svg_text()
+        if not text:
+            return None
+        if tint:
+            text = re.sub(r'fill="#[0-9A-Fa-f]{6}"', 'fill="%s"' % tint,
+                          text)
+        candidate = QtSvg.QSvgRenderer(
+            QtCore.QByteArray(text.encode("utf-8")))
+        if not candidate.isValid():
+            log.warning("toolbox svg invalid: %s", _TOOLBOX_SVG_PATH)
+            return None
+        candidate.setViewBox(_TOOLBOX_VIEWBOX)   # 裁掉画布留白
+        _TOOLBOX_SVG_RENDERERS[key] = renderer = candidate
+    return renderer
+
+
+def _draw_folder_icon(p, color):
+    """folder 线稿（子菜单分类行；toolbox 的降级 fallback 同用）。"""
+    path = QtGui.QPainterPath()
+    path.moveTo(1.5, 11.0)
+    path.lineTo(1.5, 4.2)
+    path.quadTo(1.5, 3.2, 2.5, 3.2)
+    path.lineTo(4.8, 3.2)
+    path.quadTo(5.7, 3.2, 6.2, 3.9)
+    path.lineTo(7.1, 5.0)
+    path.lineTo(11.5, 5.0)
+    path.quadTo(12.5, 5.0, 12.5, 6.0)
+    path.lineTo(12.5, 11.0)
+    path.quadTo(12.5, 12.0, 11.5, 12.0)
+    path.lineTo(2.5, 12.0)
+    path.quadTo(1.5, 12.0, 1.5, 11.0)
+    pen = QtGui.QPen(QtGui.QColor(color), 1.2)
+    pen.setJoinStyle(QtCore.Qt.RoundJoin)
+    p.strokePath(path, pen)
 
 
 def readable_on_dark(color):
@@ -95,22 +171,15 @@ def sidebar_icon_pixmap(kind, size, dpr, tint=None):
             for gy in (1.0, 8.0):
                 p.drawRoundedRect(QtCore.QRectF(gx, gy, 5.0, 5.0), 1.2, 1.2)
     elif kind == "folder":
-        path = QtGui.QPainterPath()
-        path.moveTo(1.5, 11.0)
-        path.lineTo(1.5, 4.2)
-        path.quadTo(1.5, 3.2, 2.5, 3.2)
-        path.lineTo(4.8, 3.2)
-        path.quadTo(5.7, 3.2, 6.2, 3.9)
-        path.lineTo(7.1, 5.0)
-        path.lineTo(11.5, 5.0)
-        path.quadTo(12.5, 5.0, 12.5, 6.0)
-        path.lineTo(12.5, 11.0)
-        path.quadTo(12.5, 12.0, 11.5, 12.0)
-        path.lineTo(2.5, 12.0)
-        path.quadTo(1.5, 12.0, 1.5, 11.0)
-        pen = QtGui.QPen(QtGui.QColor(color), 1.2)
-        pen.setJoinStyle(QtCore.Qt.RoundJoin)
-        p.strokePath(path, pen)
+        _draw_folder_icon(p, color)
+    elif kind == "toolbox":
+        # 工具箱矢量图（QSvgRenderer 直渲染，随 viewBox 缩放无损）；
+        # QtSvg/文件缺失时降级 folder 线稿，不空手
+        renderer = _toolbox_renderer(tint)
+        if renderer is not None:
+            renderer.render(p, QtCore.QRectF(0, 0, 14, 14))
+        else:
+            _draw_folder_icon(p, color)
     elif kind == "sliders":
         # 参数滑块：两行滑轨，左端实心方点 + 滑轨 + 错位的空心方滑块
         # （节点参数语义，参考用户提供的参考图）
@@ -285,11 +354,15 @@ class SidebarDelegate(QtWidgets.QStyledItemDelegate):
         if kind:
             widget = option.widget
             dpr = widget.devicePixelRatioF() if widget is not None else 1.0
-            pm = sidebar_icon_pixmap(kind, self.ICON_PX, dpr, tint=color_hint)
+            # toolbox 实心图形显小，渲染放大 2px（TOOLBOX_ICON_BOOST），
+            # 占位与推进量同步用实际尺寸，防 16px 图标压住文字
+            icon_px = self.ICON_PX + (TOOLBOX_ICON_BOOST
+                                      if kind == "toolbox" else 0)
+            pm = sidebar_icon_pixmap(kind, icon_px, dpr, tint=color_hint)
             painter.drawPixmap(
                 int(round(x)),
-                int(round(rect.center().y() - self.ICON_PX / 2)), pm)
-            x += self.ICON_PX + self.GAP_ICON
+                int(round(rect.center().y() - icon_px / 2)), pm)
+            x += icon_px + self.GAP_ICON
 
         count_text = "" if count is None else str(count)
         count_w = fm.horizontalAdvance(count_text)

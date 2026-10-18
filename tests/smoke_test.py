@@ -1254,6 +1254,11 @@ def main():
                               if k and k.startswith("cat::")
                               and k != "cat::") \
                     == ["cat::HouTools", "cat::Lighting"], keys
+                # 子菜单子行图标 = 工具箱 SVG（2026-10 用户定稿 D1 配色）
+                sub_item = win._find_key_item("cat::HouTools")
+                assert sub_item is not None
+                assert sub_item.data(0, rl_browser.SIDEBAR_ICON_ROLE) \
+                    == "toolbox"
                 # 分类过滤
                 win._select_category("cat::Lighting")
                 assert win.list.count() == 1
@@ -1323,6 +1328,21 @@ def main():
                 assert win.list.count() == 3, win.list.count()
                 assert all(btn.isChecked()
                            for btn in win.type_toggles.values())
+                # 「工具」开关用 toolbox 图标种类；SVG 渲染非空且含橙色
+                # 填充（#F88E20——QtSvg/文件缺失会回退 folder 灰线稿，
+                # 该断言兜住"降级被当成功"）；tint 版（关闭态）同样可用
+                assert rl_browser._TYPE_TOGGLES[0][2] == "toolbox"
+                pm_tb = rl_browser.sidebar_icon_pixmap("toolbox", 14, 1.0)
+                assert not pm_tb.isNull() and pm_tb.width() == 14
+                img = pm_tb.toImage()
+                has_orange = any(
+                    (lambda c: c.red() > 200 and 100 < c.green() < 190
+                     and c.blue() < 90)(img.pixelColor(x, y))
+                    for y in range(img.height())
+                    for x in range(img.width()))
+                assert has_orange, "toolbox 图标应含 SVG 橙色填充"
+                assert not rl_browser.sidebar_icon_pixmap(
+                    "toolbox", 12, 1.0, tint="#6f6f78").isNull()
                 win.type_toggles["show_nodeparm"].setChecked(False)
                 assert win.list.count() == 2, win.list.count()
                 names = {win.list.item(i).data(QtCore.Qt.UserRole)
