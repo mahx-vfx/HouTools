@@ -1850,6 +1850,16 @@ def main():
                 # 搜索框右键不弹 Qt 标准菜单（NoContextMenu，2026-10 用户指定）
                 assert wcb.search.contextMenuPolicy() \
                     == _qtc.Qt.NoContextMenu
+                # 侧栏容器限宽（min/max 挂 side_panel——分割器只认直接
+                # 子项的约束）+ 开关按钮悬停高亮（刷新/设置同款 QSS）
+                container = wcb.sidebar.parentWidget()
+                assert container.maximumWidth() == 280, \
+                    container.maximumWidth()
+                assert container.minimumWidth() == 150
+                ss = wcb.styleSheet()
+                assert "QPushButton#sidebarToggleBtn:hover" in ss \
+                    and "QPushButton#sidebarToggleBtn:checked:hover" in ss, \
+                    "开关悬停高亮规则（刷新/设置同款）须在样式表里"
                 # 「代码块」开关：关闭后代码卡片隐藏（KEY_CODE 行计 0 但
                 # 行保留恒显），重开恢复；状态随开关落盘
                 wcb.type_toggles["show_code"].setChecked(False)

@@ -1055,18 +1055,28 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         /* 侧栏树：比面板标准底色亮一档（用户指定），文字 delegate 加粗提亮 */
         QTreeWidget#sidebarTree { background-color: #26262b; }
         /* 侧栏顶部三个显示开关（工具/代码块/参数）：与侧栏同底色；
-           关闭态文字调暗（同段头收拢态的调暗约定），开启态蓝底白字 */
+           关闭态文字调暗（同段头收拢态的调暗约定），开启态蓝底白字。
+           :hover 与 :checked 特异性相同、后写者胜——规则顺序即语义：
+           基础 → !checked → hover → checked → checked:hover */
         QWidget#sidebarToggleStrip { background-color: #26262b; }
         QPushButton#sidebarToggleBtn {
             background-color: #2d2d32; border: 1px solid #3a3a41;
             border-radius: 4px; padding: 2px 4px; color: #d8d8de;
         }
-        QPushButton#sidebarToggleBtn:hover { border-color: #0d6399; }
+        QPushButton#sidebarToggleBtn:!checked { color: #8f8f97; }
+        /* 悬停高亮 = 刷新/设置同款（背景提亮 + 蓝描边） */
+        QPushButton#sidebarToggleBtn:hover {
+            background-color: #3d3d3d; border-color: #0d6399;
+            color: #e8e8ee;
+        }
         QPushButton#sidebarToggleBtn:checked {
             background-color: rgba(13, 99, 153, 110);
             border-color: #2e7cb8; color: #ffffff;
         }
-        QPushButton#sidebarToggleBtn:!checked { color: #8f8f97; }
+        QPushButton#sidebarToggleBtn:checked:hover {
+            background-color: rgba(13, 99, 153, 150);
+            border-color: #0d6399;
+        }
         QListWidget::item { color: #bbbbbb; }
         QListWidget::item:selected { background-color: #0d6399; }
         QLineEdit {
@@ -1204,13 +1214,18 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             toggle_lay.addWidget(btn, 1)
             self.type_toggles[key] = btn
 
-        # 侧栏 = 开关条 + 树（同一个分割格子；树属性/宽度约束不变）
+        # 侧栏 = 开关条 + 树（同一个分割格子；树属性不变）
         side_panel = QtWidgets.QWidget()
         side_lay = QtWidgets.QVBoxLayout(side_panel)
         side_lay.setContentsMargins(0, 0, 0, 0)
         side_lay.setSpacing(0)
         side_lay.addWidget(strip)
         side_lay.addWidget(self.sidebar, 1)
+        # 宽度约束必须挂 side_panel（分割器的直接子项）：QSplitter 只认
+        # 子项自身的 min/max，树上的旧约束管不住容器——不挂则拖宽分割
+        # 条时开关条与树脱宽、左栏无限变宽（2026-10 用户反馈）
+        side_panel.setMinimumWidth(self.sidebar.minimumWidth())
+        side_panel.setMaximumWidth(self.sidebar.maximumWidth())
 
         # ---- 中部网格 ----
         self.list = _Grid()
