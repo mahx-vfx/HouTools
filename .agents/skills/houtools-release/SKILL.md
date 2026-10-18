@@ -101,8 +101,10 @@ description: HouTools 发版流程（版本号更新、README/About 手册同步
 - 自带验证：zip 完整性、`v<版本号>` 已带入 index.html、`__init__.py` 版本已更新、
   无缓存/开发文件混入。dry-run 加 `--out <路径>`，避免覆盖真包。
 
-汇报时提一句：按"仅必要文件"原则 LICENSE 不入包，About 页脚 GPL 链接
-（`../LICENSE`）在 zip 安装环境下失效——用户已接受此取舍（2026-10-14）。
+汇报时提一句：按"仅必要文件"原则 LICENSE 不入包。About 页脚 GPL 链接自
+v1.6.0（da078d0，2026-10-15）起已是外链（jxself.org 官方中文翻译页），
+zip 安装环境下可正常打开，不存在失效问题——早期"`../LICENSE` 相对链接
+失效"的取舍说明随之作废（2026-10-18 核实）。
 
 ## 5. 读上一版发行信息（gitcode MCP）
 
