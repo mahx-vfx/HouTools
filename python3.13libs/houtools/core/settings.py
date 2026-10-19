@@ -28,6 +28,10 @@ class JsonStore:
 
     def load(self):
         with self._lock:
+            # OSError 分支（text=None 跳过解析块）也要有值可合并：漏初始化
+            # 会让 UnboundLocalError 在 import 期炸掉 metadata/hdrlight 等
+            # 模块级 JsonStore（整个工具不可用）
+            on_disk = {}
             if self.path.exists():
                 try:
                     text = self.path.read_text(encoding="utf-8")
@@ -49,8 +53,6 @@ class JsonStore:
                         log.warning("cannot read %s: %s", self.path, exc)
                         self._backup_corrupt()
                         on_disk = {}
-            else:
-                on_disk = {}
             merged = dict(self._defaults)
             merged.update(on_disk)
             self._data = merged
