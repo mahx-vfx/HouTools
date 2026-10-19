@@ -31,10 +31,12 @@ VIDEO_EXTENSIONS = [
     ".webm", ".m4v", ".mpg", ".mpeg", ".3gp", ".ts",
 ]
 
-# 输出前缀禁止的字符：Windows 文件名非法字符（含路径分隔符与盘符冒号）。
+# 输出前缀禁止的字符：Windows 文件名非法字符（含路径分隔符与盘符冒号），
+# 外加 %——ffmpeg image2 把整个输出路径当 printf 模板，前缀里的 % 会与
+# 工具自拼的 ".%0Nd.jpg" 模式互相干扰，产出文件名全错且不匹配清理正则。
 # 前缀始终拼接 ".%0Nd.jpg" 后缀，单独的 ".." 无害，能把序列写出输出
 # 目录的只有分隔符/盘符这类字符
-_PREFIX_INVALID_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_PREFIX_INVALID_RE = re.compile(r'[<>:"/\\|?*%\x00-\x1f]')
 
 
 def prefix_error(prefix: str) -> str:
@@ -47,6 +49,8 @@ def prefix_error(prefix: str) -> str:
         return "前缀不能包含路径分隔符（/ 或 \\），否则序列会写到输出目录之外"
     if ch == ":":
         return "前缀不能包含冒号（Windows 保留字符）"
+    if ch == "%":
+        return "前缀不能包含 %（ffmpeg 会把输出路径当 printf 模板二次解释）"
     return f"前缀包含 Windows 文件名非法字符：{ch!r}"
 
 
@@ -74,6 +78,15 @@ RESOLUTION_PRESETS = [
     (3840, 2160),
     (4096, 2160),
 ]
+
+# 运行中的探测/提取 worker 的进程级保留引用。必须活过 Reload：关闭路径
+# 会把窗口 deleteLater，实例属性随之失去引用根，运行中的 QThread 被 GC
+# 析构即 Qt6 qFatal（同 window_manager._closing / automation
+# _LIVE_ENGINES 的守卫语义）。worker 的内建 finished 到达后自动移出。
+try:
+    _LIVE_WORKERS
+except NameError:
+    _LIVE_WORKERS = set()
 
 
 # ─── Styles ──────────────────────────────────────────────────────────
@@ -481,10 +494,12 @@ class _ProbeWorker(QThread):
             cmd, capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=300, **startup
         )
-        # 尝试从 stderr 中解析 frame 数
-        frame_match = re.search(r"frame=\s*(\d+)", result.stderr)
-        if frame_match:
-            info.total_frames = int(frame_match.group(1))
+        # text=True 已把进度行的 \r 转成 \n：stderr 是几十上百条 frame=
+        # 进度行，search 命中的是解码刚起步的第一条（总帧数严重偏小、
+        # 进度条到不了 100%），必须取最后一条
+        frames = re.findall(r"frame=\s*(\d+)", result.stderr)
+        if frames:
+            info.total_frames = int(frames[-1])
 
 
 class _ExtractWorker(QThread):
@@ -794,7 +809,6 @@ class _VideoToSequenceWindow(QDialog):
         self._extract_worker = None
         self._pending_close = False
         self._close_poll = None
-        self._retired_workers = set()   # 运行中旧 worker 的引用位，防 GC 析构
         self._video_info = None
         self._current_video_path = ""
 
@@ -1098,12 +1112,24 @@ class _VideoToSequenceWindow(QDialog):
         self._video_info = None
         self._path_edit.setText(filepath)  # textChanged: text==loaded → no-op
         video_name = os.path.splitext(os.path.basename(filepath))[0]
+        # 文件名主干滤掉 $ 与 %：目录名随后会被 hou.text.expandString 二次
+        # 展开（$F4 → 当前帧号），% 会与输出文件名的 printf 模式互相干扰
+        # ——两者都合法于 Windows 文件名，用户视角完全无感知，但落盘目录
+        # 与 vm_background 快照路径会永久失配
+        video_name = re.sub(r"[$%]", "_", video_name)
         self._output_dir_edit.setText(f"$HIP/images/{video_name}/")
         self._update_output_preview()
         self._probe_video(filepath)
 
     def _reset_video_state(self):
         """清空已加载的视频状态（路径框被手动清空时也走这里）。"""
+        if self._probe_worker is not None and self._probe_worker.isRunning():
+            # 不取消会留下孤儿探测（串行跑完最长 450s 的子进程链），期间
+            # 关窗还落入线程析构路径——取消并退休，迟到的结果由槽内
+            # sender 过滤丢弃
+            self._probe_worker.cancel()
+            self._retire_worker(self._probe_worker)
+            self._probe_worker = None
         self._current_video_path = ""
         self._video_info = None
         self._status_label.setText("")
@@ -1648,13 +1674,15 @@ class _VideoToSequenceWindow(QDialog):
         """给仍在运行的旧 worker 保引用，直到其线程真正退出。
 
         引用一旦无人持有，Python 回收会析构运行中的 QThread（Qt6 下
-        qFatal 崩溃）；worker 的内建 finished 到达后自动移出保留列表。
+        qFatal 崩溃）。保留集合在模块级（_LIVE_WORKERS）：Reload 关闭
+        路径会把本窗口 deleteLater，实例属性保不住引用——必须活过
+        Reload。worker 的内建 finished 到达后自动移出保留集合。
         """
-        if worker is None or worker in self._retired_workers:
+        if worker is None or worker in _LIVE_WORKERS:
             return
-        self._retired_workers.add(worker)
+        _LIVE_WORKERS.add(worker)
         worker.finished.connect(
-            lambda w=worker: self._retired_workers.discard(w))
+            lambda w=worker: _LIVE_WORKERS.discard(w))
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -1681,8 +1709,11 @@ class _VideoToSequenceWindow(QDialog):
         if self._probe_worker and self._probe_worker.isRunning():
             # 置取消但不等待：探测线程阻塞在不可中断的子进程上，wait 必然
             # 白等（最长可达 ffprobe 30s + ffmpeg 计数 300s）；其迟到信号
-            # 由槽内 sender 过滤或随窗口销毁被 Qt 丢弃
+            # 由槽内 sender 过滤或随窗口销毁被 Qt 丢弃。retire 进模块级
+            # 集合：窗口随后被 Reload 的 close_all deleteLater，运行中的
+            # 探测线程只靠它保引用，漏掉必被 GC 析构（Qt6 qFatal）
             self._probe_worker.cancel()
+            self._retire_worker(self._probe_worker)
         if self._extract_worker and self._extract_worker.isRunning():
             if self._pending_close:
                 # 已处于延迟关闭中（隐藏窗口再被 close_all 触发）：

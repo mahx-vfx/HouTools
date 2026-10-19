@@ -346,28 +346,41 @@ def _thumb_valid(thumb, hdr):
         return False
 
 
+def _scan_entries(lib_dir):
+    """单次遍历库目录 → [(hdr_path, category, thumb_path)]（thumb 不做
+    有效性判断）。
+
+    scan_hdrs 与刷新侧的缓存清理共用同一次遍历——各自独立 os.walk 会让
+    同一棵目录树在一轮刷新里走两遍，大库/网络盘上这是刷新成本的大头。
+    """
+    return [(p, category, thumb_path(lib_dir, p))
+            for p, category in _iter_hdrs(lib_dir)]
+
+
 def scan_hdrs(lib_dir):
     """递归扫描 HDR 库目录，返回 [(hdr_path, category, thumb_path_or_None), ...]。"""
-    results = []
-    for p, category in _iter_hdrs(lib_dir):
-        tp = thumb_path(lib_dir, p)
-        results.append((p, category, tp if _thumb_valid(tp, p) else None))
-    return results
+    return [(p, category, tp if _thumb_valid(tp, p) else None)
+            for p, category, tp in _scan_entries(lib_dir)]
 
 
-def clean_stale_thumbs(lib_dir):
+def clean_stale_thumbs(lib_dir, expected_names=None):
     """删除已无对应 HDR 的残留缩略图（含历史 .part 与 ~tmp_ 残片），
-    返回删除数量。"""
+    返回删除数量。
+
+    expected_names：本次扫描已算出的合法缓存文件名集合（刷新路径传入
+    以复用同一次遍历，见 _scan_entries）；None 时自己遍历一遍库目录。
+    """
     cache = thumb_cache_dir(lib_dir)
     if not os.path.isdir(cache):
         return 0
-    expected = {os.path.basename(thumb_path(lib_dir, p))
-                for p, _category in _iter_hdrs(lib_dir)}
+    if expected_names is None:
+        expected_names = {os.path.basename(tp)
+                          for _p, _c, tp in _scan_entries(lib_dir)}
     removed = 0
     candidates = glob.glob(os.path.join(cache, "*.jpg")) \
         + glob.glob(os.path.join(cache, "*.part"))
     for f in candidates:
-        if os.path.basename(f) not in expected:
+        if os.path.basename(f) not in expected_names:
             try:
                 os.remove(f)
                 removed += 1
@@ -837,9 +850,13 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         # 会把 ~tmp_<线程id>_ 临时文件当"无主缩略图"删掉，旧线程随后的
         # os.replace 就会失败（单张异常有兜底，但这一张白生成了）
         self._stop_worker()
-        # 清理无主缩略图（HDR 已被删除/移走的），再递归扫描
-        stale = clean_stale_thumbs(self.lib_dir)
-        hdrs = scan_hdrs(self.lib_dir)
+        # 清理无主缩略图（HDR 已被删除/移走的）+ 扫描：共用同一次目录
+        # 遍历（独立 os.walk 会让同一棵树在一轮刷新里走两遍）
+        entries = _scan_entries(self.lib_dir)
+        stale = clean_stale_thumbs(
+            self.lib_dir, {os.path.basename(tp) for _p, _c, tp in entries})
+        hdrs = [(p, c, tp if _thumb_valid(tp, p) else None)
+                for p, c, tp in entries]
         self._hdrs = hdrs
         self._thumbs = {p: t for p, _c, t in hdrs}
         need_gen = [p for p, _c, t in hdrs if not t]
@@ -891,16 +908,27 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
             if key not in (KEY_ALL, KEY_FAV):
                 item.setToolTip(os.path.join(self.lib_dir, key))
             self.sidebar.addItem(item)
-        row = next((i for i in range(self.sidebar.count())
-                    if self.sidebar.item(i).data(QtCore.Qt.UserRole)
-                    == self._category_key), 0)
+        row = -1
+        for i in range(self.sidebar.count()):
+            if self.sidebar.item(i).data(QtCore.Qt.UserRole) \
+                    == self._category_key:
+                row = i
+                break
+        if row < 0:
+            # 原分类不存在（换目录/被删）：回"全部"。setCurrentRow 在
+            # blockSignals 内不触发 _on_category_changed，_category_key
+            # 必须在此同步，否则侧栏选中"全部"、网格却按旧分类过滤成空
+            row = 0
+            self._category_key = KEY_ALL
         self.sidebar.setCurrentRow(row)
         self.sidebar.blockSignals(False)
 
     def _on_category_changed(self, current, _previous=None):
         if current is None:
             return
-        self._category_key = current.data(QtCore.Qt.UserRole) or KEY_ALL
+        data = current.data(QtCore.Qt.UserRole)
+        # 空串是"未分类"（根目录文件）的合法键，不能按 falsy 回退成"全部"
+        self._category_key = KEY_ALL if data is None else data
         self._apply_filter()
 
     def _select_category(self, key):
@@ -1083,6 +1111,11 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
 
     def _on_double_click(self, item):
         hdr_path = item.data(QtCore.Qt.UserRole)
+        if not os.path.exists(hdr_path):
+            # 网格数据可能过期（文件被外部删除/盘断开）：坏路径写进
+            # env_map 会渲染出黑天还报"成功"
+            self.status.setText("贴图文件不存在（可能已被移动或删除），请刷新库")
+            return
         try:
             targets = get_target_nodes()
         except Exception as exc:  # 无场景/非 GUI 环境兜底

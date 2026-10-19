@@ -93,14 +93,19 @@ class TaskItem:
         """从 dict 反序列化，frame_range 列表恢复为 tuple。
 
         容错语义与 data_manager.deserialize_params 对齐：params 缺失/
-        多余字段走默认值，只有 type 缺失或未知、enabled 缺失才报错——
-        公开 API load_tasks 直接调本方法，硬下标会把手改坏的配置文件
-        变成 KeyError。
+        多余字段走默认值，type 缺失或未知、params 不是对象（truthy 的
+        列表/字符串等）才报错——公开 API load_tasks 直接调本方法，硬
+        下标或 params_data.get() 打在非 dict 上，会把手改坏的配置文件
+        变成未捕获异常。
         """
         if not isinstance(data, dict) or "type" not in data:
             raise ValueError(f"任务缺少 type 字段: {data!r}")
         type_str = data["type"]
         params_data = data.get("params") or {}
+        if not isinstance(params_data, dict):
+            # or {} 只兜得住 falsy 值；truthy 非字典穿透到 .get() 会抛
+            # AttributeError——不在 _start_execution 的捕获元组里
+            raise ValueError(f"params 必须是对象: {params_data!r}")
 
         if type_str == "BUTTON_CLICK":
             task_type = TaskType.BUTTON_CLICK

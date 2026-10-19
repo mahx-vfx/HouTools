@@ -100,6 +100,8 @@ def _sanitize_config_name(text) -> str | None:
       - 含 ``/`` 或 ``\\`` → ``None``(拒绝路径分隔符,避免破坏目录结构)
       - Windows 保留名(``CON``/``PRN``/``AUX``/``NUL``/``COM1-9``/``LPT1-9``,
         大小写不敏感)→ ``None``
+      - Windows 文件名非法字符(``<>:"|?*``)与控制符 → ``None``(``:``
+        会写成 NTFS 备用数据流,配置"消失";其余报错晚且晦涩)
       - NUL 字节 ``\x00`` → ``None``
       - 纯点号(全部由 ``.`` 组成)→ ``None``
     """
@@ -116,8 +118,8 @@ def _sanitize_config_name(text) -> str | None:
     # 拒绝 Windows 保留名(大小写不敏感)
     if text.upper() in _WINDOWS_RESERVED:
         return None
-    # 拒绝 NUL 字节
-    if "\x00" in text:
+    # 拒绝 Windows 文件名非法字符与控制符(\x00 已含在控制符段里)
+    if re.search(r'[<>:"|?*\x00-\x1f]', text):
         return None
     # 拒绝纯点号(全部由 ``.`` 组成)
     if text.replace(".", "") == "":
@@ -448,6 +450,16 @@ def _apply_centered_position(panel, main, frame_w, frame_h):
         return False
 
 
+# Panel 居中事件过滤器的进程级引用位：过滤器无 parent，语句结束后
+# Python 引用即清零——不自己持有，CPython 会立即析构它、过滤器随之
+# 从应用上自摘（Show 拦截从未生效过，0ms/150ms 定时器一直在兜底）。
+# NameError 守卫活过 Reload（同 _LIVE_ENGINES 约定）
+try:
+    _PANEL_FILTERS
+except NameError:
+    _PANEL_FILTERS = set()
+
+
 class _PanelCenterFilter(QObject):
     """一次性过滤器:本工具浮动面板的顶层窗口首次 Show 时,把面板移到
     主窗口正中。
@@ -557,7 +569,11 @@ def open_floating_panel():
 
     app = QApplication.instance()
     if app is not None:
-        app.installEventFilter(_PanelCenterFilter(panel))
+        # 过滤器无 parent：不自己持有引用，语句结束即被 CPython 析构、
+        # 过滤器随之从应用上自摘（见 _PANEL_FILTERS 注释）
+        center_filter = _PanelCenterFilter(panel)
+        _PANEL_FILTERS.add(center_filter)
+        app.installEventFilter(center_filter)
 
     QTimer.singleShot(0, _center_panel)
     QTimer.singleShot(150, _center_panel)
@@ -790,6 +806,10 @@ class AutomationWindow(QWidget):
     数据持久化加载/保存以及 ExecutionEngine 后台执行集成。
     """
 
+    # 日志目录创建失败（可从引擎线程的首次 _write_log 触发）→ 主线程弹窗。
+    # 跨线程直接构造 QMessageBox 是 Qt 明令禁止的崩溃面，一律经信号投递
+    logDirWriteFailed = Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Automation")
@@ -797,6 +817,7 @@ class AutomationWindow(QWidget):
         self.setFocusPolicy(Qt.StrongFocus)
         self.setStyleSheet(STYLE_SHEET)
         tool_fonts.apply(self)   # 工具统一字体（子树继承，Panel/浮窗共用本类）
+        self.logDirWriteFailed.connect(self._on_log_dir_failed)
 
         # Delete 用 QShortcut 认领（WidgetWithChildren 上下文优先于
         # Houdini 的全局快捷键）；焦点在输入框内时 QLineEdit 自己会
@@ -943,7 +964,9 @@ class AutomationWindow(QWidget):
             "color: #0d6399; font-weight: bold; background: transparent;"
         )
 
-        self._config_combo = QComboBox()
+        # 用 _NoWheelComboBox：配置切换会重建全部槽（未保存编辑丢失），
+        # "鼠标扫过滚轮就换配置"比任务类型下拉的后果更重
+        self._config_combo = _NoWheelComboBox()
         self._config_combo.setObjectName("configCombo")
         self._config_combo.setMinimumWidth(160)
         self._config_combo.setToolTip(
@@ -1899,13 +1922,11 @@ class AutomationWindow(QWidget):
             os.makedirs(log_dir, exist_ok=True)
         except OSError as e:
             # 目录建不出来(权限/磁盘满等):禁用磁盘日志并明确告知,否则
-            # 每次 _write_log 都在同一个失败点上反复抛错
+            # 每次 _write_log 都在同一个失败点上反复抛错。弹窗经信号投递
+            # 回主线程——本函数可能在引擎线程的首次 _write_log 里被调
             logger.warning("无法创建日志目录，已停用磁盘日志: %s (%s)", log_dir, e)
             self._log_to_disk_enabled = False
-            dialogs.warn(
-                self, "日志目录创建失败",
-                f"无法创建日志目录:\n{log_dir}\n\n本次执行已停用日志输出到磁盘。",
-            )
+            self.logDirWriteFailed.emit(log_dir)
             return ""
 
         base_name = datetime.now().strftime("%Y%m%d%H%M")
@@ -1921,6 +1942,20 @@ class AutomationWindow(QWidget):
                 return log_path
             counter += 1
 
+    def _on_log_dir_failed(self, log_dir: str):
+        """日志目录创建失败的主线程槽（logDirWriteFailed 信号）。"""
+        dialogs.warn(
+            self, "日志目录创建失败",
+            f"无法创建日志目录:\n{log_dir}\n\n本次执行已停用日志输出到磁盘。",
+        )
+
+    def _ensure_log_lock(self) -> threading.RLock:
+        """日志锁（RLock）：_restore_stdout 持锁时会再进 _close_log_file。"""
+        lock = getattr(self, "_log_lock", None)
+        if lock is None:
+            lock = self._log_lock = threading.RLock()
+        return lock
+
     def _write_log(self, message: str):
         """写入日志（如果启用了日志输出到磁盘）。
 
@@ -1931,11 +1966,12 @@ class AutomationWindow(QWidget):
         """
         if not self._log_to_disk_enabled:
             return
+        if not getattr(self, "_log_active", False):
+            # 收尾已把本次执行标记为结束：迟到的引擎线程 print 不再新建
+            # 日志文件（否则会在同分钟撞出 .2 分裂文件）
+            return
 
-        lock = getattr(self, "_log_lock", None)
-        if lock is None:
-            lock = self._log_lock = threading.Lock()
-        with lock:
+        with self._ensure_log_lock():
             # 首次调用时确定路径并缓存("" = 目录创建失败,本次已停用)
             if not getattr(self, "_current_log_path", None):
                 self._current_log_path = self._get_log_path()
@@ -1964,14 +2000,19 @@ class AutomationWindow(QWidget):
                              self._current_log_path, exc)
 
     def _close_log_file(self):
-        """关闭缓存中的执行日志句柄（幂等；destroyed 兜底也调它）。"""
-        fileobj = getattr(self, "_log_file", None)
-        self._log_file = None
-        if fileobj:   # None/False 哨兵都无需关闭
-            try:
-                fileobj.close()
-            except Exception as exc:
-                logger.debug("关闭执行日志失败: %s", exc)
+        """关闭缓存中的执行日志句柄（幂等；destroyed 兜底也调它）。
+
+        _log_file 与 _write_log 共享且由引擎线程在途读写，必须持锁：
+        无锁收尾会关掉正在写的句柄、或让迟到写入重算路径拆出新文件。
+        """
+        with self._ensure_log_lock():
+            fileobj = getattr(self, "_log_file", None)
+            self._log_file = None
+            if fileobj:   # None/False 哨兵都无需关闭
+                try:
+                    fileobj.close()
+                except Exception as exc:
+                    logger.debug("关闭执行日志失败: %s", exc)
 
     def _write_log_header(self):
         """写入日志头部（当前任务列表信息）。"""
@@ -2089,6 +2130,21 @@ class AutomationWindow(QWidget):
         直接返回,避免误清空面板。
         """
         if index < 0:
+            return
+        # 运行中/停止中拒绝切换：切换会重建全部槽（未保存编辑丢失）并经
+        # _load_settings 覆写运行设置（绕过设置对话框的运行中禁用防线，
+        # 日志会中途静默停写）——回弹到当前配置并提示
+        if getattr(self, "_running", False) \
+                or getattr(self, "_cancel_requested", False):
+            self._refresh_config_dropdown()   # blockSignals 内回弹当前名
+            try:
+                import hou
+                hou.ui.setStatusMessage(
+                    "Automation: 执行中不能切换配置，请先停止",
+                    severity=hou.severityType.Warning,
+                )
+            except ImportError:
+                pass
             return
         name = self._config_combo.itemText(index)
         if not name:
@@ -2317,6 +2373,8 @@ class AutomationWindow(QWidget):
 
         # 清除上次日志路径缓存，本次执行重新计算
         self._current_log_path = None
+        # 标记本次执行为活动：tee 安装前 _write_log_header 也要能落盘
+        self._log_active = True
 
         # 写入日志头部（任务列表信息）
         self._write_log_header()
@@ -2403,24 +2461,28 @@ class AutomationWindow(QWidget):
 
         不看 ``_log_to_disk_enabled`` 现值 —— 开关可能在运行期间被改
         （换配置重载设置等），只要还有挂着的重定向就一律还原，否则开关
-        关掉后 tee 永远卸不下来。
+        关掉后 tee 永远卸不下来。共享状态清理持 _log_lock：引擎线程可能
+        正持锁在途 _write_log，无锁收尾会关掉在写句柄、或让迟到写入重算
+        路径拆出新文件。
         """
-        if hasattr(self, "_orig_stdout"):
-            sys.stdout = self._orig_stdout
-            sys.stderr = self._orig_stderr
-            del self._orig_stdout
-            del self._orig_stderr
-            self._current_log_path = None  # 清除日志路径缓存
-        elif isinstance(sys.stdout, _LogTee):
-            # 兜底:上次收尾没走到(面板带着重定向被销毁等)导致实例属性
-            # 丢失、sys.stdout 仍是被包的 tee。沿 _original 链解包,防止
-            # 下次执行在 tee 之上再包一层(嵌套后同一行输出会写多份日志)
-            while isinstance(sys.stdout, _LogTee):
-                sys.stdout = sys.stdout._original
-            while isinstance(sys.stderr, _LogTee):
-                sys.stderr = sys.stderr._original
-            self._current_log_path = None
-        self._close_log_file()   # 重定向解除后日志句柄一并释放
+        with self._ensure_log_lock():
+            self._log_active = False
+            if hasattr(self, "_orig_stdout"):
+                sys.stdout = self._orig_stdout
+                sys.stderr = self._orig_stderr
+                del self._orig_stdout
+                del self._orig_stderr
+                self._current_log_path = None  # 清除日志路径缓存
+            elif isinstance(sys.stdout, _LogTee):
+                # 兜底:上次收尾没走到(面板带着重定向被销毁等)导致实例属性
+                # 丢失、sys.stdout 仍是被包的 tee。沿 _original 链解包,防止
+                # 下次执行在 tee 之上再包一层(嵌套后同一行输出会写多份日志)
+                while isinstance(sys.stdout, _LogTee):
+                    sys.stdout = sys.stdout._original
+                while isinstance(sys.stderr, _LogTee):
+                    sys.stderr = sys.stderr._original
+                self._current_log_path = None
+            self._close_log_file()   # 重定向解除后日志句柄一并释放
 
     # ── 工具栏动作 ──────────────────────────────────────────
 
@@ -2552,6 +2614,23 @@ class AutomationWindow(QWidget):
                 self._add_slot(data)
             processed += 1
 
+    def _slots_have_content(self) -> bool:
+        """任务槽里是否有任何已填内容（清空确认用）。
+
+        粗粒度判断：任一输入框非空、任一槽类型非默认、或槽数大于 1 即算
+        有内容——确认场景宁多勿漏，不逐类型判默认值。
+        """
+        if len(self._slot_widgets) > 1:
+            return True
+        for slot in self._slot_widgets:
+            combo = slot.findChild(QComboBox, "taskType")
+            if combo is not None and combo.currentIndex() != 0:
+                return True
+            for le in slot.findChildren(QLineEdit):
+                if le.text().strip():
+                    return True
+        return False
+
     def _on_clear(self):
         """清空所有槽,保留 1 个空槽。
 
@@ -2561,6 +2640,13 @@ class AutomationWindow(QWidget):
         ``RuntimeError: Internal C++ object (_SlotHandle) already deleted``。
         与 ``_remove_slot``(双 pop)同款契约。
         """
+        # 有内容先确认：清空不可逆（磁盘配置要到 Start 才被覆盖，但误点
+        # 后重填成本高）
+        if self._slots_have_content() and not dialogs.question(
+            self, "清空任务",
+            f"当前有 {len(self._slot_widgets)} 个任务槽，确定全部清空？",
+        ):
+            return
         for slot in self._slot_widgets:
             self._slot_layout.removeWidget(slot)
             slot.deleteLater()
