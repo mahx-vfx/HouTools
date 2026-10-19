@@ -243,13 +243,19 @@ def sanitize_code_name(base):
     return re.sub(r"[^0-9a-zA-Z_]+", "_", str(base or "")).strip("_")
 
 
-def take_code_blocks_for_migration():
-    """读取并清空旧版 code_blocks 段（一次性迁移到 vex_python_lib 文件，
-    由 codeblock.migrate_legacy_code_blocks 调用；段空 = 无事发生）。"""
+def read_code_blocks_for_migration():
+    """读取旧版 code_blocks 段（一次性迁移用；只读不清——清段必须等
+    全部代码文件写成功之后，见 finish_code_blocks_migration。先清后写
+    的话，写盘中途失败会让唯一的数据源随落盘消失，代码块永久丢失）。
+    段空 = 无事发生。"""
     blocks = _SETTINGS.get("code_blocks") or {}
-    if blocks:
-        _SETTINGS.set("code_blocks", {})
     return blocks if isinstance(blocks, dict) else {}
+
+
+def finish_code_blocks_migration():
+    """迁移全部成功后清空旧段并落盘（幂等；与读函数配对使用）。"""
+    if _SETTINGS.get("code_blocks"):
+        _SETTINGS.set("code_blocks", {})
 
 
 def rekey_metadata_name(old, new):
@@ -558,7 +564,10 @@ def doc_exists(name):
     if not os.path.exists(path):
         return False
     try:
-        with open(path, encoding="utf-8") as f:
+        # errors="replace"：文档可能来自外部编辑器（中文 Windows 存成
+        # GBK 很常见），编码问题宁乱码不崩——UnicodeDecodeError 是
+        # ValueError 子类，不兜住会打崩预览/导出主流程
+        with open(path, encoding="utf-8", errors="replace") as f:
             return bool(f.read().strip())
     except OSError as exc:
         log.warning("cannot read doc %s: %s", path, exc)
@@ -568,7 +577,7 @@ def doc_exists(name):
 def read_doc(name):
     path = doc_path(name)
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             return f.read()
     except FileNotFoundError:
         return ""   # 无文档是正常状态（首次创建/编辑器空白装载），不算异常
@@ -639,6 +648,13 @@ def insert_asset(name, src):
         i += 1
     shutil.copyfile(src, dst)
     return "assets/" + os.path.basename(dst)
+
+
+def stem_owners(stem):
+    """登记表里 unique 名等于 stem 的全部内部名（导入落盘归属检查用：
+    目标目录/文件名已被"本次导入之外"的配方占用时，调用方可拒绝写入）。"""
+    stems = _SETTINGS.get("stems") or {}
+    return sorted(n for n, s in stems.items() if s == stem)
 
 
 def _other_recipe_names(name):

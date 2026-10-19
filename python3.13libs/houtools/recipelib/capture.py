@@ -65,6 +65,9 @@ class _ScreenOverlay(QtWidgets.QWidget):
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self.setCursor(QtCore.Qt.CrossCursor)
+        # 悬停反馈（✓/✗ 按钮条高亮、手柄光标）走 _mode is None 的 move
+        # 分支：不开追踪收不到无按键的 mouseMoveEvent，反馈全是死代码
+        self.setMouseTracking(True)
         self.setGeometry(screen.geometry())
 
     # ---- 输入转发（交互逻辑全在会话里，见 SnipOverlay）----

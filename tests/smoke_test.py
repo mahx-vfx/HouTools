@@ -258,6 +258,15 @@ def main():
         raise AssertionError("missing type should fail")
     except ValueError:
         pass
+    # params 为 truthy 非 dict（or {} 只兜 falsy）→ 必须报 ValueError
+    # （Start 槽按"跳过该任务"处理），不能让 AttributeError 逃出 Start
+    for _bad in ([1, 2], "x", 3):
+        try:
+            task_types.TaskItem.from_dict(
+                {"type": "BUTTON_CLICK", "params": _bad})
+            raise AssertionError(f"non-dict params should fail: {_bad!r}")
+        except ValueError:
+            pass
     print("task_types from_dict tolerance OK")
 
     # JsonStore：顶层不是 JSON 对象（null/数组/字符串）也必须留底回退，
@@ -277,6 +286,33 @@ def main():
         _bak.unlink(missing_ok=True)
         _js_path.unlink(missing_ok=True)
     print("JsonStore non-dict top level OK")
+
+    # JsonStore OSError（杀软/同步盘瞬时占用）：必须回退默认值继续运行，
+    # 不能让 UnboundLocalError 从 load() 逃逸——曾漏初始化 on_disk，
+    # metadata/hdrlight 的 import 期 JsonStore 会把整个工具炸到不可用
+    _os_dir = Path(houtools.core.settings.SETTINGS_DIR)
+    _os_dir.mkdir(parents=True, exist_ok=True)
+    _os_path = _os_dir / "_smoke_oserror.json"
+    _os_path.write_text('{"k": 2}', encoding="utf-8")
+    _track_rm(_os_path)
+
+    def _raise_oserror(_self, *args, **kwargs):
+        raise OSError("simulated AV lock")
+
+    _orig_read_text = Path.read_text
+    Path.read_text = _raise_oserror
+    try:
+        _js_os = houtools.core.settings.JsonStore("_smoke_oserror.json",
+                                                  defaults={"k": 1})
+    finally:
+        Path.read_text = _orig_read_text
+    assert _js_os.get("k") == 1, "OSError fallback should use defaults"
+    assert _os_path.read_text(encoding="utf-8") == '{"k": 2}', \
+        "OSError path must not touch the original file"
+    assert not _os_path.with_name(_os_path.name + ".bak").exists(), \
+        "OSError path must not move the original file"
+    _os_path.unlink(missing_ok=True)
+    print("JsonStore OSError fallback OK")
 
     _check_undefined_names()
 
@@ -903,6 +939,12 @@ def main():
             assert rel2 != rel, "同名素材被覆盖"
             rl_meta.write_doc(name, "# My Setup\n\n用法正文\n")
             assert rl_meta.read_doc(name).startswith("# My Setup")
+            # 非 UTF-8 文档（外部编辑器存成 GBK 很常见）：宁乱码不崩——
+            # UnicodeDecodeError 是 ValueError 子类，不兜住会打崩预览/导出
+            Path(rl_meta.doc_path(name)).write_bytes(
+                "中文用法说明".encode("gbk"))
+            assert rl_meta.doc_exists(name) is True   # replace 后仍判非空
+            assert rl_meta.read_doc(name) != ""       # 乱码但不抛异常
             rl_meta.delete_doc_dir(name)
             assert not rl_meta.doc_exists(name)
 
@@ -1055,12 +1097,15 @@ def main():
                             assert rl_meta.get_color("mahx::delta") \
                                 == "#111111", "本地独有条目不得被动"
                             # 缩略图：文件落到（patch 过的）缩略图目录，
-                            # 记录为相对插件根的存储形式
+                            # 记录为存储形式（相对插件根；目录被 patch 到
+                            # 插件根外时按 _to_stored 设计退回绝对路径，
+                            # 读取侧 _to_abs 两种形式都兼容）
                             assert (Path(timp) / "thumbs"
                                     / "mahx__alpha.png").is_file()
-                            assert dst_store.get("thumbs")["mahx::alpha"] \
-                                == os.path.join("settings", "recipe_thumbs",
-                                                "mahx__alpha.png")
+                            stored = dst_store.get("thumbs")["mahx::alpha"]
+                            assert os.path.normcase(
+                                rl_meta._to_abs(stored)) == os.path.normcase(
+                                str(Path(timp) / "thumbs" / "mahx__alpha.png"))
                             # 文档：整目录替换（含 asset），正文可读
                             assert rl_meta.doc_exists("mahx::alpha")
                             assert "阿尔法" in rl_meta.read_doc("mahx::alpha")
@@ -1711,7 +1756,10 @@ def main():
                     win._clear_thumb(infos[1], thumb_item)
                 assert not rl_meta.get_thumb("houtools::light::b"), \
                     "选「确认」应清除缩略图"
-                assert "houtools::light::b" not in win._thumb_cache
+                # 缓存不得残留旧缩略图（无图条目允许缓存占位图——占位
+                # 结果入缓存是搜索防抖下的读盘优化，增删入口按名 pop）
+                assert win._thumb_cache.get("houtools::light::b") \
+                    in (None, win._placeholder), "缓存残留旧缩略图"
                 # 「节点参数」卡片水印：滑块图标铺在卡片最底层（文字区
                 # 透出，缩略图盖住上半）；其他类型卡片不画
                 def _render_card(info_obj):
@@ -2443,6 +2491,10 @@ def main():
     assert "路径分隔符" in prefix_error("a\\b")
     assert "冒号" in prefix_error("C:evil")
     assert prefix_error('a"b') != ""
+    # %：ffmpeg 把整个输出路径当 printf 模板，前缀里的 % 与自拼的
+    # ".%0Nd.jpg" 模式互相干扰，必须拦下
+    assert "printf" in prefix_error("cam%03d")
+    assert "printf" in prefix_error("cam%")
     print("videoseq prefix guard OK")
 
     # 打开缓存文件夹：输出路径参数求值取父目录 + 目录缺失上溯最近存在祖先

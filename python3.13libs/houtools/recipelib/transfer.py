@@ -52,6 +52,14 @@ METADATA = "recipelib.json"
 FORMAT_VERSION = 1
 APP_TAG = "HouTools Recipe Library"
 
+# zip 资源配额：导入是"接收不可信第三方分享包"的入口，路径穿越之外还要
+# 防压缩炸弹/海量成员把磁盘或内存打爆（检查/导入阶段即拒绝）。上限远
+# 大于合法包的正常体量（配方库 + 媒体文档），只拦恶意/异常包
+MAX_MEMBERS = 10000                            # 包内成员数上限
+MAX_MEMBER_UNCOMPRESSED = 512 * 1024 * 1024    # 单成员解压后上限
+MAX_TOTAL_UNCOMPRESSED = 2 * 1024 * 1024 * 1024  # 累计解压上限
+MAX_META_BYTES = 16 * 1024 * 1024              # 单个 JSON 元数据成员上限
+
 _THUMB_ARC_DIR = "thumbs/"
 _DOC_ARC_DIR = "docs/"
 _HDA_ARC_DIR = "recipes/"
@@ -101,8 +109,21 @@ def _safe_rel(rel):
     return os.path.join(*parts)
 
 
-def _extract_member(zf, info, dst):
-    """把 zip 成员解到 dst（流式拷贝，文档里的视频可能上 GB）。"""
+def _extract_member(zf, info, dst, budget=None):
+    """把 zip 成员解到 dst（流式拷贝，文档里的视频可能上 GB）。
+
+    budget：[累计解压字节] 的单元素列表（导入侧配额计数）。解压前按
+    ZipInfo 声明大小校验单成员与累计上限——防压缩炸弹/超大成员写满磁盘。
+    """
+    if info.file_size > MAX_MEMBER_UNCOMPRESSED:
+        raise TransferError("包内文件过大: {}（{} MB）".format(
+            info.filename, info.file_size // (1024 * 1024)))
+    if budget is not None:
+        if budget[0] + info.file_size > MAX_TOTAL_UNCOMPRESSED:
+            raise TransferError(
+                "包累计解压体积超过上限（{} GB），已中止导入".format(
+                    MAX_TOTAL_UNCOMPRESSED // (1024 ** 3)))
+        budget[0] += info.file_size
     dst = str(dst)
     parent = os.path.dirname(dst)
     if parent:
@@ -264,13 +285,20 @@ def export_recipes(recipes, zip_path, include_hda=True, progress=None):
 
 def _open_zip(zip_path):
     try:
-        return zipfile.ZipFile(zip_path)
+        zf = zipfile.ZipFile(zip_path)
     except (zipfile.BadZipFile, OSError) as exc:
         raise TransferError("无法读取 zip 包: {}".format(exc))
+    if len(zf.infolist()) > MAX_MEMBERS:
+        zf.close()
+        raise TransferError("包内成员过多（超过 {} 个），疑似异常包，已拒绝"
+                            .format(MAX_MEMBERS))
+    return zf
 
 
 def _read_manifest(zf):
     try:
+        if zf.getinfo(MANIFEST).file_size > MAX_META_BYTES:
+            raise TransferError("manifest.json 过大，疑似异常包")
         raw = zf.read(MANIFEST)
     except KeyError:
         raise TransferError("不是本工具导出的包（缺少 manifest.json）")
@@ -289,6 +317,8 @@ def _read_manifest(zf):
 
 def _read_packaged_metadata(zf):
     try:
+        if zf.getinfo(METADATA).file_size > MAX_META_BYTES:
+            raise TransferError("recipelib.json 过大，疑似异常包")
         raw = zf.read(METADATA)
     except KeyError:
         raise TransferError("包缺少 recipelib.json，可能已损坏")
@@ -404,6 +434,7 @@ def inspect_package(zip_path, existing_names=()):
         meta = _read_packaged_metadata(zf)
         members = {i.filename for i in zf.infolist() if not i.is_dir()}
         hda_import, hda_skip = _hda_plan(manifest, members, existing)
+        thumb_plan = _thumb_plan(meta, members)   # 非法缩略图在确认对话框处即被拒
     names = [str(n) for n in manifest.get("recipes") or []]
     try:
         size = os.path.getsize(zip_path)
@@ -414,7 +445,7 @@ def inspect_package(zip_path, existing_names=()):
         "conflicts": [n for n in names if n in existing],
         "code_blocks": [str(n) for n in manifest.get("code_blocks") or []],
         "docs": _doc_dirs_of(members),
-        "thumbs": [n for n, arc in meta["thumbs"].items() if arc in members],
+        "thumbs": [n for n, _a, _e in thumb_plan],
         "hda_import": hda_import,
         "hda_skip": hda_skip,
         "size": size,
@@ -422,16 +453,80 @@ def inspect_package(zip_path, existing_names=()):
     }
 
 
+def _thumb_plan(meta, members):
+    """包内 thumbs/ 成员 → [(内部名, arc, 扩展名)]（读取阶段校验，非法包
+    在确认对话框处即被拒）。
+
+    包内文件名来自导出方的 safe_name（不可信）：路径必须收在 thumbs/ 一级、
+    扩展名必须收图片白名单，防任意内容解进 settings/recipe_thumbs/。
+    """
+    plan = []
+    for name, arc in meta["thumbs"].items():
+        if arc not in members:
+            continue
+        parts = arc.split("/")
+        ext = os.path.splitext(arc)[1].lower()
+        if (len(parts) != 2 or parts[0] != _THUMB_ARC_DIR.rstrip("/")
+                or ext not in metadata.IMAGE_EXTS):
+            raise TransferError("包内缩略图路径不合法: {}".format(arc))
+        plan.append((str(name), arc, ext))
+    return plan
+
+
+def _doc_member_ok(rel):
+    """docs/<safe>/ 内成员白名单：doc.md 与 assets/ 下的图片/视频。
+
+    导出会原样打包用户文档目录里的全部文件，白名单外的成员跳过不拒
+    （硬拒绝会误伤合法包）；媒体边界与 docs._on_anchor 的点击放行一致
+    ——可执行内容即使混进包也不会被解出、更不会被文档链接拉起。
+    """
+    if rel == "doc.md":
+        return True
+    parts = rel.split("/")
+    return (len(parts) == 2 and parts[0] == "assets"
+            and os.path.splitext(parts[1])[1].lower()
+            in metadata.IMAGE_EXTS + metadata.VIDEO_EXTS)
+
+
+def _doc_target_map(doc_dirs, manifest):
+    """包内文档目录名 → 本地落盘目录名（导入端的折名撞名防线）。
+
+    v1 manifest 不带"目录 ↔ 配方名"映射，只能按 safe_name 反查：非撞名
+    场景包内目录名 == safe_name(配方名)，唯一反查命中后改挂到本地的
+    unique_safe_name（本地撞名时是摘要名，与本地 doc_dir 查找路径一致
+    ——直用包内名会让文档登记不上，还可能整目录覆盖本地另一配方的
+    文档）。反查不唯一/无命中（导出方撞名的摘要目录、配方不在 manifest
+    里）保持原名；此时若 stems 登记显示目标目录属于本次导入之外的本地
+    配方，拒绝该目录（整目录换入会清掉对方的文档）。
+    """
+    names = [str(n) for n in manifest.get("recipes") or []]
+    mapping = {}
+    for safe in doc_dirs:
+        matches = [n for n in names if metadata.safe_name(n) == safe]
+        local = (metadata.unique_safe_name(matches[0])
+                 if len(matches) == 1 else safe)
+        others = [o for o in metadata.stem_owners(local) if o not in names]
+        if others:
+            raise TransferError(
+                "包内文档目录 {} 与本地配方 {} 的文档目录同名，"
+                "为避免覆盖已拒绝导入".format(safe, "、".join(others)))
+        mapping[safe] = local
+    return mapping
+
+
 def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
     """把交换包合并导入当前环境，返回导入摘要 dict。
 
     - 元数据按内部名合并：包内覆盖同名，本地独有保留（最后一次性落盘，
       取消/失败不会留下改了一半的设置）
-    - 缩略图：包内带图的名字，图复制进 settings/recipe_thumbs 并改写
-      记录（存储形式 = 相对插件根，与 set_thumb_from_file 一致）
-    - 文档：包内有 doc.md 的名字整目录替换本地（含 assets）
+    - 缩略图：包内带图的名字，图按本地 unique_safe_name 重映射复制进
+      settings/recipe_thumbs 并改写记录（存储形式 = 相对插件根，与
+      set_thumb_from_file 一致；防导出方折名撞名覆盖本地另一配方的图）
+    - 文档：包内有 doc.md 的名字整目录替换本地（含 assets；目录名同样
+      重映射，白名单外成员跳过）
     - .hda：只复制无同名冲突的文件到 lib_dir（不存在自动创建，重名
       文件自动加序号）；包里有可导文件却不给 lib_dir → 报错
+    - 资源配额：成员数/单成员与累计解压体积/元数据大小超限即拒绝
     """
     existing = set(existing_names or ())
     with _open_zip(zip_path) as zf:
@@ -441,53 +536,64 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
         hda_import, hda_skip = _hda_plan(manifest, members, existing)
         code_plan = _code_file_plan(members)
         legacy_blocks = meta.get("code_blocks") or {}
-        thumb_items = [(n, a) for n, a in meta["thumbs"].items()
-                       if a in members]
+        thumb_plan = _thumb_plan(meta, members)
         doc_dirs = _doc_dirs_of(members)
-        total = (len(thumb_items) + len(doc_dirs) + len(hda_import)
+        budget = [0]   # 累计解压字节（zip 配额，见 _extract_member）
+        total = (len(thumb_plan) + len(doc_dirs) + len(hda_import)
                  + len(code_plan) + len(legacy_blocks) + 1)
         done = 0
 
-        # ---- 1) 缩略图 ----
+        # ---- 1) 缩略图：按本地 unique_safe_name 重映射落盘 ----
+        # 包内文件名来自导出方的 safe_name，与本地布局无关；直用包内名
+        # 会在折名撞名时整文件覆盖本地另一配方的缩略图（导入端漏配
+        # unique_safe_name 防线），本地撞名时摘要名也与查找路径一致
         new_thumbs = {}
-        for name, arc in thumb_items:
+        for name, arc, ext in thumb_plan:
             if _report(progress, done, total,
                        "导入缩略图 {}".format(name)):
                 raise TransferCancelled()
-            _extract_member(zf, members[arc],
-                            Path(metadata.THUMBS_DIR) / os.path.basename(arc))
-            new_thumbs[name] = os.path.join("settings", "recipe_thumbs",
-                                            os.path.basename(arc))
+            dst = str(Path(metadata.THUMBS_DIR)
+                      / (metadata.unique_safe_name(name) + ext))
+            _extract_member(zf, members[arc], dst, budget)
+            new_thumbs[name] = metadata._to_stored(dst)
             done += 1
 
         # ---- 2) 文档：包内有的整目录替换（含 assets），没有的不动 ----
         # 先解到 <safe>.~incoming 临时目录、全部成员解完才换入：中途
         # 失败（包损坏/磁盘满等）不破坏本地已有文档——旧版"先删后写"
         # 会在解包失败时让本地文档凭空消失。取消检查在目录边界，换入的
-        # 都是完整目录，取消后重跑仍然幂等。
+        # 都是完整目录，取消后重跑仍然幂等。落盘目录名经 _doc_target_map
+        # 重映射（见该函数 docstring）
+        doc_map = _doc_target_map(doc_dirs, manifest)
         docs_root = Path(metadata.DOCS_DIR)
         root_abs = os.path.realpath(str(docs_root)) + os.sep
         for safe in doc_dirs:
             if _report(progress, done, total, "导入文档 {}".format(safe)):
                 raise TransferCancelled()
+            local = doc_map[safe]
             prefix = _DOC_ARC_DIR + safe + "/"
-            target = docs_root / safe
+            target = docs_root / local
             # 二次防线：目录名已在 _doc_dirs_of 过检，这里再断言落点
             # 收敛在 DOCS_DIR 之内
             if not (os.path.realpath(str(target)) + os.sep).startswith(root_abs):
-                raise TransferError("包内文档路径不合法: {}".format(safe))
-            incoming = docs_root / (safe + ".~incoming")
+                raise TransferError("包内文档路径不合法: {}".format(local))
+            incoming = docs_root / (local + ".~incoming")
             shutil.rmtree(str(incoming), ignore_errors=True)
             incoming.mkdir(parents=True)
             try:
                 for arc in members:
                     if arc.startswith(prefix):
+                        rel = arc[len(prefix):]
+                        if not _doc_member_ok(rel):
+                            log.warning("import: skip non-media doc "
+                                        "member %s", arc)
+                            continue
                         _extract_member(zf, members[arc],
-                                        incoming / _safe_rel(arc[len(prefix):]))
+                                        incoming / _safe_rel(rel), budget)
             except Exception:
                 shutil.rmtree(str(incoming), ignore_errors=True)
                 raise
-            backup = docs_root / (safe + ".~old")
+            backup = docs_root / (local + ".~old")
             shutil.rmtree(str(backup), ignore_errors=True)
             swapped = False
             try:
@@ -506,6 +612,9 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
             done += 1
 
         # ---- 3) .hda 库文件（导入后由浏览器 reload 自动安装） ----
+        # 逐文件检查取消；取消/失败时删除本次已复制的文件——它们尚未
+        # 安装（安装走 reload），留着会让"取消后重跑"因目标名被占生成
+        # _2 重复文件（同名定义装两份，行为不可预期）
         hda_copied = []
         if hda_import:
             if not lib_dir:
@@ -514,16 +623,29 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
                 raise TransferCancelled()
             os.makedirs(lib_dir, exist_ok=True)
             taken = {n.lower() for n in os.listdir(lib_dir)}
-            for arc, original in hda_import:
-                stem, ext = os.path.splitext(original)
-                dst, i = original, 2
-                while dst.lower() in taken:   # 与盘上已有文件重名
-                    dst = "{}_{}{}".format(stem, i, ext)
-                    i += 1
-                taken.add(dst.lower())
-                _extract_member(zf, members[arc], Path(lib_dir) / dst)
-                hda_copied.append(dst)
-                done += 1
+            try:
+                for arc, original in hda_import:
+                    if _report(progress, done, total,
+                               "复制库文件 {}".format(original)):
+                        raise TransferCancelled()
+                    stem, ext = os.path.splitext(original)
+                    dst, i = original, 2
+                    while dst.lower() in taken:   # 与盘上已有文件重名
+                        dst = "{}_{}{}".format(stem, i, ext)
+                        i += 1
+                    taken.add(dst.lower())
+                    _extract_member(zf, members[arc], Path(lib_dir) / dst,
+                                    budget)
+                    hda_copied.append(dst)
+                    done += 1
+            except BaseException:
+                for dst in hda_copied:
+                    try:
+                        os.remove(str(Path(lib_dir) / dst))
+                    except OSError as exc:
+                        log.warning("cannot clean up copied hda %s: %s",
+                                    dst, exc)
+                raise
 
         # ---- 4) 代码块：文件解回 vex_python_lib/（同名覆盖）+ 旧包
         # json 段落成文件并改挂元数据键（落盘目标只取 basename，包内
@@ -536,7 +658,7 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
             target = codeblock.code_dir(lang) / os.path.basename(rel)
             if not (os.path.realpath(str(target)) + os.sep).startswith(root_abs):
                 raise TransferError("包内代码路径不合法: {}".format(rel))
-            _extract_member(zf, members[_CODE_ARC_DIR + rel], target)
+            _extract_member(zf, members[_CODE_ARC_DIR + rel], target, budget)
             code_done += 1
             done += 1
         for name, rec in legacy_blocks.items():

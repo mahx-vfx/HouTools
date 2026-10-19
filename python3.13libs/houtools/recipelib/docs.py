@@ -23,6 +23,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 
 from houtools.core.log import get_logger
+from houtools.dev import status
 from houtools.recipelib import metadata
 from houtools.ui.dialogs import localize_buttons, warn
 
@@ -49,35 +50,57 @@ class _DocPreview(QtWidgets.QTextBrowser):
         self._doc_dir = doc_dir
 
     def _resolve(self, url):
+        """链接/资源 URL → (绝对路径, 是否允许)。
+
+        文档内容可能来自导入的分享包（不可信第三方）：解析出的路径必须
+        收敛在文档目录之内——``../`` 穿越、盘符绝对路径、file:// 指向
+        别处一律不允许，防穿越读取本地文件与诱导打开目录外的内容。
+        """
         path = unquote(url.toString())
         if path.startswith("file:///"):
             path = QtCore.QUrl(path).toLocalFile()
         if not os.path.isabs(path):
             path = os.path.join(self._doc_dir, path)
-        return os.path.normpath(path)
+        path = os.path.normpath(path)
+        try:
+            root = os.path.normcase(os.path.realpath(self._doc_dir)) + os.sep
+            allowed = os.path.normcase(
+                os.path.realpath(path)).startswith(root)
+        except OSError:
+            allowed = False
+        return path, allowed
 
     def loadResource(self, rtype, url):
         if rtype == QtGui.QTextDocument.ImageResource:
-            path = self._resolve(url)
-            if os.path.exists(path):
+            path, allowed = self._resolve(url)
+            if allowed and os.path.exists(path):
                 img = QtGui.QImage(path)
                 if not img.isNull():
                     return img
         return super().loadResource(rtype, url)
 
     def _on_anchor(self, url):
-        path = self._resolve(url)
+        scheme = url.scheme().lower()
+        if scheme in ("http", "https", "mailto"):
+            QtGui.QDesktopServices.openUrl(url)
+            return
+        if scheme not in ("", "file"):
+            return   # 可拉起任意关联程序/系统组件的 scheme 一律忽略
+        path, allowed = self._resolve(url)
         ext = os.path.splitext(path)[1].lower()
+        # 本地链接只放行"文档目录内 + 媒体白名单内"的文件：.bat/.exe/
+        # .lnk 交给默认关联程序即等于执行（导入分享包 → 点链接 → 执行
+        # 是完整攻击链）；目录外或非媒体一律拒绝并提示
+        if (not allowed
+                or ext not in metadata.IMAGE_EXTS + metadata.VIDEO_EXTS):
+            status("Recipe Library: 文档链接已拒绝"
+                   "（仅允许文档目录内的图片/视频）", error=True)
+            return
         if os.path.exists(path) and (ext in metadata.VIDEO_EXTS
                                      or ext == ".gif"):
             MediaDialog.open_media(self, path)
             return
-        # 文档内容可能来自导入的分享包（不可信第三方），openUrl 只放行
-        # 网页/邮件与"确实存在的本地文件"，其余 scheme（可拉起任意
-        # 关联程序/系统组件）一律忽略
-        scheme = url.scheme().lower()
-        if scheme in ("http", "https", "mailto") or (
-                scheme in ("", "file") and os.path.exists(path)):
+        if os.path.exists(path):
             QtGui.QDesktopServices.openUrl(url)
 
 
@@ -155,8 +178,8 @@ class MarkdownMediaView(_DocPreview):
             if url_str.lower().split("?", 1)[0].endswith(".gif"):
                 movie = self._movies.get(url_str)
                 if movie is None:
-                    path = self._resolve(url)
-                    if os.path.exists(path):
+                    path, allowed = self._resolve(url)
+                    if allowed and os.path.exists(path):
                         movie = QtGui.QMovie(self)
                         movie.setFileName(path)
                         movie.setCacheMode(QtGui.QMovie.CacheAll)

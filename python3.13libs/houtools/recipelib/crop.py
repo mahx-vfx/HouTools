@@ -33,6 +33,9 @@ class _CropCanvas(QtWidgets.QWidget):
         self._handle = None                  # "tl"/"tr"/"bl"/"br"
         self._press = None
         self._sel_start = None
+        # 悬停光标/手柄热区反馈依赖无按键的 mouseMoveEvent（不开追踪时
+        # 只在按键按住期间派发，与 _mode is None 的悬停分支互斥 = 死代码）
+        self.setMouseTracking(True)
 
     # ---- 选区 ----
 

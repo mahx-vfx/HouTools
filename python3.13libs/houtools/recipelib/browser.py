@@ -1460,7 +1460,13 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         代码块内容存 metadata、不依赖库文件——未配置库目录也照常加载。"""
         metadata.migrate_legacy_thumb_paths()  # 旧版绝对路径 → 相对插件根
         metadata.migrate_colliding_doc_dirs()  # safe_name 撞名 → 摘要名（幂等）
-        codeblock.migrate_legacy_code_blocks()  # 旧 json 段 → 一卡一文件（幂等）
+        try:
+            # 迁移自身已逐条容错；这里兜意外异常，别让一次性迁移把整个
+            # 面板 reload 打挂
+            codeblock.migrate_legacy_code_blocks()  # 旧 json 段 → 一卡一文件（幂等）
+        except Exception as exc:
+            log.warning("legacy code block migration failed: %s", exc,
+                        exc_info=True)
         self._code_infos = codeblock.list_code_infos()
         lib_dirs = metadata.get_lib_dirs()
         self._recipes = []
@@ -1475,7 +1481,16 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 # 命中 _info_by_name 里已不存在的 recipe
                 error_text = "枚举 recipe 失败: {}".format(exc)
         self._info_by_name = {r.name: r for r in self._recipes}
-        self._info_by_name.update({c.name: c for c in self._code_infos})
+        code_by_name = {c.name: c for c in self._code_infos}
+        clashes = sorted(set(self._info_by_name) & set(code_by_name))
+        if clashes:
+            # 创建侧查重只查代码目录、看不到 recipe 名册：撞名时 update
+            # 会用代码块静默顶掉同名 recipe（两张卡都进网格，但绘制/双击/
+            # 右键全按 _info_by_name 解析成代码块）——至少告警，让
+            # "recipe 找不到了"有得查
+            log.warning("code blocks shadow same-name recipes: %s",
+                        ", ".join(clashes))
+        self._info_by_name.update(code_by_name)
         self._rebuild_sidebar()
         if self._recipes or self._code_infos:
             note = "，共 {} 个".format(len(self._recipes) + len(self._code_infos))
@@ -1486,6 +1501,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             # _apply_filter 会写状态栏（分类计数），错误文案必须在其后
             # 写入才能露出来（旧版顺序即如此）
             self.status.setText(error_text)
+        elif clashes:
+            self.status.setText(
+                "警告：代码块与配方重名（{}），同名配方卡片不可达"
+                .format("、".join(clashes)))
 
     # ---------------- 设置面板：库目录 / 导入导出 ----------------
 
@@ -1942,7 +1961,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     self.list.setCurrentRow(i)
                     self.list.blockSignals(False)
                     break
-        self.status.setText("{}：{}/{} 个{}。{}".format(
+        self.status.setText("{}：{}/{} 个{}。{}{}".format(
             self._category_label(), len(entries), total,
             "代码块" if self._category_key == KEY_CODE else "recipe", note,
             "双击应用；或按住拖入网络编辑器。"))
@@ -2000,12 +2019,15 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
     # ---------------- 图标与预览 ----------------
 
     def thumb_pixmap(self, info, w, h):
-        """卡片缩略图：cover 裁剪铺满 (w, h)，按 (名,宽,高) 缓存。
+        """卡片缩略图：cover 裁剪铺满 (w, h)，按 (名,宽,高,dpr) 缓存。
 
         GIF 取首帧同样 cover（GIF 无裁剪流程，中心裁剪兜底）；
         无缩略图时占位图走同一 cover 路径。
         """
-        key = (info.name, w, h)
+        dpr = self.list.devicePixelRatioF()
+        if dpr <= 0:
+            dpr = 1.0
+        key = (info.name, w, h, round(dpr, 2))
         pm = self._cover_cache.get(key)
         if pm is not None:
             return pm
@@ -2013,7 +2035,6 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         # （显示尺寸×设备像素比；QIcon 不放大、只就近缩小），不再固定
         # 1024——QIcon 按请求尺寸生成并内部缓存位图，1024 档每个 recipe
         # 常驻近原图分辨率的大位图
-        dpr = self.list.devicePixelRatioF()
         if getattr(info, "is_code", False) \
                 and not metadata.get_thumb(info.name):
             # 代码块无自定义缩略图：直接渲染代码文本（顶部对齐、不做
@@ -2022,10 +2043,15 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             pm = codeblock.render_code_pixmap(info.code, info.language,
                                               w, h, dpr)
         else:
-            want = max(64, int(max(w, h) * (dpr if dpr > 0 else 1.0)))
+            # 按设备像素取源、cover 出 w*dpr × h*dpr 再标 DPR——直接裁
+            # 成 w×h（DPR 恒 1）的话 HiDPI 屏（125%/150% 缩放）必发糊，
+            # codeblock.render_code_pixmap 是正确对照组
+            want = max(64, int(max(w, h) * dpr))
             src = self._base_icon(info).pixmap(want, want)
-            pm = _cover_crop(src, w, h)
-            if pm is None:
+            pm = _cover_crop(src, max(1, int(w * dpr)), max(1, int(h * dpr)))
+            if pm is not None:
+                pm.setDevicePixelRatio(dpr)
+            else:
                 pm = self._placeholder.pixmap(w, h)
         if len(self._cover_cache) >= _COVER_CACHE_MAX:
             self._cover_cache.clear()   # 上限兜底：旧尺寸条目整表让位
@@ -2048,6 +2074,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             else:
                 icon = QtGui.QIcon(thumb)
         if icon is None:
+            # 占位结果也入缓存：无缩略图条目在搜索防抖下高频重过滤，
+            # 不缓存则每次都走 get_thumb 的 _to_abs + os.path.exists
+            # （缩略图增删的入口都按名 pop _thumb_cache，缓存不会失真）
+            self._thumb_cache[info.name] = self._placeholder
             return self._placeholder
         self._thumb_cache[info.name] = icon
         return icon
@@ -2129,6 +2159,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         # doc 分支会把 comment 藏起来——必须恢复，否则布局里没有任何
         # stretch 项，剩余空间会把空的名字标签/卡片拉伸推挤（空态错乱）
         self.preview_comment.setVisible(True)
+        self.preview_doc.stop_media()   # 隐藏后内联 GIF 仍在逐帧烧 CPU，一并停掉
         self.preview_doc.setVisible(False)
         self.tags_view.setText("（无标签）")
         self._apply_tags_panel_theme(None)
@@ -2192,15 +2223,17 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     if info.patterns else ""))
         self.meta_panel.setVisible(True)
         # 文档区：有文档渲染 markdown（内联 GIF/视频按钮），
-        # 无文档回退显示官方备注
-        if metadata.doc_exists(info.name):
+        # 无文档回退显示官方备注（读一次按内容判空——doc_exists +
+        # read_doc 连读两遍盘是纯浪费）
+        doc_text = metadata.read_doc(info.name)
+        if doc_text.strip():
             self.preview_doc.set_doc_dir(metadata.doc_dir(info.name))
-            self.preview_doc.set_markdown_with_media(
-                metadata.read_doc(info.name))
+            self.preview_doc.set_markdown_with_media(doc_text)
             self.preview_doc.setVisible(True)
             self.preview_doc.setEnabled(True)
             self.preview_comment.setVisible(False)
         else:
+            self.preview_doc.stop_media()   # 切到无文档条目：停掉上一卡的 GIF
             self.preview_doc.setVisible(False)
             self.preview_comment.setVisible(True)
             self.preview_comment.setText(
@@ -2530,7 +2563,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self.status.setText(str(exc))
             _push_houdini_error(str(exc))
         except Exception as exc:
-            log.warning("drag apply %s failed: %s", exc, exc_info=True)
+            log.warning("drag apply %s failed: %s", info.name, exc, exc_info=True)
             self.status.setText("创建失败: {}".format(exc))
             _push_houdini_error(str(exc))
 

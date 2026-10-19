@@ -207,11 +207,17 @@ def migrate_legacy_code_blocks():
 
     幂等：段空（或已迁过）直接返回 0。每个旧条目落一个 .h/.py（内部名
     去掉 htcode:: 前缀、撞名时加序号），元数据键 htcode::X 改挂到新名。
+
+    顺序约束：**先全部写文件，全部成功后才清旧段**——写盘中途失败
+    （磁盘满/只读）时旧段保留待下次重试，反序会让代码块内容永久丢失。
+    单条失败逐条记录、不中断整批；已有同内容文件的条目视为上次部分
+    迁移的产物，沿用原 stem 不另开 _2 副本（重试幂等）。
     """
-    blocks = metadata.take_code_blocks_for_migration()
+    blocks = metadata.read_code_blocks_for_migration()
     if not blocks:
         return 0
     moved = 0
+    failed = 0
     for old_name, rec in blocks.items():
         if not isinstance(rec, dict):
             continue
@@ -219,16 +225,35 @@ def migrate_legacy_code_blocks():
         language = rec.get("language")
         if language not in metadata.CODE_LANGUAGES:
             language = "vex"
-        unique = free_stem(stem)
-        save_code(unique, language, str(rec.get("code") or ""))
-        if unique != old_name:
-            metadata.rekey_metadata_name(old_name, unique)
-        moved += 1
+        code = str(rec.get("code") or "")
+        try:
+            # 重试幂等：上次部分迁移可能已为本条写过文件，内容一致时
+            # 沿用原 stem，避免失败重试后 free_stem 另开 _2 重复卡片
+            if stem_exists(stem) \
+                    and read_code(stem, language).strip() == code.strip():
+                unique = stem
+            else:
+                unique = free_stem(stem)
+            save_code(unique, language, code)
+            if unique != old_name:
+                metadata.rekey_metadata_name(old_name, unique)
+            moved += 1
+        except OSError as exc:
+            failed += 1
+            log.warning("migrate legacy code block %r failed, "
+                        "kept for retry: %s", old_name, exc)
+            continue
         if unique != stem:
             log.info("migrated code block %r -> %r (name taken)",
                      old_name, unique)
-    log.info("migrated %d legacy code blocks to vex_python_lib files",
-             moved)
+    if failed == 0:
+        metadata.finish_code_blocks_migration()
+        log.info("migrated %d legacy code blocks to vex_python_lib files",
+                 moved)
+    else:
+        log.warning("legacy code block migration incomplete: %d ok, "
+                    "%d failed; code_blocks section kept for retry",
+                    moved, failed)
     return moved
 
 
