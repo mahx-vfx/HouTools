@@ -1220,22 +1220,19 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
 
     def _choose_dir(self):
         start = self.lib_dir or default_lib_dir()
-        # 实例化 + 非原生对话框：静态便利函数（getExistingDirectory）
-        # 拿不到内部按钮，英文系统会出英文 OK/Cancel（见 ui.dialogs
-        # 模块说明）；目录模式默认只显示文件夹
-        dlg = QtWidgets.QFileDialog(self, "选择 HDR 库目录", start)
-        dlg.setFileMode(QtWidgets.QFileDialog.Directory)
-        dlg.setOption(QtWidgets.QFileDialog.DontUseNativeDialog, True)
-        dialogs.localize_buttons(dlg)
-        ok = dlg.exec_() == QtWidgets.QDialog.Accepted
-        selected = dlg.selectedFiles()
-        dlg.deleteLater()   # exec_ 后释放（父窗口长期存活）
-        d = selected[0] if selected else ""
-        if ok and d:
-            self.lib_dir = d
-            _SETTINGS.set("lib_dir", d)  # 记住该机器上的选择
-            self._update_dir_label()
-            self.reload()
+        # 原生目录选择器（同 Recipe 库 _add_dir 的静态便利函数调用）：
+        # Explorer 风格（面包屑地址栏/侧栏/底部文件夹框），观感与系统
+        # 一致。代价比非原生大——静态便利函数拿不到内部按钮，按钮文字
+        # 跟系统语言走（中文系统即中文；见 ui.dialogs 模块说明）——
+        # 用户拍板要原生观感
+        d = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "选择 HDR 库文件夹", start)
+        if not d:
+            return
+        self.lib_dir = os.path.abspath(d)
+        _SETTINGS.set("lib_dir", self.lib_dir)  # 记住该机器上的选择
+        self._update_dir_label()
+        self.reload()
 
     def _toggle_pin(self, on):
         _SETTINGS.set("pin_on_top", bool(on))
