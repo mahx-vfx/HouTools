@@ -181,7 +181,7 @@ def jtext(b: bytes) -> str:
 
 
 def release_url(owner: str, repo: str, tag: str) -> str:
-    return "https://gitcode.com/%s/%s/releases/tag/%s" % (owner, repo, tag)
+    return "https://gitcode.com/%s/%s/releases/%s" % (owner, repo, tag)
 
 
 def asset_names(release: dict) -> list[str]:

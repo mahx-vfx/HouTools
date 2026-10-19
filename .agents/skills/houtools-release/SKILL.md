@@ -161,7 +161,8 @@ HouTools vX.Y.Z
   轮询确认 assets 出现 HouTools.zip（OBS 回调有几秒延迟）。OBS 签名地址
   有效期短，脚本拿到立即用；手工复刻同样不要"先取地址稍后传"。
 - **幂等**：重复运行安全——已存在的发行版不重建、已上传的附件不重传。
-- 汇报成功时给发行页 URL（`https://gitcode.com/<owner>/<repo>/releases/tag/vX.Y.Z`）；
+- 汇报成功时给发行页 URL（`https://gitcode.com/<owner>/<repo>/releases/vX.Y.Z`；
+  注意 gitcode 网页路径没有 GitHub 风格的 `/tag/` 段）；
   assets 里 `vX.Y.Z.zip/.tar.gz/.tar.bz2/.tar` 是平台按 tag 自动生成的源码
   归档，不是上传的附件，汇报时不必当作异常。
 - **令牌安全**：令牌是明文落盘的密钥；若用户在对话里明文发过令牌，跑完提醒
