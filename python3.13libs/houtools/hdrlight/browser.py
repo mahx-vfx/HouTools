@@ -1112,10 +1112,10 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         self.list.setCurrentRow(-1)
 
     # 同一贴图重复赋值去重窗口（秒）：双击序列偶尔会漏进第二发（平台级
-    # DblClick、事件循环重入），表现为状态栏连闪两次 + 赋值执行两遍；
-    # 窗口略大于系统双击间隔（~500ms），与 Recipe Library 的
+    # DblClick、事件循环重入、连点节奏尾巴等），表现为状态栏连闪两次 +
+    # 赋值执行两遍；窗口必须盖过闪烁时长（900ms），与 Recipe Library 的
     # _apply_gated 同款契约：失败不占闸，修正后可立即重试
-    ASSIGN_DEDUP_WINDOW = 0.75
+    ASSIGN_DEDUP_WINDOW = 1.2
 
     def _on_double_click(self, item):
         """双击赋贴图；入口层同贴图去重见 ASSIGN_DEDUP_WINDOW。"""
