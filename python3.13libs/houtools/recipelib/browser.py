@@ -2371,9 +2371,17 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
     def _status_success(self, text):
         """成功反馈：状态栏文本 + 绿色高亮闪烁一下（2026-10 用户指定，
-        双击/拖拽应用成功时一眼可见）。失败路径不闪，保持纯文字。"""
+        双击/拖拽应用成功时一眼可见）。失败路径走 _status_error 红闪
+        （2026-10-21 用户指定）。"""
         self.status.setText(text)
         self._flash_status_bar()
+
+    def _status_error(self, text):
+        """失败反馈：状态栏文本 + 红色高亮闪烁一下（与 _status_success
+        同款脉冲、项目错误色 #d1283e）。只用于真实失败；前置未满足的
+        引导文案不闪，保持纯文字。"""
+        self.status.setText(text)
+        self._flash_status_bar(color="#d1283e")
 
     def _flash_status_bar(self, color="#3aa655", duration_ms=900):
         """状态栏背景脉冲：关键帧 0→峰值→0（快速亮起再衰减淡出），
@@ -2471,7 +2479,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 if appended:
                     self._status_success(msg)   # 全部/部分成功都闪烁
                 else:
-                    self.status.setText(msg)   # 全失败不闪
+                    self._status_error(msg)   # 全失败红色闪烁
                     _push_houdini_error(msg)
                     return False
                 return True
@@ -2606,7 +2614,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             _push_houdini_error(str(exc))
         except Exception as exc:
             log.warning("drag apply %s failed: %s", info.name, exc, exc_info=True)
-            self.status.setText("创建失败: {}".format(exc))
+            self._status_error("创建失败: {}".format(exc))
             _push_houdini_error(str(exc))
 
     def _cancel_drag(self):
@@ -2706,7 +2714,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     target.parm(parm_name).set(code_out)
             except Exception as exc:
                 log.warning("merge code failed: %s", exc, exc_info=True)
-                self.status.setText("并入失败: {}".format(exc))
+                self._status_error("并入失败: {}".format(exc))
                 _push_houdini_error(str(exc))
                 return
             self._status_success("已把「{}」并入 {}".format(
@@ -2725,7 +2733,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 node.name()))
         except Exception as exc:
             log.warning("code drag create failed: %s", exc, exc_info=True)
-            self.status.setText("创建失败: {}".format(exc))
+            self._status_error("创建失败: {}".format(exc))
             _push_houdini_error(str(exc))
 
     def _refresh_dropped_editor_display(self):
@@ -2780,7 +2788,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 node.setParmTemplateGroup(ptg)
         except Exception as exc:
             log.warning("editor display refresh failed: %s", exc, exc_info=True)
-            self.status.setText("刷新编辑器显示失败: {}".format(exc))
+            self._status_error("刷新编辑器显示失败: {}".format(exc))
             _push_houdini_error(str(exc))
             return
 
