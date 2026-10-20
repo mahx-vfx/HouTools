@@ -43,6 +43,12 @@ log = get_logger("recipelib.browser")
 
 TOOL_ID = "recipe_library"
 
+# 代码块拖入编辑器后触发面板重建的载体参数（按序取首个命中者）：
+# wrangle 家族 → autobind（第二栏 Bindings，工作流看不见）、
+# python SOP → maintainstate。见 _refresh_dropped_editor_display。
+_CARRIER_PARM_NAMES = ("autobind", "maintainstate")
+_REFRESH_TOGGLE_DELAY_MS = 150
+
 
 def _push_houdini_error(message):
     """把错误推到 Houdini 左下角状态栏（红色 severity=Error）。
@@ -2451,25 +2457,25 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         ghost.deleteLater()
 
     def _start_code_drag(self, info):
-        """代码块拖拽（方案 G 终态）：放行原生落点 + 撤销/重做管线重建
-        显示；网络编辑器分支 = 代码节点并入 / 空白创建节点。
+        """代码块拖拽（终态）：放行原生落点 + 参数模板可见性往返触发
+        面板重建修复显示；网络编辑器分支 = 代码节点并入 / 空白创建节点。
 
-        探针实证（2026-10-18 用户会话）：内建 VEX 编辑器是 GL 虚拟控件，
-        其原生落点把多行文本写进编辑器但显示层不重算（只渲染首行、其余
-        可框选不可见）；格式（text/CRLF/官方 nodePath 与原生节点拖拽
-        逐位对齐）、拖拽来源（外部文本/文件拖）全部无关，Ctrl+Enter
-        提交也不救——但**用户发现手动 Ctrl+Z 再 Ctrl+Shift+Z 后内容
-        完整正常显示**（重做管线会正确重建，drop 处理器漏掉的正是这一
-        步刷新）。G 的机制——纯公开 API，无模拟/无剪贴板/无注入：
-        1. 拖放前记录 hou.undos.undoLabels()（安全基线）；
-        2. QDrag 正常发车、**不拦截 Drop**——Houdini 自己的落点处理
-           负责定位+写入（落点定位是对的）；
-        3. exec 返回非 Ignore（落点被接受）后：比对 undoLabels——撤销
-           系统新增了条目（= 落点编辑注册进了统一撤销）才执行
-           hou.undos.performUndo() + performRedo()（复刻用户手动的那对
-           按键，重做管线重建显示）；**没新增就不执行**（防止误撤销用户
-           最近的其他操作——护栏，见 _rebuild_dropped_editor_display）；
-           重做后撤销条目保留（用户仍可正常 Ctrl+Z）。
+        探针实证（2026-10-18/20 用户会话）：内建 VEX 编辑器是 GL 虚拟
+        控件，其原生落点把多行文本写进编辑器但显示层不重算（只渲染首
+        行、其余可框选不可见）——数据始终正确（代码正常执行），纯显示
+        bug；MIME 格式（text/CRLF/官方 nodePath）、拖拽来源（外部文本/
+        文件拖）、Ctrl+Enter 提交全部无关。机制——纯公开 API，无模拟/
+        无剪贴板/无注入：
+        1. QDrag 正常发车、**不拦截 Drop**——Houdini 自己的落点处理
+           负责定位+写入（定位与数据都对）；
+        2. exec 返回非 Ignore（落点被接受）后走
+           _refresh_dropped_editor_display：拖放瞬间光标悬在编辑器上，
+           paneTabUnderCursor 识别节点，跨事件周期翻载体参数
+           （autobind/maintainstate）的隐藏旗标两次——每次真实变更各
+           触发一次面板整体重建，编辑器控件销毁重建后显示正常，结束时
+           旗标归位；
+        3. 载体缺失/识别失败一律静默（普通文本框的原生落点显示本来就
+           是好的）。
         拖在网络编辑器上：原生落点不接受外来文本（exec 返回 Ignore），
         落点命中代码节点 → NodeCodeDialog 并入；空白 → 创建对应节点
         并填码（同 recipe 拖拽语义）。
@@ -2478,12 +2484,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         mime = QtCore.QMimeData()
         mime.setText(info.code)   # 纯文本兜底（其他控件的通用路径）
         try:
-            # 方案 F：同时携带 Houdini 官方 nodePath 拖放格式（载荷=代码
-            # 文本）。官方文档（hou.qt.mimeType）明确"部分原生 Houdini
-            # 控件按 MIME 类型走不同的落点行为"——原生"拖节点进 VEX
-            # 编辑器"好用走的就是 node.path 格式的专用插入管线，纯文本
-            # 回退分支才有"写进不刷新"的 bug。载荷不是有效节点路径时其
-            # 处理器是否仍按文本插入，需真机验证（本方案的实验点）。
+            # 同时携带 Houdini 官方 nodePath 拖放格式（载荷=代码文本）：
+            # 部分原生控件按 MIME 类型走不同落点行为（hou.qt.mimeType）。
+            # 实验证实多行载荷在任何格式下都触发同一显示 bug，保留该
+            # 格式只为最大化与原生拖放的兼容面，显示修复不依赖它。
             import hou
             fmt = getattr(hou.qt.mimeType, "nodePath",
                           "application/sidefx-houdini-node.path")
@@ -2496,16 +2500,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self.list.devicePixelRatioF())
         drag.setPixmap(pm)
         drag.setHotSpot(QtCore.QPoint(pm.width() // 2, pm.height() // 2))
-        labels_before = None
-        try:
-            import hou
-            labels_before = tuple(hou.undos.undoLabels())
-        except Exception as exc:
-            log.debug("undoLabels unavailable: %s", exc)
         result = drag.exec(QtCore.Qt.CopyAction)
         drag.deleteLater()
         if result != QtCore.Qt.IgnoreAction:
-            self._rebuild_dropped_editor_display(labels_before)
+            self._refresh_dropped_editor_display()
             return
         pane = store.network_editor_under_cursor()
         if pane is None:
@@ -2563,35 +2561,79 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self.status.setText("创建失败: {}".format(exc))
             _push_houdini_error(str(exc))
 
-    def _rebuild_dropped_editor_display(self, labels_before):
-        """原生落点写入后，用 Houdini 撤销/重做管线重建编辑器显示
-        （方案 G，纯 API）：其 drop 处理器插入内容后漏了刷新（只渲染
-        首行），而撤销/重做管线会正确重建——用户手动 Ctrl+Z/
-        Ctrl+Shift+Z 实测发现，这里以 hou.undos.performUndo()+
-        performRedo() 复刻同样的操作。
+    def _refresh_dropped_editor_display(self):
+        """原生落点写入后触发参数面板整体重建，修复 GL 编辑器多行拖放
+        只渲染首行的显示 bug（数据本身正确）。
 
-        安全护栏：拖放前后比对 undoLabels——撤销系统新增了条目（=落点
-        编辑注册进了统一撤销，performUndo 撤的必然是它）才执行；没新增
-        就绝不动手（防止误撤销用户最近的其他操作）。新条目入栈会清空
-        重做栈，performRedo 重做的也必然是这条。"""
+        实测定律（2026-10-20 多轮会话）：parm.set 值变更、重绘（拖面板/
+        切窗口）、别处新开面板（浮动/复制——新实例天生干净但救不了旧实
+        例）、搜索过滤全部无效；唯一有效的是让面板整体重建（编辑器控件
+        销毁重建），且只在「模板组真的变了」时触发——同一脚本内关了又
+        开被判净零变化（节点首次定制那次例外），processEvents 救不了
+        （面板重建走 Houdini 空闲队列，非 Qt 事件）。
+        修复 = 两次真实变更各落一个事件周期：先翻载体隐藏旗标（第一
+        跳），QTimer 延迟后翻回来（第二跳）——各触发一次重建，结束时
+        旗标归位、面板外观零变化（载体选在用户看不到的位置：autobind
+        在 wrangle 第二栏 Bindings）。参数值零触碰。
+        识别失败/无载体一律静默返回（普通文本框的原生落点显示本来就是
+        好的）；锁定 HDA 等修改被拒 → 状态栏提示。"""
+        import hou
+        tab = None
         try:
-            import hou
-            if labels_before is None:
-                return
-            if tuple(hou.undos.undoLabels()) == labels_before:
-                # 撤销系统没新增条目：编辑器的落点编辑没走统一撤销，
-                # performUndo 会误伤用户最近的其他操作——不动
-                self.status.setText(
-                    "代码已由原生落点写入（其编辑器未注册撤销条目，"
-                    "显示若异常需手动编辑一处触发）")
-                return
-            hou.undos.performUndo()
-            hou.undos.performRedo()
-            self.status.setText("代码已插入落点（经撤销/重做管线重建显示）")
+            tab = hou.ui.paneTabUnderCursor()
         except Exception as exc:
-            log.warning("undo/redo rebuild failed: %s", exc, exc_info=True)
+            log.debug("paneTabUnderCursor failed: %s", exc)
+        node = None
+        if tab is not None:
+            try:
+                if tab.type() == hou.paneTabType.Parm:
+                    node = tab.currentNode()
+            except Exception as exc:
+                log.debug("currentNode failed: %s", exc)
+        ptg = None
+        if node is not None:
+            try:
+                ptg = node.parmTemplateGroup()
+            except Exception as exc:
+                log.debug("parmTemplateGroup failed: %s", exc)
+        carrier = None
+        if ptg is not None:
+            for name in _CARRIER_PARM_NAMES:
+                if ptg.find(name) is not None:
+                    carrier = name
+                    break
+        if ptg is None or carrier is None:
+            self.status.setText("代码已插入落点")
+            return
+        try:
+            with hou.undos.group("HouTools 刷新编辑器"):
+                template = ptg.find(carrier)
+                template.hide(not template.isHidden())
+                ptg.replace(carrier, template)
+                node.setParmTemplateGroup(ptg)
+        except Exception as exc:
+            log.warning("editor display refresh failed: %s", exc, exc_info=True)
             self.status.setText("刷新编辑器显示失败: {}".format(exc))
             _push_houdini_error(str(exc))
+            return
+
+        def _toggle_back():
+            # 第二跳必须落在独立事件周期（见 docstring），否则两跳合并
+            # 被判净零变化、面板不重建；旗标按当前值取反，天然自愈
+            try:
+                with hou.undos.group("HouTools 刷新编辑器"):
+                    ptg2 = node.parmTemplateGroup()
+                    t2 = ptg2.find(carrier)
+                    t2.hide(not t2.isHidden())
+                    ptg2.replace(carrier, t2)
+                    node.setParmTemplateGroup(ptg2)
+            except RuntimeError as exc:
+                log.debug("editor display restore skipped: %s", exc)
+            except Exception as exc:
+                log.warning("editor display restore failed: %s", exc, exc_info=True)
+
+        QtCore.QTimer.singleShot(_REFRESH_TOGGLE_DELAY_MS, _toggle_back)
+        self.status.setText("代码已插入落点（已触发面板重建）")
 
     def _apply_code_blocks(self):
         """代码块数据变更后的轻量重建：不重扫 HDA 库，只并表 + 重建
