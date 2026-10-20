@@ -2709,7 +2709,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 self.status.setText("并入失败: {}".format(exc))
                 _push_houdini_error(str(exc))
                 return
-            self.status.setText("已把「{}」并入 {}".format(
+            self._status_success("已把「{}」并入 {}".format(
                 self._display_label(info), target.path()))
             return
         position = None
@@ -2721,7 +2721,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             node = codeblock.create_node_with_code(
                 pane.pwd(), info.language, info.code,
                 self._display_label(info), position)
-            self.status.setText("已在当前网络创建 {} 并填入代码".format(
+            self._status_success("已在当前网络创建 {} 并填入代码".format(
                 node.name()))
         except Exception as exc:
             log.warning("code drag create failed: %s", exc, exc_info=True)
@@ -2800,7 +2800,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 log.warning("editor display restore failed: %s", exc, exc_info=True)
 
         QtCore.QTimer.singleShot(_REFRESH_TOGGLE_DELAY_MS, _toggle_back)
-        self.status.setText("代码已插入落点（已触发面板重建）")
+        self._status_success("代码已插入落点（已触发面板重建）")
 
     def _apply_code_blocks(self):
         """代码块数据变更后的轻量重建：不重扫 HDA 库，只并表 + 重建

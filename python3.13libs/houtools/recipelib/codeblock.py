@@ -966,12 +966,18 @@ def append_to_nodes(nodes, language, code):
                     skipped.append("{}: 无 {} 参数（不是 {} 代码节点）".format(
                         path, parm_name, label))
                     continue
-                if parm.keyframes() is not None:
+                if parm.keyframes():
+                    # 真实 22.0.429 干净参数返回空元组而非 None——用真值
+                    # 判断，is not None 会把所有真实节点误判有关键帧
                     skipped.append(
                         "{}: {} 有关键帧，已跳过（清关键帧后才可写入）".format(
                             path, parm_name))
                     continue
-                if parm.expression():
+                try:
+                    expr = parm.expression()
+                except Exception:
+                    expr = None   # 干净参数实测直接抛 OperationFailed
+                if expr:
                     skipped.append(
                         "{}: {} 带表达式，已跳过（清表达式后才可写入）".format(
                             path, parm_name))

@@ -1985,16 +1985,21 @@ def main():
             import contextlib as _ctx
 
             class _AppendParm:
-                def __init__(self, keyframes=None, expression=None,
-                             ref_path=None, value=""):
+                def __init__(self, keyframes=(), expression=None,
+                             ref_path=None, value="", expr_raises=False):
+                    # keyframes 默认空元组：真实 22.0.429 干净参数返回 ()
+                    # 而非 None（is not None 判断会把真实节点全部误判）
                     self._kf, self._expr, self._ref = keyframes, \
                         expression, ref_path
+                    self._expr_raises = expr_raises
                     self._value = value
                     self.set_value = None
                     self.set_kwargs = None
                 def keyframes(self):
                     return self._kf
                 def expression(self):
+                    if self._expr_raises:   # 干净参数实测直接抛
+                        raise RuntimeError("Parameter is not animated")
                     return self._expr
                 def getReferencedParm(self):
                     if self._ref is None:
@@ -2013,7 +2018,7 @@ def main():
                 return _types.SimpleNamespace(
                     path=lambda: "/obj/n", parm=lambda name: parm)
 
-            clean = _AppendParm(value="old")
+            clean = _AppendParm(value="old", expr_raises=True)
             keyframed = _AppendParm(keyframes=[object()])
             expr_parm = _AppendParm(expression="chs('../other/snippet')")
             ref_parm = _AppendParm(ref_path="/obj/other/snippet")
