@@ -2703,9 +2703,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             log.debug("find code node failed: %s", exc)
             target = None
         if target is not None:
-            target_lang = "vex" \
-                if codeblock.code_parm_name(target, "vex") is not None \
-                else "python"
+            target_lang = codeblock.node_code_language(target)
             if target_lang != info.language:
                 msg = "{} 代码块不能拖入 {} 代码节点 {}（语言不匹配）".format(
                     codeblock.LANGUAGE_LABELS[info.language],
@@ -2787,20 +2785,39 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     node = tab.currentNode()
             except Exception as exc:
                 log.debug("currentNode failed: %s", exc)
-        if node is not None and language is not None:
-            # 语言错配守卫：Python 卡拖进 VEX 编辑器（或反向）时原生
-            # 落点已把不兼容代码写进参数——自动撤销并红闪，节点零残留
-            node_lang = None
-            if codeblock.code_parm_name(node, "vex") is not None:
-                node_lang = "vex"
-            elif codeblock.code_parm_name(node, "python") is not None:
-                node_lang = "python"
-            if node_lang is not None and node_lang != language:
+        if language is not None:
+            # 语言错配守卫：Python 卡拖进 VEX 编辑器（或反向）时原生落点
+            # 已把不兼容代码写进参数。识别目标节点走多策略：落点参数面板
+            # 的 currentNode() 优先，选中节点兜底（拖入编辑框的节点通常
+            # 正是选中的那个；浮出的独立编辑器窗不是 pane tab，只能靠兜
+            # 底）；各信号对目标语言判断不一致时不动手——宁漏勿错撤
+            node_langs = []
+            guard_path = None
+            if node is not None:
+                nl = codeblock.node_code_language(node)
+                if nl is not None:
+                    node_langs.append(nl)
+                    guard_path = node.path()
+            try:
+                for sel in hou.selectedNodes():
+                    if sel is node:
+                        continue
+                    nl = codeblock.node_code_language(sel)
+                    if nl is None:
+                        continue
+                    if nl not in node_langs:
+                        node_langs.append(nl)
+                    if guard_path is None:
+                        guard_path = sel.path()
+            except Exception as exc:
+                log.debug("selection fallback failed: %s", exc)
+            if len(set(node_langs)) == 1 and node_langs[0] != language:
                 self._revert_dropped_insertion(
                     labels_before,
                     "{} 代码块不能拖入 {} 编辑器（{}）".format(
                         codeblock.LANGUAGE_LABELS[language],
-                        codeblock.LANGUAGE_LABELS[node_lang], node.path()))
+                        codeblock.LANGUAGE_LABELS[node_langs[0]],
+                        guard_path))
                 return
         ptg = None
         if node is not None:

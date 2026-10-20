@@ -516,6 +516,15 @@ def code_parm_name(node, language):
     return None
 
 
+def node_code_language(node):
+    """节点承载的代码语言（"vex"/"python"）；非代码节点返回 None。"""
+    if code_parm_name(node, "vex") is not None:
+        return "vex"
+    if code_parm_name(node, "python") is not None:
+        return "python"
+    return None
+
+
 def find_code_node_at(pane, language, position=None):
     """网络编辑器里落点处的代码节点（带对应语言代码参数），无则 None。
 
