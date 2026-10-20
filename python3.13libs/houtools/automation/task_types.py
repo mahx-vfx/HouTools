@@ -47,6 +47,26 @@ class OpenDWParams:
 TaskParams = Union[ButtonClickParams, FlipbookParams, HomeAssistantParams, OpenDWParams]
 
 
+def as_bool(value, default: bool) -> bool:
+    """JSON 布尔归一：只认真 bool；字符串按内容判（"false"/"0"/"no" 一类
+    写法 → False），数字 0 → False、其余真值 → True。
+
+    不能直接 bool(value)：字符串 "false" 是 truthy，会把用户明确禁用的
+    任务反转成启用（引擎照跑）、复选框被勾上、下次保存把"禁用"写回
+    "启用"——"加载—保存"往返把错误固化。
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    return text not in ("false", "0", "no", "off", "none", "null")
+
+
 @dataclass
 class TaskItem:
     """任务项 —— 组合了类型、参数和启用状态。"""
@@ -110,21 +130,25 @@ class TaskItem:
         if type_str == "BUTTON_CLICK":
             task_type = TaskType.BUTTON_CLICK
             params: TaskParams = ButtonClickParams(
-                node_path=params_data.get("node_path", ""),
-                parm_name=params_data.get("parm_name", ""),
+                # 字符串字段 str() 归一：手改 JSON 写成数字/布尔时不能让
+                # 非 str 进引擎（hou.node(1) 直接 TypeError）
+                node_path=str(params_data.get("node_path") or ""),
+                parm_name=str(params_data.get("parm_name") or ""),
             )
         elif type_str == "FLIPBOOK":
             task_type = TaskType.FLIPBOOK
             params = FlipbookParams(
-                start_frame=params_data.get("start_frame", "$RFSTART"),
-                end_frame=params_data.get("end_frame", "$RFEND"),
-                output_path=params_data.get("output_path", "$HIP/FlipBook/$HIPNAME/$HIPNAME.$F4.jpg"),
-                save_to_disk=params_data.get("save_to_disk", True),
+                start_frame=str(params_data.get("start_frame") or "$RFSTART"),
+                end_frame=str(params_data.get("end_frame") or "$RFEND"),
+                output_path=str(params_data.get("output_path")
+                                or "$HIP/FlipBook/$HIPNAME/$HIPNAME.$F4.jpg"),
+                save_to_disk=as_bool(params_data.get("save_to_disk", True),
+                                     True),
             )
         elif type_str == "HOME_ASSISTANT":
             task_type = TaskType.HOME_ASSISTANT
             params = HomeAssistantParams(
-                webhook_url=params_data.get("webhook_url", ""),
+                webhook_url=str(params_data.get("webhook_url") or ""),
             )
         elif type_str == "OPEN_DW":
             task_type = TaskType.OPEN_DW
@@ -135,5 +159,7 @@ class TaskItem:
         return TaskItem(
             task_type=task_type,
             params=params,
-            enabled=data.get("enabled", True),
+            # 布尔归一（as_bool）：原样透传会让 "false" 这类 truthy 字符串
+            # 把禁用任务变成启用
+            enabled=as_bool(data.get("enabled", True), True),
         )

@@ -269,6 +269,32 @@ def main():
             pass
     print("task_types from_dict tolerance OK")
 
+    # 布尔/字符串归一（as_bool）：手改 JSON 把布尔写成字符串时不能让
+    # "false"（truthy）把禁用任务反转成启用；字符串字段数字化不能把
+    # TypeError 带进 setText/hou.node
+    dirty = task_types.TaskItem.from_dict(
+        {"type": "BUTTON_CLICK",
+         "params": {"node_path": 1, "parm_name": None},
+         "enabled": "false"})
+    assert dirty.enabled is False, dirty.enabled
+    assert dirty.params.node_path == "1"
+    assert dirty.params.parm_name == ""
+    flip_dirty = task_types.TaskItem.from_dict(
+        {"type": "FLIPBOOK",
+         "params": {"save_to_disk": "false", "start_frame": 1001}})
+    assert flip_dirty.params.save_to_disk is False
+    assert flip_dirty.params.start_frame == "1001"
+    for _falsy in (0, "0", "no", "off", "false", "None"):
+        assert task_types.as_bool(_falsy, True) is False, _falsy
+    for _truthy in (True, 1, 2, "yes", "TRUE", "on"):
+        assert task_types.as_bool(_truthy, False) is True, _truthy
+    # None/空串 = "未提供"，透传 default（与 from_dict 缺字段语义一致）
+    assert task_types.as_bool(None, True) is True
+    assert task_types.as_bool(None, False) is False
+    assert task_types.as_bool("", True) is True
+    assert task_types.as_bool("  ", False) is False
+    print("task_types bool/string normalization OK")
+
     # JsonStore：顶层不是 JSON 对象（null/数组/字符串）也必须留底回退，
     # 不能让 TypeError 从 load() 逃逸——metadata/hdrlight 在 import 期
     # 构造 JsonStore，逃逸 = 整个工具不可用
@@ -347,6 +373,14 @@ def main():
             return self._path
     hip_path = "$HIP/HouTools_cfg/captures/obj-geo1-r_fire.jpg"
     assert cve.hip_capture_path("obj-geo1-r_fire.jpg") == hip_path
+    # marker 是 hip 里的普通字符串（分享场景即不可信输入）：喂文件操作
+    # 前必须过 _is_valid_marker，穿越/非纯文件名/非 .jpg 一律拒绝
+    assert cve._is_valid_marker("obj-geo1-r_fire.jpg")
+    assert cve._is_valid_marker("obj-net1-sub~foo.jpg")
+    for _bad in ("../important.txt", "..\\important.txt", "a/b.jpg",
+                 "a\\b.jpg", "x.png", "..", ".", "", None,
+                 "obj-geo1-r_fire.jpg/extra"):
+        assert not cve._is_valid_marker(_bad), _bad
     assert cve.is_stale_capture(_FakeImage("/obj/geo1/r_fire", "x"), "/obj/geo1/r_fire", hip_path)
     assert cve.is_stale_capture(_FakeImage("", hip_path), "/obj/other", hip_path)
     assert cve.is_stale_capture(
@@ -421,6 +455,25 @@ def main():
             data = json.loads(cfg.read_text(encoding="utf-8"))
             assert data["other"] == 1
             assert data["dw_exe_path"] == dm.DW_EXE_PATH_DEFAULT
+
+        # load() 的 params 就地归一：params 写成数组/字符串（手改坏档）时
+        # 降级为 {}，UI 填槽路径（_populate_slot_from_data 直接 .get()）
+        # 不再 AttributeError 把面板创建炸掉；合法 dict 原样保留
+        with patch.object(dm.AutomationDataManager, "_hip_base",
+                          return_value=str(tmp)):
+            cfg_dir = Path(tmp) / "HouTools_cfg" / "Automation_json"
+            cfg_dir.mkdir(parents=True)
+            (cfg_dir / "Dirty.json").write_text(json.dumps({"tasks": [
+                {"type": "BUTTON_CLICK", "params": [], "enabled": True},
+                {"type": "FLIPBOOK", "params": "x", "enabled": "false"},
+                {"type": "OPEN_DW", "params": None},
+                {"type": "OPEN_DW", "params": {"anything": 1}},
+            ]}), encoding="utf-8")
+            loaded = dm.AutomationDataManager.load("Dirty")
+            assert loaded[0]["params"] == {}, loaded[0]
+            assert loaded[1]["params"] == {}, loaded[1]
+            assert loaded[2]["params"] == {}, loaded[2]   # 显式 null 同款降级
+            assert loaded[3]["params"] == {"anything": 1}
 
     # deserialize_params：Flipbook 字段恢复 + 旧 JSON 遗留字段过滤
     flipbook = dm.AutomationDataManager.deserialize_params(
@@ -594,6 +647,36 @@ def main():
     vs_win.show()
     assert not vs_win._status_label.isVisible()
     assert vs_win._status_label.text() == ""
+
+    # P0 回归：提取 worker 在跑时 is_close_deferred 必须为 True——否则
+    # Reload 的 close_all 走 else 分支 deleteLater 掉窗口，运行中 QThread
+    # 的唯一 Python 引用消失、被 GC 析构（Qt6 qFatal，Houdini 直接崩）。
+    # 同时验证 _retire_worker 的模块级留引用 + finished 自动摘除
+    from PySide6.QtCore import QThread
+    from houtools.videoseq import window as vs_window
+
+    class _BusyWorker(QThread):
+        def run(self):
+            self.msleep(400)
+
+    busy = _BusyWorker()
+    vs_win._extract_worker = busy
+    busy.start()
+    time.sleep(0.05)   # start() 异步，给线程一点启动时间
+    assert busy.isRunning()
+    assert vs_win.is_close_deferred() is True
+    vs_win._retire_worker(busy)
+    assert busy in vs_window._LIVE_WORKERS
+    busy.wait(5000)
+    for _ in range(50):
+        if busy not in vs_window._LIVE_WORKERS:
+            break
+        app.processEvents()
+        time.sleep(0.02)
+    assert not busy.isRunning()
+    assert busy not in vs_window._LIVE_WORKERS, "finished 后必须自动摘除"
+    assert vs_win.is_close_deferred() is False
+    vs_win._extract_worker = None
     vs_win.deleteLater()
     print("VideoseqWindow instantiation OK")
 
@@ -1895,6 +1978,67 @@ def main():
                                code="")) == "代码块 • Python • 0 行"
             print("codeblock highlight/render/model OK")
 
+            # ---- append_to_nodes 预检三态（关键帧/表达式/channel
+            # reference 跳过并汇报，干净参数才写入）——真实函数带
+            # import hou，打桩 undos.group + 鸭子类型参数无头直测 ----
+            import types as _types
+            import contextlib as _ctx
+
+            class _AppendParm:
+                def __init__(self, keyframes=None, expression=None,
+                             ref_path=None, value=""):
+                    self._kf, self._expr, self._ref = keyframes, \
+                        expression, ref_path
+                    self._value = value
+                    self.set_value = None
+                    self.set_kwargs = None
+                def keyframes(self):
+                    return self._kf
+                def expression(self):
+                    return self._expr
+                def getReferencedParm(self):
+                    if self._ref is None:
+                        return self
+                    return _types.SimpleNamespace(path=lambda p=self._ref: p)
+                def path(self):
+                    return "/obj/n/snippet"
+                def evalAsString(self):
+                    return self._value
+                def set(self, value, follow_parm_reference=True):
+                    self.set_value = value
+                    self.set_kwargs = {"follow_parm_reference":
+                                       follow_parm_reference}
+
+            def _mk_node(parm):
+                return _types.SimpleNamespace(
+                    path=lambda: "/obj/n", parm=lambda name: parm)
+
+            clean = _AppendParm(value="old")
+            keyframed = _AppendParm(keyframes=[object()])
+            expr_parm = _AppendParm(expression="chs('../other/snippet')")
+            ref_parm = _AppendParm(ref_path="/obj/other/snippet")
+            nodes = [_mk_node(clean), _mk_node(keyframed),
+                     _mk_node(expr_parm), _mk_node(ref_parm),
+                     _mk_node(None)]
+            fake_hou = _types.SimpleNamespace(
+                undos=_types.SimpleNamespace(
+                    group=lambda name: _ctx.nullcontext()))
+            with patch.dict(sys.modules, {"hou": fake_hou}):
+                appended, skipped = rl_cb.append_to_nodes(
+                    nodes, "vex", "float x = 1.0;")
+            assert appended == ["/obj/n"], (appended, skipped)
+            assert clean.set_value == "old\n\nfloat x = 1.0;", clean.set_value
+            assert clean.set_kwargs == {"follow_parm_reference": False}, \
+                clean.set_kwargs
+            assert len(skipped) == 4, skipped
+            assert any("有关键帧" in s for s in skipped), skipped
+            assert any("带表达式" in s for s in skipped), skipped
+            assert any("channel reference" in s for s in skipped), skipped
+            assert any("无 snippet 参数" in s for s in skipped), skipped
+            assert keyframed.set_value is None and \
+                expr_parm.set_value is None and ref_parm.set_value is None
+            print("codeblock append pre-check OK")
+
             # ---- 编辑弹窗：创建态实时查重（重名/非法禁用确定键）/
             # 编辑态名称只读 ----
             dlg = rl_cb.CodeEditorDialog(None, info=None)
@@ -2070,6 +2214,18 @@ def main():
                                   side_effect=_fake_append) as m_retry:
                     wcb._on_double_click(wcb.list.item(0))
                 assert m_retry.call_count == 1, m_retry.call_count
+                # apply_fn 返回 False（未真正应用：层级不匹配/前置不满足等，
+                # _apply_recipe 现以返回值上报失败）同样回滚时间戳——失败
+                # 不占闸，修正后可立即重试
+                wcb._last_apply = None
+                assert wcb._apply_gated(
+                    wcb._info_by_name["smoke_py"], lambda: False) is False
+                with patch.object(rl_browser.store, "selected_nodes",
+                                  return_value=["/obj/n1"]), \
+                     patch.object(rl_browser.codeblock, "append_to_nodes",
+                                  side_effect=_fake_append) as m_retry2:
+                    wcb._on_double_click(wcb.list.item(0))
+                assert m_retry2.call_count == 1, m_retry2.call_count
                 # 空白数据区右键：菜单 = 新建代码块
                 def _exec_new_menu(menu, *_a, **_k):
                     texts = [a.text() for a in menu.actions()]

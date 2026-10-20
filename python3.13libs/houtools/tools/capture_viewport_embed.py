@@ -78,6 +78,22 @@ def hip_capture_path(filename):
     return "{}/{}".format(CAPTURE_DIR, filename)
 
 
+def _is_valid_marker(filename):
+    """截图标记合法性：纯文件名（无任何分隔符）且 .jpg 结尾。
+
+    userData 是 hip 文件里的普通字符串——分享/交接场景即为不可信输入，
+    喂给 os.remove / shutil.copyfile 前必须收敛（AGENTS.md 反模式：
+    "../x" 形态会穿越出 captures 目录，删/读库外的任意文件）。合法
+    标记恒等于 capture_filename(node.path()) 的产出，该编码只产出
+    [A-Za-z0-9._~-] 的纯文件名，故按"纯 basename + .jpg"白名单判定。
+    """
+    if not filename or os.path.basename(filename) != filename:
+        return False
+    if filename in (".", "..") or "/" in filename or "\\" in filename:
+        return False
+    return filename.lower().endswith(".jpg")
+
+
 def is_stale_capture(image, node_path, hip_paths):
     """既有背景图是否属于该节点的旧截图（重截覆盖/删除清理的判据）。
 
@@ -330,6 +346,15 @@ def _follow_rename(node, state):
         return
     old_anchor = state["anchor"]
     old_filename = state["filename"]
+    # 标记是 hip 里的普通字符串（分享的 hip 即不可信输入）：不合法时
+    # 不做任何文件操作（copyfile/os.remove 会读/删库外文件）——条目
+    # 匹配用旧标记无意义，一并跳过，等下次截图重新建立合法标记
+    if not _is_valid_marker(old_filename):
+        log.warning("截图标记不合法，改名跟随跳过文件迁移: %r (%s)",
+                    old_filename, old_anchor)
+        state["anchor"] = new_path
+        state["filename"] = capture_filename(new_path)
+        return
     new_filename = capture_filename(new_path)
     old_hip = hip_capture_path(old_filename)
     new_hip = hip_capture_path(new_filename)
@@ -418,6 +443,12 @@ def delete_capture(node):
     filename = node.userData(MARKER_KEY)
     if not filename:
         raise RuntimeError("节点 {} 没有截图标记".format(node.path()))
+    if not _is_valid_marker(filename):
+        # 不可信输入（分享的 hip 可伪造 userData）：穿越形态的标记会让
+        # 下面的 os.remove 删掉 captures 目录之外的任意文件，直接拒绝
+        raise RuntimeError(
+            "节点 {} 的截图标记不合法（{!r}），已拒绝删除文件".format(
+                node.path(), filename))
     hip_path = hip_capture_path(filename)
 
     removed_entry = False

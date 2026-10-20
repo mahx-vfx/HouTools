@@ -15,14 +15,25 @@ _WS_EX_APPWINDOW = 0x00040000
 
 
 def apply_appwindow_flags(window):
-    """给顶层窗口加 WS_EX_APPWINDOW；首次调用 winId() 会创建原生句柄。"""
+    """给顶层窗口加 WS_EX_APPWINDOW；首次调用 winId() 会创建原生句柄。
+
+    显式声明 argtypes：无声明时 ctypes 按平台 int 传参，句柄值能否转换
+    取决于 PySide6 给的是无符号还是有符号解释（实测 >2^31 的正值能过、
+    负值解释直接 ArgumentError 被 except 吞成静默失效）——c_void_p 对
+    任何解释都正确；样式值本身是 32 位 LONG，W 版 API 足够。
+    """
     import os
     if os.name != "nt":
         return
     try:
         import ctypes
-        hwnd = int(window.winId())
         user32 = ctypes.windll.user32
+        user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.GetWindowLongW.restype = ctypes.c_long
+        user32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                          ctypes.c_long]
+        user32.SetWindowLongW.restype = ctypes.c_long
+        hwnd = ctypes.c_void_p(int(window.winId()))
         style = user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
         user32.SetWindowLongW(hwnd, _GWL_EXSTYLE, style | _WS_EX_APPWINDOW)
     except Exception as exc:

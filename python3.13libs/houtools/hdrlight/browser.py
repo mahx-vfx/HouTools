@@ -1151,7 +1151,10 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         menu.addSeparator()
         act_copy = menu.addAction("复制路径")
         act_open = menu.addAction("打开所在文件夹")
-        act = menu.exec_(self.list.mapToGlobal(pos))
+        # QListWidget 是 QAbstractScrollArea：右键事件投递给 viewport，
+        # pos 是 viewport 坐标，须经 viewport 转全局（用控件自身会偏移
+        # 一个 frame，同 recipelib 网格的约定）
+        act = menu.exec_(self.list.viewport().mapToGlobal(pos))
         menu.deleteLater()   # exec_ 后释放：右键反复弹菜单会在窗口上积累
         if act is act_fav:
             self._set_favorite(item, not fav)
@@ -1194,6 +1197,12 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         | {f"LPT{i}" for i in range(1, 10)})
 
     def _create_category(self):
+        if not self.lib_dir:
+            # 未配置库目录时 os.path.join("", name) 退化成裸名字，目录会
+            # 建到进程 CWD 且侧栏永远不显示（reload 对空目录直接 return）
+            dialogs.warn(self, "新建分类",
+                         "请先点「更换目录」选择 HDR 库目录，再新建分类。")
+            return
         name, ok = dialogs.prompt_text(self, "新建分类", "分类文件夹名：")
         name = (name or "").strip()
         if not ok or not name:

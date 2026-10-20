@@ -74,13 +74,26 @@ def find_repo_root(explicit: str | None) -> Path:
     raise SystemExit("repo root not found (no HouTools.json above the skill)")
 
 
+def _flag_value(args: list[str], name: str) -> str | None:
+    """取 --flag 的值；不在参数里返回 None，在末尾缺值直接报错——
+    args[index+1] 裸取在 flag 是最后一个参数时抛 IndexError，报错
+    形态（list index out of range）对不上真实原因。"""
+    if name not in args:
+        return None
+    i = args.index(name)
+    if i + 1 >= len(args):
+        raise SystemExit(f"{name} 缺少值")
+    return args[i + 1]
+
+
 def main(argv: list[str]) -> None:
     args = [a for a in argv[1:]]
     if not args:
         raise SystemExit(__doc__)
     version = args[0].lstrip("vV")
-    out = Path(args[args.index("--out") + 1]) if "--out" in args else None
-    root = find_repo_root(args[args.index("--root") + 1] if "--root" in args else None)
+    out_val = _flag_value(args, "--out")
+    out = Path(out_val) if out_val else None
+    root = find_repo_root(_flag_value(args, "--root"))
     out = out or downloads_dir() / "HouTools.zip"
 
     init_py = (root / "python3.13libs" / "houtools" / "__init__.py").read_text(encoding="utf-8")

@@ -809,10 +809,20 @@ def append_to_nodes(nodes, language, code):
     """把代码**追加**到选中节点的代码参数（追加不是覆盖，用户拍板）。
 
     现有内容非空时以空行分隔接在其后；空内容直接写入。逐节点独立
-    容错：无匹配参数 / 参数锁定跳过并记录原因，不中断整批（同
-    paste_bbox 的逐分量容错约定）。整批一个 undo 组。返回
-    (appended, skipped)：appended 是节点路径列表，skipped 是
-    "路径: 原因" 列表；一个都没选中/全不匹配由调用方决定如何反馈。
+    容错：无匹配参数 / 参数锁定 / 带关键帧、表达式或 channel reference
+    跳过并记录原因，不中断整批（同 paste_bbox 的逐分量容错约定）。
+    整批一个 undo 组。返回 (appended, skipped)：appended 是节点路径列表，
+    skipped 是 "路径: 原因" 列表；一个都没选中/全不匹配由调用方决定如何
+    反馈。
+
+    ⚠ 预检三态（2026-10 复审补，与 paste_bbox 的 deleteAllKeyframes 教训
+    同源）：不预检直接 set 有三种静默失效——参数带表达式时 set() 不生效
+    （表达式存活，代码根本没进去）；带关键帧时写入被关键帧盖回；**带
+    channel reference 时 set() 默认 follow_parm_reference=True 会顺着
+    引用链写到被引用的那个参数上**（覆盖别人的 snippet）。命中一律跳过
+    并汇报，不清用户的表达式/关键帧（那会破坏既有接线）；引用本质也是
+    ch()/chs() 表达式、理论被 expression 分支覆盖，getReferencedParm 是
+    权威兜底；干净参数写入时显式 follow_parm_reference=False 双保险。
     """
     import hou
     parm_name = _PARM_FOR_LANGUAGE.get(language)
@@ -824,19 +834,35 @@ def append_to_nodes(nodes, language, code):
     appended, skipped = [], []
     with hou.undos.group("HouTools 追加代码块"):
         for node in nodes:
+            path = node.path()
             try:
                 parm = node.parm(parm_name)
                 if parm is None:
                     skipped.append("{}: 无 {} 参数（不是 {} 代码节点）".format(
-                        node.path(), parm_name, label))
+                        path, parm_name, label))
+                    continue
+                if parm.keyframes() is not None:
+                    skipped.append(
+                        "{}: {} 有关键帧，已跳过（清关键帧后才可写入）".format(
+                            path, parm_name))
+                    continue
+                if parm.expression():
+                    skipped.append(
+                        "{}: {} 带表达式，已跳过（清表达式后才可写入）".format(
+                            path, parm_name))
+                    continue
+                ref = parm.getReferencedParm()
+                if ref is not None and ref.path() != parm.path():
+                    skipped.append(
+                        "{}: {} 是 channel reference，已跳过"
+                        "（写入会覆盖被引用的参数）".format(path, parm_name))
                     continue
                 existing = parm.evalAsString()
-                if existing.strip():
-                    parm.set(existing.rstrip() + "\n\n" + code.strip("\n"))
-                else:
-                    parm.set(code)
-                appended.append(node.path())
+                value = (existing.rstrip() + "\n\n" + code.strip("\n")) \
+                    if existing.strip() else code
+                parm.set(value, follow_parm_reference=False)
+                appended.append(path)
             except Exception as exc:   # 锁定参数等：单点跳过不中断整批
-                skipped.append("{}: {}".format(node.path(), exc))
+                skipped.append("{}: {}".format(path, exc))
     return appended, skipped
 

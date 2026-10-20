@@ -915,7 +915,11 @@ class _ExportDialog(QtWidgets.QDialog):
     def _default_zip_path():
         name = "HouToolsRecipes_{}.zip".format(time.strftime("%Y%m%d"))
         d = _UI_SETTINGS.get("last_export_dir") or ""
-        return os.path.join(d, name) if d else name
+        if not d:
+            # 无上次导出目录时落用户主目录：默认名是相对路径，abspath 会
+            # 把它解到 Houdini 进程 CWD（用户无从预知是哪个目录）
+            d = os.path.expanduser("~")
+        return os.path.join(d, name)
 
     def _browse(self):
         path, _f = QtWidgets.QFileDialog.getSaveFileName(
@@ -926,7 +930,11 @@ class _ExportDialog(QtWidgets.QDialog):
 
     def zip_path(self):
         p = self._path.text().strip()
-        if p and not p.lower().endswith(".zip"):
+        if not p:
+            # 空路径的 abspath("") = 进程 CWD 本身（一个目录），后续
+            # ZipFile 报错文案对不上真实原因——返回空串让调用方显式提示
+            return ""
+        if not p.lower().endswith(".zip"):
             p += ".zip"
         return os.path.abspath(p)
 
@@ -1558,6 +1566,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         if dlg.exec_() != QtWidgets.QDialog.Accepted:
             return
         zip_path = dlg.zip_path()
+        if not zip_path:
+            warn(parent, "导出", "请填写导出 zip 路径。")
+            return
         include_hda = dlg.include_hda()
         try:
             summary = _run_with_progress(
@@ -1670,6 +1681,11 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             dirs = metadata.get_lib_dirs()
             if lib_dir not in dirs:
                 metadata.set_lib_dirs(dirs + [lib_dir])
+        # 包内覆盖同名配方的缩略图时，QIcon/cover 缓存的旧位图不会因文件
+        # 覆写失效（预览路径每次重读文件所以是对的，网格不清会一直显示
+        # 导入前的旧图，直到重开面板）——先清缓存再重建
+        self._thumb_cache.clear()
+        self._cover_cache.clear()
         self.reload()
         msg = ("导入完成：配方 {} 个、代码块 {} 个、文档 {} 份、缩略图 {} 张、"
                "库文件 {} 个{}"
@@ -2390,21 +2406,26 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
     def _apply_gated(self, info, apply_fn):
         """入口层同配方去重：窗口内的重复应用直接吞掉（不刷时间戳，让
-        下一次真正点击在窗口期满后正常触发）。gate 在用户入口层，
-        _apply_recipe 保持纯净（smoke test 直接调它）。应用抛异常时
-        回滚时间戳——失败不占闸，修正层级后可立即重试。"""
+        下一次真正点击在窗口期满后正常触发），被吞时给一句状态栏反馈、
+        不静默。apply_fn 返回 False（未真正应用）或抛异常都回滚时间戳
+        ——失败不占闸，修正层级后可立即重试。gate 在用户入口层，
+        _apply_recipe 返回是否真正应用但自身吞异常（smoke test 直接调它）。"""
         now = time.monotonic()
         last = getattr(self, "_last_apply", None)
         if last is not None and last[0] == info.name \
                 and now - last[1] < self.APPLY_DEDUP_WINDOW:
+            self.status.setText("（{} 的重复应用已忽略，稍候再试）".format(
+                self._display_label(info)))
             return False
         self._last_apply = (info.name, now)
         try:
-            apply_fn()
+            applied = bool(apply_fn())
         except Exception:
             self._last_apply = last
             raise
-        return True
+        if not applied:
+            self._last_apply = last
+        return applied
 
     def _on_double_click(self, item):
         info = self._info_by_name.get(item.data(QtCore.Qt.UserRole))
@@ -2416,6 +2437,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
         Tool 走官方工具架参数（立即在当前网络创建并 frame 框选），
         与"点工架按钮"同体验；预设/装饰类需要先选中目标节点。
+
+        返回 True = 已真正应用；False = 未应用（前置不满足/失败/不支持
+        的类型）——_apply_gated 据此回滚去重时间戳，失败不占闸。
         """
         try:
             if getattr(info, "is_code", False):
@@ -2426,7 +2450,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     self.status.setText(
                         "代码块：请先在场景中选中目标节点"
                         "（双击 = 把代码追加到选中节点的代码参数）")
-                    return
+                    return False
                 appended, skipped = codeblock.append_to_nodes(
                     nodes, info.language, info.code)
                 if appended:
@@ -2442,48 +2466,56 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     self._status_success(msg)   # 全部/部分成功都闪烁
                 else:
                     self.status.setText(msg)   # 全失败不闪
-                if not appended:
                     _push_houdini_error(msg)
+                    return False
+                return True
             elif info.category == "tool":
                 editor = store.current_network_editor()
                 if editor is None:
                     self.status.setText("找不到网络编辑器面板，请先打开一个网络视图")
-                    return
+                    return False
                 store.apply_tool_recipe(info.name, pane=editor, mode="shelf")
                 self._status_success("已把「{}」创建到当前网络".format(
                     info.display_label))
+                return True
             elif info.category == "node":
                 nodes = store.selected_nodes()
                 if not nodes:
                     self.status.setText("Node 预设：请先在场景中选中目标节点")
-                    return
+                    return False
                 store.apply_node_preset(info.name, nodes[0])
                 self._status_success("已把预设应用到 {}".format(nodes[0].path()))
+                return True
             elif info.category == "parm":
                 nodes = store.selected_nodes()
                 if not nodes:
                     self.status.setText("参数预设：请先在场景中选中目标节点")
-                    return
+                    return False
                 store.apply_parm_preset(info.name, nodes[0])
                 self._status_success("已把参数预设应用到 {}".format(nodes[0].path()))
+                return True
             elif info.category == "decoration":
                 nodes = store.selected_nodes()
                 if not nodes:
                     self.status.setText("Decoration：请先选中中心节点")
-                    return
+                    return False
                 store.apply_decoration(info.name, nodes[0])
                 self._status_success("已把装饰应用到 {}".format(nodes[0].path()))
+                return True
             else:
                 self.status.setText(
                     "类型 {} 暂不支持面板内应用，请用官方菜单".format(info.category))
+                return False
         except store.ContextMismatch as exc:
             # 预期内的操作反馈（层级点错）：红字提示即可，控制台保持安静
             self.status.setText(str(exc))
             _push_houdini_error(str(exc))
+            return False
         except Exception as exc:
             log.warning("apply %s failed: %s", info.name, exc, exc_info=True)
             self.status.setText("应用失败: {}".format(exc))
             _push_houdini_error(str(exc))
+            return False
 
     # ---------------- 拖拽进网络编辑器 ----------------
 
@@ -2553,6 +2585,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         def _do_apply():
             store.apply_tool_recipe(info.name, pane=pane, position=position,
                                     mode="drag")
+            return True   # 抛异常 = 失败回滚闸；正常返回 = 已应用
 
         try:
             if self._apply_gated(info, _do_apply):
@@ -2604,7 +2637,16 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             return
         stem, language, code = dlg.result_values()
         dlg.deleteLater()
-        codeblock.save_code(stem, language, code)
+        try:
+            codeblock.save_code(stem, language, code)
+        except (OSError, RuntimeError) as exc:
+            # 落盘失败必须可见（磁盘满/只读/杀软占用）：弹窗已关、代码只
+            # 在内存，异常抛出 Qt 槽只有控制台 traceback = 用户写的代码
+            # 无声丢失；不刷新列表，避免面板显示与磁盘不一致
+            log.warning("save code block %s failed: %s", stem, exc)
+            warn(self, "代码块",
+                 "保存失败：{}\n（代码内容未能保存，请重试）".format(exc))
+            return
         self._apply_code_blocks()
         self._select_category(KEY_CODE)
         for i in range(self.list.count()):
@@ -2622,7 +2664,15 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             return
         stem, language, code = dlg.result_values()
         dlg.deleteLater()
-        codeblock.save_code(info.name, language, code)   # 改语言=搬文件
+        try:
+            codeblock.save_code(info.name, language, code)   # 改语言=搬文件
+        except (OSError, RuntimeError) as exc:
+            # 落盘失败必须可见（磁盘满/只读/杀软占用）：弹窗已关、修改只
+            # 在内存，静默抛槽 = 用户的编辑无声丢失
+            log.warning("update code block %s failed: %s", info.name, exc)
+            warn(self, "代码块",
+                 "保存失败：{}\n（修改未能保存，请重试）".format(exc))
+            return
         self._thumb_cache.pop(info.name, None)
         self._cover_cache.clear()   # 代码变了：代码文本缩略图全部重渲染
         self._apply_code_blocks()
@@ -2640,7 +2690,14 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         box.deleteLater()   # exec_ 的模态框用完即释放，防积存
         if choice != QtWidgets.QMessageBox.Yes:
             return
-        codeblock.delete_code(info.name, info.language)
+        try:
+            codeblock.delete_code(info.name, info.language)
+        except RuntimeError as exc:
+            # 删除失败必须可见：异常抛出槽会让下面的元数据清理与列表
+            # 刷新全部不执行，界面上却毫无线索
+            log.warning("delete code block %s failed: %s", info.name, exc)
+            warn(self, "删除代码块", str(exc))
+            return
         metadata.clear_thumb(info.name)
         metadata.set_favorite(info.name, False)
         metadata.set_tags(info.name, [])
@@ -2671,7 +2728,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             # 空白数据区右键：新建代码块入口（2026-10 新功能）
             menu = QtWidgets.QMenu(self)
             act_new = menu.addAction("新建代码块")
-            act = menu.exec_(self.list.mapToGlobal(pos))
+            # QAbstractScrollArea 的右键事件投递给 viewport，customContext
+            # MenuRequested 的 pos 是 viewport 坐标——必须经 viewport 转
+            # 全局，用控件自身会偏移一个 frame（dev-notes「右键菜单体系」）
+            act = menu.exec_(self.list.viewport().mapToGlobal(pos))
             menu.deleteLater()   # exec_ 的模态菜单用完即释放，防积存
             if act is act_new:
                 self._new_code_block()
@@ -2706,7 +2766,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         act_del = None
         if not info.under_hfs:
             act_del = menu.addAction("删除 Recipe")
-        act = menu.exec_(self.list.mapToGlobal(pos))
+        # 同上：pos 是 viewport 坐标，经 viewport 转全局
+        act = menu.exec_(self.list.viewport().mapToGlobal(pos))
         menu.deleteLater()   # exec_ 的模态菜单用完即释放，防积存
         if act is act_fav:
             self._set_favorite(info, not fav)
@@ -2754,7 +2815,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         act_copy = menu.addAction("复制内部名")
         menu.addSeparator()
         act_del = menu.addAction("删除代码块")
-        act = menu.exec_(self.list.mapToGlobal(pos))
+        # 同上：pos 是 viewport 坐标，经 viewport 转全局
+        act = menu.exec_(self.list.viewport().mapToGlobal(pos))
         menu.deleteLater()   # exec_ 的模态菜单用完即释放，防积存
         if act is act_fav:
             self._set_favorite(info, not fav)

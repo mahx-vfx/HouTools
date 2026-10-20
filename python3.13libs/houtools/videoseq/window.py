@@ -452,8 +452,10 @@ class _ProbeWorker(QThread):
         )
         output = result.stderr
 
-        # 解析分辨率
-        res_match = re.search(r"(\d{2,5})x(\d{2,5})", output)
+        # 解析分辨率（锚定 Video: 流行）：output 是整段 stderr，Input #0
+        # 的文件名在流行之前，裸 search 会先命中文件名里的 NxM（如
+        # 1080p_1920x1080_src.mov 实际是 4K），信息面板显示错误分辨率
+        res_match = re.search(r"Video:.*?(\d{2,5})x(\d{2,5})", output)
         if res_match:
             info.width = int(res_match.group(1))
             info.height = int(res_match.group(2))
@@ -759,7 +761,8 @@ class _ExtractWorker(QThread):
         )
         output = result.stderr
 
-        res_match = re.search(r"(\d{2,5})x(\d{2,5})", output)
+        # 同 _probe_ffmpeg：分辨率锚定 Video: 流行，防文件名里的 NxM 抢先
+        res_match = re.search(r"Video:.*?(\d{2,5})x(\d{2,5})", output)
         if res_match:
             info.width = int(res_match.group(1))
             info.height = int(res_match.group(2))
@@ -811,6 +814,9 @@ class _VideoToSequenceWindow(QDialog):
         self._close_poll = None
         self._video_info = None
         self._current_video_path = ""
+        # 旧序列让位记录：(bak 路径, 原路径)。让位（改名 .bak）而非直接
+        # 删——转换成功才真正删，取消/失败原样改回（见 _on_convert）
+        self._stale_baks: list = []
 
         self._build_ui()
         self.setStyleSheet(STYLE_SHEET)
@@ -1224,6 +1230,18 @@ class _VideoToSequenceWindow(QDialog):
         except ImportError:
             output_dir = raw_output_dir
 
+        # image2 的 printf 模板作用于整条输出路径：目录里的 % 与前缀同罪
+        # （prefix_error 拒前缀 % 的同一理由），ffmpeg 报 Invalid conversion
+        # specifier 而 stderr 已弃 DEVNULL，用户只会看到一句退出码——展开
+        # 后一次性拦下
+        if "%" in output_dir:
+            dialogs.warn(
+                self, "输出目录不合法",
+                f"输出目录不能包含 %（ffmpeg 会把整条输出路径当 printf "
+                f"模板二次解释）：\n{output_dir}\n请更换输出目录后重试。",
+            )
+            return
+
         try:
             os.makedirs(output_dir, exist_ok=True)
         except OSError as e:
@@ -1254,18 +1272,25 @@ class _VideoToSequenceWindow(QDialog):
             ):
                 return
 
-        # 旧序列检查：同前缀+帧号+同扩展名的既有文件，避免新旧帧混杂
+        # 旧序列检查：同前缀+帧号+同扩展名的既有文件，避免新旧帧混杂。
+        # 改名 .bak 让位而非直接删：ffmpeg 带 -y 逐帧覆盖，若转换中途被
+        # 取消/失败，直接删掉的旧帧（未被新帧覆盖的部分）不可恢复——
+        # 成功后才真正删 .bak，取消/失败原样改回（_on_extract_error）
         stale = self._find_stale_sequence_files(output_dir, prefix)
+        self._stale_baks = []
         if stale and dialogs.question(
             self, "输出目录已有旧序列",
             f"输出目录已有同前缀旧序列 {len(stale)} 个文件，"
-            "是否删除以避免新旧帧混杂？",
+            "是否移开以避免新旧帧混杂？（转换成功后自动删除，"
+            "取消/失败自动还原）",
         ):
             for path in stale:
+                bak = path + ".bak"
                 try:
-                    os.remove(path)
+                    os.replace(path, bak)
+                    self._stale_baks.append((bak, path))
                 except OSError as e:
-                    logger.warning("删除旧序列文件失败 %s: %s", path, e)
+                    logger.warning("旧序列让位失败 %s: %s", path, e)
 
         # 保存转换上下文快照，供完成回调使用（完成后不读用户可能已改动的 UI）
         self._last_output_dir = raw_output_dir
@@ -1295,6 +1320,32 @@ class _VideoToSequenceWindow(QDialog):
         self._extract_worker.done.connect(self._on_extract_finished)
         self._extract_worker.error.connect(self._on_extract_error)
         self._extract_worker.start()
+        # 模块级保引用（P0）：Reload 关窗路径会把本窗口 deleteLater，实例
+        # 属性随之失去引用根，运行中的 QThread 被 GC 析构即 Qt6 qFatal。
+        # 探测 worker 一直有这道防线，提取 worker 此前漏登记——Reload 遇上
+        # 转换中且用户拒绝关闭时，窗口被删、线程唯一引用消失，Houdini 直接崩
+        self._retire_worker(self._extract_worker)
+
+    def _cleanup_stale_baks(self):
+        """转换成功后删除 .bak 旧序列（让位时未删，成功才删）。"""
+        for bak, _orig in getattr(self, "_stale_baks", []):
+            try:
+                os.remove(bak)
+            except OSError as e:
+                logger.warning("删除旧序列备份失败 %s: %s", bak, e)
+        self._stale_baks = []
+
+    def _restore_stale_baks(self):
+        """取消/失败后把 .bak 改回原名：旧帧是原始渲染资产，新帧可重跑
+        再生——还原用 os.replace（同盘原子），未被新帧覆盖的旧帧不丢，
+        已被覆盖的帧号恢复为旧内容，目录回到"转换前 + 新尾巴"状态。"""
+        for bak, orig in getattr(self, "_stale_baks", []):
+            try:
+                if os.path.exists(bak):
+                    os.replace(bak, orig)
+            except OSError as e:
+                logger.warning("旧序列还原失败 %s -> %s: %s", bak, orig, e)
+        self._stale_baks = []
 
     def _on_cancel(self):
         extract_running = bool(
@@ -1410,6 +1461,7 @@ class _VideoToSequenceWindow(QDialog):
         if self.sender() is not self._extract_worker:
             return  # 迟到的旧 worker 完成信号——丢弃
         self._reset_convert_ui()
+        self._cleanup_stale_baks()   # 成功才真正删除让位的旧序列
         self._progress_bar.setValue(total_frames)
         self._status_label.setVisible(True)
         self._status_label.setText(
@@ -1472,6 +1524,7 @@ class _VideoToSequenceWindow(QDialog):
         if self.sender() is not self._extract_worker:
             return  # 迟到的旧 worker 错误——丢弃
         self._reset_convert_ui()
+        self._restore_stale_baks()   # 取消/失败：旧序列原样还原
         self._status_label.setVisible(True)
         if error_msg == "转换已取消":
             # 取消收尾：报告已写帧数与保留位置（帧数为 worker 内的快照）
@@ -1687,8 +1740,18 @@ class _VideoToSequenceWindow(QDialog):
     # ── Lifecycle ────────────────────────────────────────────────────
 
     def is_close_deferred(self):
-        """window_manager.close_all 用：closeEvent 是否被推迟（转换进行中走隐藏+轮询）。"""
-        return bool(getattr(self, "_pending_close", False))
+        """window_manager.close_all 用：closeEvent 是否被推迟。
+
+        转换进行中一律算延迟关闭——无论用户已确认取消（_pending_close）
+        还是刚在 Reload 的 close_all 里被关闭（尚未走确认流程）。close_all
+        对返回 True 的窗口移入 _closing 持引用、不做 deleteLater：本窗口
+        是提取线程唯一的 Python 引用，删了它运行中的 QThread 会被 GC 析构
+        （Qt6 qFatal，Houdini 直接崩）。
+        """
+        if bool(getattr(self, "_pending_close", False)):
+            return True
+        worker = getattr(self, "_extract_worker", None)
+        return bool(worker is not None and worker.isRunning())
 
     def showEvent(self, event):  # noqa: N802 — Qt 命名约定
         # 重开窗口即撤销"取消并关闭"的决定（转换在进入 pending 时已请求
@@ -1706,6 +1769,11 @@ class _VideoToSequenceWindow(QDialog):
         super().showEvent(event)
 
     def closeEvent(self, event):  # noqa: N802 — Qt 命名约定
+        # Reload 的 close_all 触发的关闭不弹确认（模态框会卡住 reload，
+        # 交互上也是错的）：直接取消转换走延迟关闭，is_close_deferred 让
+        # close_all 持引用不删窗口
+        from houtools.ui import window_manager as _wm
+        reload_closing = bool(getattr(_wm, "_closing_all", False))
         if self._probe_worker and self._probe_worker.isRunning():
             # 置取消但不等待：探测线程阻塞在不可中断的子进程上，wait 必然
             # 白等（最长可达 ffprobe 30s + ffmpeg 计数 300s）；其迟到信号
@@ -1720,7 +1788,7 @@ class _VideoToSequenceWindow(QDialog):
                 # 不重复弹确认，维持推迟
                 event.ignore()
                 return
-            if not dialogs.question(
+            if not reload_closing and not dialogs.question(
                 self, "转换进行中",
                 "视频转换仍在进行，取消并关闭窗口？",
             ):

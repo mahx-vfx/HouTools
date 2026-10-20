@@ -75,9 +75,12 @@ _houtools_dispatcher.run("delete_viewport_capture", kwargs)
             <context>
                 <!-- 仅同时带三分量 size+t 向量参数的节点显示；判定与
                      houtools/tools/paste_bbox.py 的 is_bbox_target 双处同步。
-                     必须 all()：grid 的 size 是二向量（sizex/sizey），
-                     any() 会凭 t 三分量误命中 -->
-                <expression>kwargs.get("node") is not None and all((t := kwargs["node"].parmTuple(n)) is not None and len(t) == 3 for n in ("size", "t"))</expression>
+                     语义 = all()（两个元组都要三分量，grid 的 size 是二向量
+                     sizex/sizey，凭 t 三分量误命中不可接受）。
+                     表达式刻意只用最保守的 Python 子集（属性调用+比较+and/or，
+                     禁 walrus/推导式）：OPmenu context 表达式求值器的语法面
+                     没有官方承诺，smoke test 的 eval 对照才有意义 -->
+                <expression>kwargs.get("node") is not None and kwargs["node"].parmTuple("size") is not None and len(kwargs["node"].parmTuple("size")) == 3 and kwargs["node"].parmTuple("t") is not None and len(kwargs["node"].parmTuple("t")) == 3</expression>
             </context>
             <scriptItem id="houtools_paste_bbox_absolute">
                 <label>Paste Absolute Values [HT]</label>

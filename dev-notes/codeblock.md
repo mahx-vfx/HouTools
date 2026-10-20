@@ -56,3 +56,7 @@ VEX=SOP_attribwrangle、Python=SOP_python 的节点 tile 图（IconMapping 实�
 ## 测试
 
 smoke test 五段回归（文件存储+迁移/高亮渲染/弹窗查重/面板集成/打包往返）。
+
+## 追加写入的三态预检（2026-10 复审）
+
+- **append_to_nodes 写入前必须预检关键帧 / 表达式 / channel reference**：参数带表达式时 `set()` 不生效（表达式存活，代码根本没进去）；带关键帧时写入被盖回；**带引用时 `set()` 默认 `follow_parm_reference=True` 会顺着引用链写到被引用的那个参数上**（覆盖别人的 snippet）——三种都曾会静默失效却报"追加成功"。命中一律跳过并汇报（不清用户表达式/关键帧，那会破坏既有接线）；引用本质是 ch()/chs() 表达式、理论被 expression 分支覆盖，`getReferencedParm` 做权威兜底；干净参数写入显式 `follow_parm_reference=False` 双保险。无头回归：打桩 `hou.undos` + 鸭子类型参数直测（smoke test "codeblock append pre-check"）。

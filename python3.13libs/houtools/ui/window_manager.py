@@ -5,7 +5,6 @@ reloader can close everything before reloading modules; otherwise open
 windows would keep running pre-reload class code against stale state.
 """
 
-import logging
 from functools import partial
 
 from houtools.core.log import get_logger
@@ -28,6 +27,13 @@ try:
     _closing
 except NameError:
     _closing = set()
+
+# close_all() 执行期间的标志：窗口的 closeEvent 据此区分"Reload 触发的
+# 关闭"与用户手动关窗——Reload 路径不弹模态询问（模态会卡住 reload 进程，
+# 交互上也是错的），直接取消在跑的工作并走延迟关闭语义（见 videoseq
+# closeEvent）。普通 bool，无需 NameError 守卫：close_all 不在运行时
+# 本模块才可能被重载，重跑 False 即正确初值。
+_closing_all = False
 
 
 def open_window(tool_id, factory):
@@ -59,22 +65,27 @@ def close_all():
     析构运行中的 QThread（Qt6 下 qFatal 崩溃）。此类窗口移入 _closing
     持引用，由其延迟关闭收尾时自行 deleteLater。
     """
-    for tool_id, window in list(_windows.items()):
-        try:
-            if window.close():
-                window.deleteLater()
-            else:
-                deferred = getattr(window, "is_close_deferred", None)
-                if callable(deferred) and deferred():
-                    _closing.add(window)
-                    window.destroyed.connect(
-                        partial(_closing.discard, window))
-                else:
+    global _closing_all
+    _closing_all = True
+    try:
+        for tool_id, window in list(_windows.items()):
+            try:
+                if window.close():
                     window.deleteLater()
-        except RuntimeError:
-            _closing.discard(window)
-        except Exception as exc:
-            log.warning("cannot close window %r: %s", tool_id, exc)
+                else:
+                    deferred = getattr(window, "is_close_deferred", None)
+                    if callable(deferred) and deferred():
+                        _closing.add(window)
+                        window.destroyed.connect(
+                            partial(_closing.discard, window))
+                    else:
+                        window.deleteLater()
+            except RuntimeError:
+                _closing.discard(window)
+            except Exception as exc:
+                log.warning("cannot close window %r: %s", tool_id, exc)
+    finally:
+        _closing_all = False
     _windows.clear()
 
 

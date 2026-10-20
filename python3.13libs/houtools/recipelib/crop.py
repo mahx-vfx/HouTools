@@ -50,23 +50,33 @@ class _CropCanvas(QtWidgets.QWidget):
         return QtCore.QRect((dw - w) // 2, (dh - h) // 2, w, h)
 
     def source_rect(self):
-        """选框换算回原图坐标（裁剪用）。"""
+        """选框换算回原图坐标（裁剪用）；未框选返回空矩形。"""
+        if self._sel.isEmpty():
+            return QtCore.QRect()
         f = self._src.width() / self._disp.width()
         s = self._sel.normalized()
         return QtCore.QRect(int(s.x() * f), int(s.y() * f),
                             int(s.width() * f), int(s.height() * f))
 
     def source_pixmap(self):
-        """当前选区的原图分辨率裁剪结果（确认存储时用）。"""
+        """当前选区的原图分辨率裁剪结果（确认存储时用）；未框选返回空。"""
+        if self._sel.isEmpty():
+            return QtGui.QPixmap()
         return self._src.copy(self.source_rect())
 
+    def has_selection(self):
+        """是否框选了有效区域（框外按下未拖动 = False，确认应被拦下）。"""
+        return not self._sel.isEmpty()
+
     def display_crop_pixmap(self):
-        """当前选区的显示分辨率裁剪（预览热路径）。
+        """当前选区的显示分辨率裁剪（预览热路径）；未框选返回空图。
 
         直接从显示用 _disp（与原图同比例）取块，不做原图分辨率的整块
         copy——mouseMove 每步都会走到这里，原图大时逐帧整拷很费；最终
         预览就 150px 档，显示分辨率源精度足够。
         """
+        if self._sel.isEmpty():
+            return QtGui.QPixmap()
         return self._disp.copy(self._sel.normalized())
 
     def _fit_ratio_rect(self, anchor, target_w, sign_x, sign_y):
@@ -88,6 +98,8 @@ class _CropCanvas(QtWidgets.QWidget):
     # ---- 交互 ----
 
     def _handle_at(self, pos):
+        if self._sel.isEmpty():
+            return None
         s = self._sel.normalized()
         for name, cx, cy in (("tl", s.left(), s.top()),
                              ("tr", s.right(), s.top()),
@@ -111,8 +123,12 @@ class _CropCanvas(QtWidgets.QWidget):
         elif self._sel.normalized().contains(pos):
             self._mode = "move"
         else:
+            # 框外按下 = 重框起点。选区置空而非落 1×1 实矩形：原地松手
+            # （未拖动）时 1×1 会经 source_rect 放大成原图上的十来像素，
+            # 确认后把原缩略图静默毁掉；置空则确认被拦（has_selection）
+            # ，与 capture.py 框外按下 _sel=None 同语义
             self._mode = "new"
-            self._sel = QtCore.QRect(pos, QtCore.QSize(1, 1))
+            self._sel = QtCore.QRect()
 
     def mouseMoveEvent(self, e):
         pos = e.position().toPoint()
@@ -168,6 +184,12 @@ class _CropCanvas(QtWidgets.QWidget):
     def paintEvent(self, _e):
         p = QtGui.QPainter(self)
         p.drawPixmap(0, 0, self._disp)
+        if self._sel.isEmpty():
+            # 未框选（框外按下未拖动）：整图原样显示，不画遮罩/选框。
+            # 必须早退：空选框的 bottom()=-1 会让"选框下方遮罩"算出
+            # 覆盖全图的矩形，整图被压暗成"已框选"的假象
+            p.end()
+            return
         s = self._sel.normalized()
         r = self.rect()
         # 选框外半透明遮罩（四块）
@@ -228,7 +250,7 @@ class ThumbCropDialog(QtWidgets.QDialog):
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
 
         bottom = QtWidgets.QHBoxLayout()
@@ -249,11 +271,19 @@ class ThumbCropDialog(QtWidgets.QDialog):
         self._canvas.selectionChanged.connect(self._update_preview)
         self._update_preview()
 
+    def _on_accept(self):
+        if not self._canvas.has_selection():
+            # 框外按下未拖动（选区已清空）时确认 = 未框选：不弹窗不关窗
+            # （metadata.set_thumb_from_pixmap 会把空图拒掉，但预览还挂着
+            # 旧图，用户以为确认的就是看到的那张）
+            return
+        self.accept()
+
     def _update_preview(self):
-        # 预览走显示分辨率裁剪（_disp 与原图同比例，最终就 150px 档）；
-        # 原图分辨率的精确裁剪只在确认时经 result_pixmap() 取
         pm = self._canvas.display_crop_pixmap()
         if pm.isNull():
+            # 未框选：清预览，别让上一张旧图误导"确认的就是这张"
+            self._preview.clear()
             return
         self._preview.setPixmap(pm.scaled(
             self._preview.size(), QtCore.Qt.KeepAspectRatio,

@@ -212,6 +212,16 @@ class AutomationDataManager:
             if len(clean) != len(tasks):
                 logger.warning(
                     "丢弃 %d 个非对象的任务条目: %s", len(tasks) - len(clean), path)
+            # params 非 dict（手改坏档，含显式 null）就地降级为空对象：三条
+            # 消费路径（UI 填槽 / TaskItem.from_dict / Start 执行）都只认
+            # 对象，在读档入口统一归一——UI 填槽直接 .get()，不归一会把
+            # AttributeError 沿 _load_data → __init__ 逃逸，面板创建不出来
+            for d in clean:
+                if "params" in d and not isinstance(d["params"], dict):
+                    logger.warning(
+                        "任务 %r 的 params 不是对象（%s），已按空参数处理: %s",
+                        d.get("type"), type(d["params"]).__name__, path)
+                    d["params"] = {}
             return clean
         except json.JSONDecodeError as exc:
             logger.warning("JSON 解析失败: %s (%s)", path, exc)

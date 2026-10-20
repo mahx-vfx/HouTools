@@ -21,14 +21,16 @@ def find_ffmpeg() -> Optional[str]:
     hexe = "hffmpeg.exe" if os.name == "nt" else "hffmpeg"
 
     bundled = PROJECT_ROOT / exe
-    if bundled.exists():
+    # isfile 而非 exists：同名目录、0 字节/被杀软截断的文件都要放行到
+    # 后面更可信的候选（Popen 报 WinError 193 的报错形态用户读不懂）
+    if bundled.is_file():
         return str(bundled)
 
     hfs = os.environ.get("HFS", "")
     if hfs:
         for name in (hexe, exe):
             candidate = os.path.join(hfs, "bin", name)
-            if os.path.exists(candidate):
+            if os.path.isfile(candidate):
                 return candidate
 
     for name in (hexe, exe):
@@ -53,14 +55,14 @@ def find_ffprobe(ffmpeg_path: str) -> Optional[str]:
 
     for name in ("ffprobe.exe", "ffprobe"):
         candidate = os.path.join(directory, name)
-        if os.path.exists(candidate):
+        if os.path.isfile(candidate):
             return candidate
 
     lower = basename.lower()
     if lower.startswith("h") and "ffmpeg" in lower:
         probe_name = lower.replace("ffmpeg", "ffprobe")
         candidate = os.path.join(directory, probe_name)
-        if os.path.exists(candidate):
+        if os.path.isfile(candidate):
             return candidate
 
     if os.name == "nt":
@@ -71,7 +73,7 @@ def find_ffprobe(ffmpeg_path: str) -> Optional[str]:
     if hfs:
         for name in probe_names:
             candidate = os.path.join(hfs, "bin", name)
-            if os.path.exists(candidate):
+            if os.path.isfile(candidate):
                 return candidate
     for name in probe_names:
         found = shutil.which(name)

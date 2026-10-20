@@ -136,3 +136,8 @@
 
 - **safe_name 折叠非单射（a::b 与 a/b 同折 a__b，"保留全名可防互撞"是错误结论）**：写入/读取路径一律走 `metadata.unique_safe_name`——与库内其他内部名真实撞名时追加 md5 前 8 位摘要（照 HDR thumb_path 的解法），**解析结果登记进内部键 `stems` 恒定化**（不恒定则后出现的撞名伙伴会把先写者的 plain 路径"翻转"成摘要路径、已有文件失联；恒定后先写者保 plain、后写者落摘要），未撞名者与 safe_name 完全一致、存量零迁移。
 - 撞名检测数据源 = 元数据键 + 内部键 `docs`（write_doc/导入登记，纯文档零元数据的 recipe 也要参与互查）；撞名对的旧 plain 文档目录由 `migrate_colliding_doc_dirs` 在 reload 开头幂等改名（缩略图是存储式路径无需迁移）；`delete_doc_dir` 按 unique 名比对防连锁误伤；换扩展名重设缩略图/清除缩略图时按 unique 前缀清理旧文件（跳过仍被引用的，防孤儿）。
+
+## 已知代价备忘（暂不修，2026-10 复审）
+
+- **showEvent 触发的 reload 是主线程全量扫库**（hideEvent 置 `_need_reload`，重开面板即 `store.list_recipes` → `ensure_libraries_installed` 逐 .hda `definitionsInFile` 检视 + 逐 recipe 解析 `data.recipe.json`，uieady 启动时同样跑一遍）——冻结的是整个 Houdini 界面，lib_dirs 指向共享盘/大库时明显。库规模变大后做两件事：① 先 `os.stat` 各 .hda 取 mtime+size 指纹，与上次一致就跳过重扫；② 真正扫描挪 QThread（HOM 调用仍回主线程，按 Conventions「线程」约定），扫描期间状态栏提示"正在扫描库…"。
+- `metadata.unique_safe_name` 非纯函数（会把解析结果写进 stems 段落盘）：导入流程的 `_doc_target_map` 在文档解包前调用它——取消/失败的导入会留下无害的 stems 登记条目（先写者保 plain 的既有语义，不出错）。介意的话给 `unique_safe_name` 加 `register=False` 形参、导入成功后再统一登记。

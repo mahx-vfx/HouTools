@@ -38,6 +38,7 @@ from houtools.automation.task_types import (
     FlipbookParams,
     HomeAssistantParams,
     OpenDWParams,
+    as_bool,
 )
 from houtools.automation.execution_engine import ExecutionEngine
 from houtools.automation.styles import STYLE_SHEET
@@ -818,6 +819,15 @@ class AutomationWindow(QWidget):
         self.setStyleSheet(STYLE_SHEET)
         tool_fonts.apply(self)   # 工具统一字体（子树继承，Panel/浮窗共用本类）
         self.logDirWriteFailed.connect(self._on_log_dir_failed)
+        # 日志锁在构造期单线程创建：原惰性创建是 check-then-act，两线程
+        # 首次并发会各建一把、互斥失效（日志分裂成两份）——不在多线程
+        # 路径上赌时序
+        self._log_lock = threading.RLock()
+        # stdout 重定向兜底与日志句柄释放（进程级重定向不依赖面板存活）：
+        # destroyed 销毁时必触发，只连一次——原先每次 Start 追加两条连接，
+        # N 次执行挂 2N 条（幂等但连接表持续增长）
+        self.destroyed.connect(_force_restore_stdout)
+        self.destroyed.connect(self._close_log_file)
 
         # Delete 用 QShortcut 认领（WidgetWithChildren 上下文优先于
         # Houdini 的全局快捷键）；焦点在输入框内时 QLineEdit 自己会
@@ -1325,24 +1335,36 @@ class AutomationWindow(QWidget):
         """根据 dict 数据填充一个已创建的槽控件。"""
         type_str = data.get("type", "BUTTON_CLICK")
         params = data.get("params", {})
-        enabled = data.get("enabled", True)
+        if not isinstance(params, dict):
+            # load() 已就地归一，这里兜直喂脏数据的路径：truthy 非 dict
+            # 的 .get() 会 AttributeError 沿 _add_slot → _load_data →
+            # __init__ 逃逸，面板创建不出来
+            logger.warning("任务 %r 的 params 不是对象，按空参数处理: %r",
+                           data.get("type"), params)
+            params = {}
+        # 布尔/字符串经 as_bool/str() 归一：不归一会让 "false" 这类
+        # truthy 字符串把复选框勾上（下次保存把"禁用"反转回"启用"）、
+        # 数字喂 setText 抛 TypeError
+        enabled = as_bool(data.get("enabled", True), True)
 
         # setCurrentIndex 会触发 _on_type_changed 信号，自动处理 show/hide
         if type_str == "BUTTON_CLICK":
             combo.setCurrentIndex(0)
             parm_path_le.setText(_combine_parm_path(
-                params.get("node_path", ""),
-                params.get("parm_name", ""),
+                str(params.get("node_path") or ""),
+                str(params.get("parm_name") or ""),
             ))
         elif type_str == "FLIPBOOK":
             combo.setCurrentIndex(1)
-            start_frame_le.setText(params.get("start_frame", "$RFSTART"))
-            end_frame_le.setText(params.get("end_frame", "$RFEND"))
-            output_path_le.setText(params.get("output_path", "$HIP/FlipBook/$HIPNAME/$HIPNAME.$F4.jpg"))
-            save_to_disk_cb.setChecked(params.get("save_to_disk", True))
+            start_frame_le.setText(str(params.get("start_frame") or "$RFSTART"))
+            end_frame_le.setText(str(params.get("end_frame") or "$RFEND"))
+            output_path_le.setText(str(params.get("output_path")
+                                       or "$HIP/FlipBook/$HIPNAME/$HIPNAME.$F4.jpg"))
+            save_to_disk_cb.setChecked(
+                as_bool(params.get("save_to_disk", True), True))
         elif type_str == "HOME_ASSISTANT":
             combo.setCurrentIndex(2)
-            webhook_url_le.setText(params.get("webhook_url", ""))
+            webhook_url_le.setText(str(params.get("webhook_url") or ""))
         elif type_str == "OPEN_DW":
             combo.setCurrentIndex(3)  # 无参数页,占位提示见 page3
         else:
@@ -1950,11 +1972,11 @@ class AutomationWindow(QWidget):
         )
 
     def _ensure_log_lock(self) -> threading.RLock:
-        """日志锁（RLock）：_restore_stdout 持锁时会再进 _close_log_file。"""
-        lock = getattr(self, "_log_lock", None)
-        if lock is None:
-            lock = self._log_lock = threading.RLock()
-        return lock
+        """日志锁（RLock）：_restore_stdout 持锁时会再进 _close_log_file。
+
+        锁在 __init__ 构造期创建（单线程），这里只取不建。
+        """
+        return self._log_lock
 
     def _write_log(self, message: str):
         """写入日志（如果启用了日志输出到磁盘）。
@@ -2385,11 +2407,9 @@ class AutomationWindow(QWidget):
             self._orig_stderr = sys.stderr
             sys.stdout = _LogTee(self._orig_stdout, self._write_log)
             sys.stderr = _LogTee(self._orig_stderr, self._write_log)
-            # 面板在执行中被销毁时（收不到 closeEvent）进程级重定向必须
-            # 有人摘：destroyed 连模块级/只碰实例属性的兜底，不依赖实例
-            # 方法可达（销毁后 Python wrapper 属性访问仍安全）
-            self.destroyed.connect(_force_restore_stdout)
-            self.destroyed.connect(self._close_log_file)
+            # 面板在执行中被销毁时的进程级重定向兜底（destroyed → 模块级
+            # _force_restore_stdout / _close_log_file）在 __init__ 已连接，
+            # 这里不重复连——每次 Start 追加连接会让连接表随执行次数增长
 
         self._engine = ExecutionEngine(task_items)
         _LIVE_ENGINES.append(self._engine)
@@ -2545,9 +2565,13 @@ class AutomationWindow(QWidget):
         if pp_le is None:
             return
         params = data.get("params", {})
+        if not isinstance(params, dict):
+            logger.warning("任务 %r 的 params 不是对象，跳过填充: %r",
+                           data.get("type"), params)
+            return
         pp_le.setText(_combine_parm_path(
-            params.get("node_path", ""),
-            params.get("parm_name", ""),
+            str(params.get("node_path") or ""),
+            str(params.get("parm_name") or ""),
         ))
 
     def _find_trailing_empty_slots(self) -> list[int]:
@@ -2672,6 +2696,7 @@ class AutomationWindow(QWidget):
         # _on_all_completed/引擎负责 —— 面板子部件大概率收不到 closeEvent,
         # 这里被调用不代表窗口真正销毁,贸然复位会制造"假空闲"(按钮恢复
         # 可点,旧引擎迟到的 all_completed 又把新引擎状态打翻)。
-        # stdout 恢复是幂等的,重复调用无副作用。
-        self._restore_stdout()
+        # stdout/日志句柄同样不在此还原:取消是协作式的,在途任务还要继续
+        # 打印进日志直到引擎收尾,此处还原会把日志尾部截断——还原由
+        # _on_all_completed 与 destroyed 兜底两条既有路径负责。
         super().closeEvent(event)

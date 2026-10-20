@@ -20,7 +20,6 @@ Houdini 按钮"，顺序执行的唯一保证就是上一个任务的主线程�
   （见 ``_execute_button_click`` 的存盘特例），而不是改等待机制。
 """
 
-import logging
 import os
 import subprocess
 import threading
@@ -294,9 +293,15 @@ class ExecutionEngine(QThread):
 
         try:
             # CREATE_NO_WINDOW 防配置成控制台程序时弹黑框（与 videoseq
-            # 的 get_startup_kwargs 同一套约定）
-            subprocess.Popen(
+            # 的 get_startup_kwargs 同一套约定）。stdio 全部 DEVNULL：不
+            # 重定向时子进程继承 Houdini 的控制台，worker 日志会刷进主
+            # 程序；留引用防 GC 对仍在运行的子进程发 ResourceWarning
+            #（引擎存活期 = 本次运行，收尾后随引擎一起释放）
+            self._dw_process = subprocess.Popen(
                 [exe_path],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         except OSError as e:
             raise ValueError(f"启动 DW 失败: {exe_path} ({e})") from e
