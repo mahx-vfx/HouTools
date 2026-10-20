@@ -2182,8 +2182,9 @@ def main():
                                  "code": "print('x')"}, calls
                 assert "追加到 2 个节点" in wcb.status.text()
                 # 应用成功 → 状态栏绿色脉冲动画在跑（2026-10 用户指定）
-                assert getattr(wcb, "_status_flash_anim", None) is not None \
-                    and wcb._status_flash_anim.state() \
+                assert getattr(wcb, "_status_flash", None) is not None \
+                    and wcb._status_flash._anim is not None \
+                    and wcb._status_flash._anim.state() \
                     == QtCore.QAbstractAnimation.Running, \
                     "应用成功后状态栏应闪烁"
                 # 无选中：不触 append，状态栏引导
@@ -2191,13 +2192,13 @@ def main():
                                   return_value=[]), \
                      patch.object(rl_browser.codeblock, "append_to_nodes",
                                   side_effect=_fake_append) as m_ap:
-                    if getattr(wcb, "_status_flash_anim", None) is not None:
-                        wcb._status_flash_anim.stop()   # 隔离上一次闪烁
+                    if wcb._status_flash._anim is not None:
+                        wcb._status_flash._anim.stop()   # 隔离上一次闪烁
                     wcb._apply_recipe(wcb._info_by_name["smoke_py"])
                 assert m_ap.call_count == 0
                 assert "选中" in wcb.status.text()
                 # 全失败不闪（动画未启动或已停）
-                anim = getattr(wcb, "_status_flash_anim", None)
+                anim = wcb._status_flash._anim
                 assert anim is None or anim.state() \
                     != QtCore.QAbstractAnimation.Running
                 # 入口层同配方去重（0.75s 窗口，2026-10 用户反馈"闪完再

@@ -53,6 +53,7 @@ from houtools.ui import dialogs
 from houtools.ui import fonts as tool_fonts
 from houtools.ui import sidebar as ui_sidebar
 from houtools.ui.badge import FavoriteBadge
+from houtools.ui.status_flash import StatusFlash
 from houtools.ui.taskbar import apply_appwindow_flags
 
 log = get_logger("hdrlight.browser")
@@ -779,6 +780,7 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         # ---- 底部状态 ----
         self.status = QtWidgets.QLabel("选中场景里的灯光节点后，双击缩略图即可链接贴图")
         self.status.setObjectName("statusLabel")
+        self._status_flash = StatusFlash(self.status)
 
         # ---- 缩略图生成进度（仅生成中显示）----
         self.progress_label = QtWidgets.QLabel()
@@ -1114,7 +1116,7 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         if not os.path.exists(hdr_path):
             # 网格数据可能过期（文件被外部删除/盘断开）：坏路径写进
             # env_map 会渲染出黑天还报"成功"
-            self.status.setText("贴图文件不存在（可能已被移动或删除），请刷新库")
+            self._status_flash.error("贴图文件不存在（可能已被移动或删除），请刷新库")
             return
         try:
             targets = get_target_nodes()
@@ -1127,18 +1129,21 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         if len(targets) == 1:
             try:
                 node_path, parm = assign_hdr(hdr_path, targets[0])
-                self.status.setText(
+                self._status_flash.success(
                     "已把贴图赋给 {} 的 {} 参数".format(node_path, parm))
             except Exception as exc:
                 log.warning("assign failed: %s", exc, exc_info=True)
-                self.status.setText(
+                self._status_flash.error(
                     "赋值失败: {}: {}".format(type(exc).__name__, exc))
             return
         ok, failed = assign_hdr_to_nodes(hdr_path, targets)
         msg = "已把贴图赋给 {}/{} 个灯光".format(len(ok), len(targets))
         if failed:
             msg += "；失败 {} 个（{}）".format(len(failed), failed[0][1])
-        self.status.setText(msg)
+        if ok:
+            self._status_flash.success(msg)
+        else:
+            self._status_flash.error(msg)
 
     def _on_context_menu(self, pos):
         item = self.list.itemAt(pos)
@@ -1221,11 +1226,12 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
             os.makedirs(os.path.join(self.lib_dir, name), exist_ok=True)
         except OSError as exc:
             log.warning("create category failed: %s", exc)
-            self.status.setText("新建分类失败: {}".format(exc))
+            self._status_flash.error("新建分类失败: {}".format(exc))
             return
         self._category_key = name  # 重建后停在新分类上
         self.reload()
-        self.status.setText("已创建分类文件夹 {}，把下载的 HDR 放进去后点刷新".format(name))
+        self._status_flash.success(
+            "已创建分类文件夹 {}，把下载的 HDR 放进去后点刷新".format(name))
 
     def _choose_dir(self):
         start = self.lib_dir or default_lib_dir()

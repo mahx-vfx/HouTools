@@ -38,6 +38,7 @@ from houtools.ui.sidebar import (SIDEBAR_COLOR_ROLE, SIDEBAR_COUNT_ROLE,
 from houtools.ui.badge import FavoriteBadge
 from houtools.ui.dialogs import info, localize_buttons, localize_color_dialog, warn
 from houtools.ui.taskbar import apply_appwindow_flags
+from houtools.ui.status_flash import StatusFlash
 from houtools.core.settings import JsonStore
 
 log = get_logger("recipelib.browser")
@@ -1435,6 +1436,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
         self.status = QtWidgets.QLabel("双击卡片应用；或按住卡片拖入网络编辑器。")
         self.status.setObjectName("statusLabel")
+        self._status_flash = StatusFlash(self.status)
 
         lay = QtWidgets.QVBoxLayout(self)
         lay.addLayout(top)
@@ -2372,54 +2374,15 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
     def _status_success(self, text):
         """成功反馈：状态栏文本 + 绿色高亮闪烁一下（2026-10 用户指定，
         双击/拖拽应用成功时一眼可见）。失败路径走 _status_error 红闪
-        （2026-10-21 用户指定）。"""
-        self.status.setText(text)
-        self._flash_status_bar()
+        （2026-10-21 用户指定）。闪烁器为 ui.status_flash.StatusFlash
+        共享实现（HDR Library 同款）。"""
+        self._status_flash.success(text)
 
     def _status_error(self, text):
         """失败反馈：状态栏文本 + 红色高亮闪烁一下（与 _status_success
         同款脉冲、项目错误色 #d1283e）。只用于真实失败；前置未满足的
         引导文案不闪，保持纯文字。"""
-        self.status.setText(text)
-        self._flash_status_bar(color="#d1283e")
-
-    def _flash_status_bar(self, color="#3aa655", duration_ms=900):
-        """状态栏背景脉冲：关键帧 0→峰值→0（快速亮起再衰减淡出），
-        QVariantAnimation 驱动（走事件循环，无定时器）。动画对象挂在
-        窗口上，随窗口销毁。
-        同色且脉冲还在进行中就不重启：连发动作/平台级重复投递只刷新
-        文本、脉冲不中断——淡出中途重启正是「突然又亮一次再快速消失」
-        的病根（去重闸对失败路径不占闸，拦不住这类重复投递）；换色
-        （绿↔红）或动画已结束才重新起脉冲。"""
-        anim = getattr(self, "_status_flash_anim", None)
-        if anim is not None \
-                and anim.state() == QtCore.QAbstractAnimation.Running \
-                and getattr(self, "_flash_color", None) == QtGui.QColor(color):
-            return
-        if anim is None:
-            anim = QtCore.QVariantAnimation(self)
-            anim.setStartValue(0.0)
-            anim.setEndValue(1.0)
-            anim.setKeyValues([(0.0, 0.0), (0.12, 1.0), (1.0, 0.0)])
-            anim.valueChanged.connect(self._on_status_flash)
-            anim.finished.connect(self._on_status_flash_finished)
-            self._status_flash_anim = anim
-        anim.stop()
-        self._flash_color = QtGui.QColor(color)
-        anim.setDuration(duration_ms)
-        anim.start()
-
-    def _on_status_flash(self, value):
-        c = getattr(self, "_flash_color", None) \
-            or QtGui.QColor("#3aa655")
-        alpha = int(200 * float(value))
-        self.status.setStyleSheet(
-            "QLabel#statusLabel {{ background-color: rgba({}, {}, {}, {});"
-            " border-radius: 4px; color: #ffffff; }}".format(
-                c.red(), c.green(), c.blue(), alpha))
-
-    def _on_status_flash_finished(self):
-        self.status.setStyleSheet("")   # 回落到窗口级样式（灰字无底色）
+        self._status_flash.error(text)
 
     # 同一配方重复应用去重窗口（秒）：双击序列偶尔会漏进第二发（拖拽
     # 落网后紧跟的平台级 DblClick、事件循环重入等），表现为状态栏连闪
