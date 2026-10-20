@@ -2440,18 +2440,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     return False
                 appended, skipped = codeblock.append_to_nodes(
                     nodes, info.language, info.code)
-                dups = [s for s in skipped if codeblock.DUP_TAIL_HINT in s]
-                skipped = [s for s in skipped
-                           if codeblock.DUP_TAIL_HINT not in s]
                 if appended:
                     msg = "已把「{}」追加到 {} 个节点".format(
                         self._display_label(info), len(appended))
-                elif dups:
-                    # 幽灵双击（平台重复投递）的语义级根治：尾部已含本代
-                    # 码块的追加是空操作，纯文字不闪烁
-                    self.status.setText("「{}」已在选中节点代码尾部，未重复追加".format(
-                        self._display_label(info)))
-                    return False
                 else:
                     msg = "追加失败：「{}」没有可填充的节点".format(
                         self._display_label(info))
@@ -2459,8 +2450,6 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     msg += "；跳过 {} 个（{}）".format(len(skipped),
                                                       skipped[0])
                 if appended:
-                    if dups:
-                        msg += "；重复跳过 {} 个".format(len(dups))
                     self._status_success(msg)   # 全部/部分成功都闪烁
                 else:
                     self._status_error(msg)   # 全失败红色闪烁

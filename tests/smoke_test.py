@@ -2022,10 +2022,9 @@ def main():
             keyframed = _AppendParm(keyframes=[object()])
             expr_parm = _AppendParm(expression="chs('../other/snippet')")
             ref_parm = _AppendParm(ref_path="/obj/other/snippet")
-            dup_tail = _AppendParm(value="old\n\nfloat x = 1.0;")
             nodes = [_mk_node(clean), _mk_node(keyframed),
                      _mk_node(expr_parm), _mk_node(ref_parm),
-                     _mk_node(dup_tail), _mk_node(None)]
+                     _mk_node(None)]
             fake_hou = _types.SimpleNamespace(
                 undos=_types.SimpleNamespace(
                     group=lambda name: _ctx.nullcontext()))
@@ -2036,15 +2035,13 @@ def main():
             assert clean.set_value == "old\n\nfloat x = 1.0;", clean.set_value
             assert clean.set_kwargs == {"follow_parm_reference": False}, \
                 clean.set_kwargs
-            assert len(skipped) == 5, skipped
+            assert len(skipped) == 4, skipped
             assert any("有关键帧" in s for s in skipped), skipped
             assert any("带表达式" in s for s in skipped), skipped
             assert any("channel reference" in s for s in skipped), skipped
             assert any("无 snippet 参数" in s for s in skipped), skipped
-            assert any("尾部已含" in s for s in skipped), skipped
             assert keyframed.set_value is None and \
-                expr_parm.set_value is None and ref_parm.set_value is None \
-                and dup_tail.set_value is None
+                expr_parm.set_value is None and ref_parm.set_value is None
             print("codeblock append pre-check OK")
 
             # ---- 编辑弹窗：创建态实时查重（重名/非法禁用确定键）/
