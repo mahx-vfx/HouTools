@@ -2563,6 +2563,15 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self.status.setText("拖到目标网络编辑器上松手放置（Esc 取消）")
 
     def eventFilter(self, obj, event):
+        if getattr(self, "_code_drag_active", False):
+            # 代码块拖拽：只吞掉「目标是异语言代码编辑器」的 Drop——
+            # Houdini 的写入处理不会执行；其余事件一律放行
+            if event.type() == QtCore.QEvent.Drop:
+                if not self._code_drop_language_ok():
+                    self._code_drag_vetoed = True
+                    return True
+                return False
+            return False
         state = self._drag_state
         if state is not None:
             et = event.type()
@@ -2631,6 +2640,33 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         ghost.hide()
         ghost.deleteLater()
 
+    def _code_drop_language_ok(self):
+        """Drop 落点语言检查：光标下参数面板显示的代码节点与拖拽卡片
+        同语言（或根本不是代码编辑器）返回 True 放行；异语言返回 False
+        并给出红色提示。识别不了也放行——无法确定就不拦。"""
+        info = getattr(self, "_code_drag_info", None)
+        if info is None:
+            return True
+        try:
+            import hou
+            tab = hou.ui.paneTabUnderCursor()
+            if tab is None or tab.type() != hou.paneTabType.Parm:
+                return True
+            node = tab.currentNode()
+            node_lang = codeblock.node_code_language(node) \
+                if node is not None else None
+        except Exception as exc:
+            log.debug("code drop language check failed: %s", exc)
+            return True
+        if node_lang is None or node_lang == info.language:
+            return True
+        msg = "{} 代码块不能拖入 {} 编辑器（{}）".format(
+            codeblock.LANGUAGE_LABELS[info.language],
+            codeblock.LANGUAGE_LABELS[node_lang], node.path())
+        self._status_error(msg)
+        _push_houdini_error(msg)
+        return False
+
     def _start_code_drag(self, info):
         """代码块拖拽（终态）：放行原生落点 + 参数模板可见性往返触发
         面板重建修复显示；网络编辑器分支 = 代码节点并入 / 空白创建节点。
@@ -2650,8 +2686,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
            触发一次面板整体重建，编辑器控件销毁重建后显示正常，结束时
            旗标归位；
         3. 载体缺失/识别失败一律静默（普通文本框的原生落点显示本来就
-           是好的）；语言错配（Python 卡拖进 VEX 编辑器或反向）→ 自动
-           撤销写入 + 红闪。
+           是好的）；语言错配（Python 卡拖进 VEX 编辑器或反向）在拖放
+           层拦截：Drop 事件流经应用过滤器，目标是异语言代码编辑器时
+           直接吞掉——写入根本不发生；过滤器识别不了的旁路落点事后只
+           红闪提示。
         拖在网络编辑器上：原生落点不接受外来文本（exec 返回 Ignore），
         落点命中同语言代码节点 → NodeCodeDialog 并入；异语言代码节点 →
         拒绝（不并入不创建）；空白 → 创建对应节点并填码（同 recipe
@@ -2677,16 +2715,23 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self.list.devicePixelRatioF())
         drag.setPixmap(pm)
         drag.setHotSpot(QtCore.QPoint(pm.width() // 2, pm.height() // 2))
-        labels_before = None
+        # 语言错配在拖放层拦截：真实拖放的 Drop 事件流经应用过滤器，
+        # 目标是异语言代码编辑器时直接吞掉——Houdini 的写入处理根本
+        # 不会执行，从根上拒绝，无需任何事后撤销
+        self._code_drag_info = info
+        self._code_drag_vetoed = False
+        self._code_drag_active = True
+        QtWidgets.QApplication.instance().installEventFilter(self)
         try:
-            import hou
-            labels_before = tuple(hou.undos.undoLabels())
-        except Exception as exc:
-            log.debug("undoLabels unavailable: %s", exc)
-        result = drag.exec(QtCore.Qt.CopyAction)
+            result = drag.exec(QtCore.Qt.CopyAction)
+        finally:
+            self._code_drag_active = False
+            QtWidgets.QApplication.instance().removeEventFilter(self)
         drag.deleteLater()
+        if self._code_drag_vetoed:
+            return   # Drop 已被吞掉，什么都没写入，提示已在过滤器里给出
         if result != QtCore.Qt.IgnoreAction:
-            self._refresh_dropped_editor_display(labels_before, info.language)
+            self._refresh_dropped_editor_display(language=info.language)
             return
         pane = store.network_editor_under_cursor()
         if pane is None:
@@ -2753,8 +2798,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self._status_error("创建失败: {}".format(exc))
             _push_houdini_error(str(exc))
 
-    def _refresh_dropped_editor_display(self, labels_before=None,
-                                        language=None):
+    def _refresh_dropped_editor_display(self, language=None):
         """原生落点写入后触发参数面板整体重建，修复 GL 编辑器多行拖放
         只渲染首行的显示 bug（数据本身正确）。
 
@@ -2768,8 +2812,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         跳），QTimer 延迟后翻回来（第二跳）——各触发一次重建，结束时
         旗标归位、面板外观零变化（载体选在用户看不到的位置：autobind
         在 wrangle 第二栏 Bindings）。参数值零触碰。
-        语言错配守卫：卡片语言与目标代码编辑器不符（Python 拖进 VEX
-        或反向）→ 自动撤销这次写入（_revert_dropped_insertion）并红闪。
+        语言错配只红闪提示不做撤销：正常情况下错配 Drop 已在事件过滤
+        器层被吞掉（根本不会写进来），走到这里说明落点绕过了拦截（浮
+        动窗等旁路），不可靠的事后撤销比如实提示更糟。
         识别失败/无载体一律静默返回（普通文本框的原生落点显示本来就是
         好的）；锁定 HDA 等修改被拒 → 状态栏提示。"""
         import hou
@@ -2785,39 +2830,14 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     node = tab.currentNode()
             except Exception as exc:
                 log.debug("currentNode failed: %s", exc)
-        if language is not None:
-            # 语言错配守卫：Python 卡拖进 VEX 编辑器（或反向）时原生落点
-            # 已把不兼容代码写进参数。识别目标节点走多策略：落点参数面板
-            # 的 currentNode() 优先，选中节点兜底（拖入编辑框的节点通常
-            # 正是选中的那个；浮出的独立编辑器窗不是 pane tab，只能靠兜
-            # 底）；各信号对目标语言判断不一致时不动手——宁漏勿错撤
-            node_langs = []
-            guard_path = None
-            if node is not None:
-                nl = codeblock.node_code_language(node)
-                if nl is not None:
-                    node_langs.append(nl)
-                    guard_path = node.path()
-            try:
-                for sel in hou.selectedNodes():
-                    if sel is node:
-                        continue
-                    nl = codeblock.node_code_language(sel)
-                    if nl is None:
-                        continue
-                    if nl not in node_langs:
-                        node_langs.append(nl)
-                    if guard_path is None:
-                        guard_path = sel.path()
-            except Exception as exc:
-                log.debug("selection fallback failed: %s", exc)
-            if len(set(node_langs)) == 1 and node_langs[0] != language:
-                self._revert_dropped_insertion(
-                    labels_before,
-                    "{} 代码块不能拖入 {} 编辑器（{}）".format(
-                        codeblock.LANGUAGE_LABELS[language],
-                        codeblock.LANGUAGE_LABELS[node_langs[0]],
-                        guard_path))
+        if language is not None and node is not None:
+            node_lang = codeblock.node_code_language(node)
+            if node_lang is not None and node_lang != language:
+                msg = "{} 代码块不能拖入 {} 编辑器（{}）".format(
+                    codeblock.LANGUAGE_LABELS[language],
+                    codeblock.LANGUAGE_LABELS[node_lang], node.path())
+                self._status_error(msg)
+                _push_houdini_error(msg)
                 return
         ptg = None
         if node is not None:
@@ -2863,26 +2883,6 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
         QtCore.QTimer.singleShot(_REFRESH_TOGGLE_DELAY_MS, _toggle_back)
         self._status_success("代码已插入落点（已触发面板重建）")
-
-    def _revert_dropped_insertion(self, labels_before, message):
-        """被拒写入（语言错配）的自动撤销：原生落点编辑注册进了统一撤
-        销（undoLabels 新增条目）才执行 performUndo——只撤不重做，内容
-        回到拖入前，撤销管线同时重建编辑器显示；没新增就不动（防误撤
-        销用户最近的其他操作），仅提示手动 Ctrl+Z。"""
-        import hou
-        try:
-            if labels_before is None or \
-                    tuple(hou.undos.undoLabels()) == labels_before:
-                text = message + "（写入未能自动撤销，请手动 Ctrl+Z）"
-                self.status.setText(text)
-                _push_houdini_error(text)
-                return
-            hou.undos.performUndo()
-            self._status_error(message)
-        except Exception as exc:
-            log.warning("dropped insertion revert failed: %s", exc,
-                        exc_info=True)
-            self._status_error("{}（自动撤销失败: {}）".format(message, exc))
 
     def _apply_code_blocks(self):
         """代码块数据变更后的轻量重建：不重扫 HDA 库，只并表 + 重建

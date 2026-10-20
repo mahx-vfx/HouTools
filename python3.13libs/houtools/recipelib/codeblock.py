@@ -16,7 +16,7 @@
   数据由原生落点写对（拖入后代码正常执行），坏的只是 GL 编辑器显示
   层；跨事件周期翻载体参数（autobind/maintainstate）的隐藏旗标两次，
   每次真实变更各触发一次面板整体重建，显示修复且旗标归位；语言错配
-  （Python↔VEX 编辑器）自动撤销写入——见
+  （Python↔VEX 编辑器）在拖放层拦截吞掉——见
   browser._refresh_dropped_editor_display 与 dev-notes/codeblock.md
 - 拖入网络编辑器 = 落点命中同语言代码节点 → NodeCodeDialog 并入；异
   语言代码节点 → 拒绝；空白 → create_node_with_code 创建对应节点
