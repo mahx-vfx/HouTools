@@ -15,11 +15,12 @@
   往返触发面板重建（2026-10-21 从 feature/codeblock-drag 定案并入）：
   数据由原生落点写对（拖入后代码正常执行），坏的只是 GL 编辑器显示
   层；跨事件周期翻载体参数（autobind/maintainstate）的隐藏旗标两次，
-  每次真实变更各触发一次面板整体重建，显示修复且旗标归位——见
+  每次真实变更各触发一次面板整体重建，显示修复且旗标归位；语言错配
+  （Python↔VEX 编辑器）自动撤销写入——见
   browser._refresh_dropped_editor_display 与 dev-notes/codeblock.md
-- 拖入网络编辑器 = 落点命中代码节点 → NodeCodeDialog 并入；空白 →
-  create_node_with_code 创建对应节点（VEX→attribwrangle、Python→
-  python SOP）并填码
+- 拖入网络编辑器 = 落点命中同语言代码节点 → NodeCodeDialog 并入；异
+  语言代码节点 → 拒绝；空白 → create_node_with_code 创建对应节点
+  （VEX→attribwrangle、Python→python SOP）并填码
 - 卡片水印 = Houdini 官方节点图标（VEX=attribwrangle、Python=python
   SOP，hou.qt.Icon 取自图标索引；无头回退自绘 </>）
 - 卡片无自定义缩略图时，缩略图区直接渲染代码文本（深底 + 语法色，
@@ -521,7 +522,8 @@ def find_code_node_at(pane, language, position=None):
     以鼠标网络坐标对各子节点做矩形命中（position 为 tile 中心、
     size 为 tile 尺寸，外加半格宽容差）；命中多个取迭代序最后一个
     （后创建的节点渲染在上层）。position 缺省用 pane.cursorPosition()
-    （拖放松手点）。"""
+    （拖放松手点）。language 传 None 时命中任意带代码参数（VEX/Python）
+    的节点，调用方用 code_parm_name 自行判定其语言。"""
     import hou
     if pane is None:
         return None
@@ -534,7 +536,11 @@ def find_code_node_at(pane, language, position=None):
         return None
     hit = None
     for child in children:
-        if code_parm_name(child, language) is None:
+        if language is None:
+            if code_parm_name(child, "vex") is None \
+                    and code_parm_name(child, "python") is None:
+                continue
+        elif code_parm_name(child, language) is None:
             continue
         try:
             p = child.position()

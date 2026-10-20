@@ -2650,10 +2650,12 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
            触发一次面板整体重建，编辑器控件销毁重建后显示正常，结束时
            旗标归位；
         3. 载体缺失/识别失败一律静默（普通文本框的原生落点显示本来就
-           是好的）。
+           是好的）；语言错配（Python 卡拖进 VEX 编辑器或反向）→ 自动
+           撤销写入 + 红闪。
         拖在网络编辑器上：原生落点不接受外来文本（exec 返回 Ignore），
-        落点命中代码节点 → NodeCodeDialog 并入；空白 → 创建对应节点
-        并填码（同 recipe 拖拽语义）。
+        落点命中同语言代码节点 → NodeCodeDialog 并入；异语言代码节点 →
+        拒绝（不并入不创建）；空白 → 创建对应节点并填码（同 recipe
+        拖拽语义）。
         """
         drag = QtGui.QDrag(self)
         mime = QtCore.QMimeData()
@@ -2675,25 +2677,42 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self.list.devicePixelRatioF())
         drag.setPixmap(pm)
         drag.setHotSpot(QtCore.QPoint(pm.width() // 2, pm.height() // 2))
+        labels_before = None
+        try:
+            import hou
+            labels_before = tuple(hou.undos.undoLabels())
+        except Exception as exc:
+            log.debug("undoLabels unavailable: %s", exc)
         result = drag.exec(QtCore.Qt.CopyAction)
         drag.deleteLater()
         if result != QtCore.Qt.IgnoreAction:
-            self._refresh_dropped_editor_display()
+            self._refresh_dropped_editor_display(labels_before, info.language)
             return
         pane = store.network_editor_under_cursor()
         if pane is None:
             self.status.setText("已取消拖拽")
             return
-        # 拖在已有代码节点上：弹自建编辑器并入（内建 VEX 编辑器的多行
-        # 拖放渲染是 SideFX bug——格式/拖拽来源/文件拖/Ctrl+Enter 全部
-        # 实验排除，2026-10-18；自建编辑器是第三方工具验证多年的替代
-        # 形态，见 codeblock.NodeCodeDialog）
+        # 拖在已有代码节点上：同语言 → 弹自建编辑器并入；异语言 → 拒绝
+        # （不并入、也不 fallback 成在旁边凭空创建异语言节点）；空白或
+        # 非代码节点 → 走创建。自建编辑器是内建 GL 编辑器多行拖放渲染
+        # bug（2026-10-18 实验排除）之外验证多年的替代形态，见
+        # codeblock.NodeCodeDialog
         try:
-            target = codeblock.find_code_node_at(pane, info.language)
+            target = codeblock.find_code_node_at(pane, None)
         except Exception as exc:
             log.debug("find code node failed: %s", exc)
             target = None
         if target is not None:
+            target_lang = "vex" \
+                if codeblock.code_parm_name(target, "vex") is not None \
+                else "python"
+            if target_lang != info.language:
+                msg = "{} 代码块不能拖入 {} 代码节点 {}（语言不匹配）".format(
+                    codeblock.LANGUAGE_LABELS[info.language],
+                    codeblock.LANGUAGE_LABELS[target_lang], target.path())
+                self._status_error(msg)
+                _push_houdini_error(msg)
+                return
             parm_name = codeblock.code_parm_name(target, info.language)
             try:
                 existing = target.parm(parm_name).unexpandedString()
@@ -2736,7 +2755,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self._status_error("创建失败: {}".format(exc))
             _push_houdini_error(str(exc))
 
-    def _refresh_dropped_editor_display(self):
+    def _refresh_dropped_editor_display(self, labels_before=None,
+                                        language=None):
         """原生落点写入后触发参数面板整体重建，修复 GL 编辑器多行拖放
         只渲染首行的显示 bug（数据本身正确）。
 
@@ -2750,6 +2770,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         跳），QTimer 延迟后翻回来（第二跳）——各触发一次重建，结束时
         旗标归位、面板外观零变化（载体选在用户看不到的位置：autobind
         在 wrangle 第二栏 Bindings）。参数值零触碰。
+        语言错配守卫：卡片语言与目标代码编辑器不符（Python 拖进 VEX
+        或反向）→ 自动撤销这次写入（_revert_dropped_insertion）并红闪。
         识别失败/无载体一律静默返回（普通文本框的原生落点显示本来就是
         好的）；锁定 HDA 等修改被拒 → 状态栏提示。"""
         import hou
@@ -2765,6 +2787,21 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     node = tab.currentNode()
             except Exception as exc:
                 log.debug("currentNode failed: %s", exc)
+        if node is not None and language is not None:
+            # 语言错配守卫：Python 卡拖进 VEX 编辑器（或反向）时原生
+            # 落点已把不兼容代码写进参数——自动撤销并红闪，节点零残留
+            node_lang = None
+            if codeblock.code_parm_name(node, "vex") is not None:
+                node_lang = "vex"
+            elif codeblock.code_parm_name(node, "python") is not None:
+                node_lang = "python"
+            if node_lang is not None and node_lang != language:
+                self._revert_dropped_insertion(
+                    labels_before,
+                    "{} 代码块不能拖入 {} 编辑器（{}）".format(
+                        codeblock.LANGUAGE_LABELS[language],
+                        codeblock.LANGUAGE_LABELS[node_lang], node.path()))
+                return
         ptg = None
         if node is not None:
             try:
@@ -2809,6 +2846,26 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
         QtCore.QTimer.singleShot(_REFRESH_TOGGLE_DELAY_MS, _toggle_back)
         self._status_success("代码已插入落点（已触发面板重建）")
+
+    def _revert_dropped_insertion(self, labels_before, message):
+        """被拒写入（语言错配）的自动撤销：原生落点编辑注册进了统一撤
+        销（undoLabels 新增条目）才执行 performUndo——只撤不重做，内容
+        回到拖入前，撤销管线同时重建编辑器显示；没新增就不动（防误撤
+        销用户最近的其他操作），仅提示手动 Ctrl+Z。"""
+        import hou
+        try:
+            if labels_before is None or \
+                    tuple(hou.undos.undoLabels()) == labels_before:
+                text = message + "（写入未能自动撤销，请手动 Ctrl+Z）"
+                self.status.setText(text)
+                _push_houdini_error(text)
+                return
+            hou.undos.performUndo()
+            self._status_error(message)
+        except Exception as exc:
+            log.warning("dropped insertion revert failed: %s", exc,
+                        exc_info=True)
+            self._status_error("{}（自动撤销失败: {}）".format(message, exc))
 
     def _apply_code_blocks(self):
         """代码块数据变更后的轻量重建：不重扫 HDA 库，只并表 + 重建
