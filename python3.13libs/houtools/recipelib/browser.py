@@ -2385,9 +2385,17 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
     def _flash_status_bar(self, color="#3aa655", duration_ms=900):
         """状态栏背景脉冲：关键帧 0→峰值→0（快速亮起再衰减淡出），
-        QVariantAnimation 驱动（走事件循环，无定时器）；重复触发直接
-        重启当前动画，不叠加。动画对象挂在窗口上，随窗口销毁。"""
+        QVariantAnimation 驱动（走事件循环，无定时器）。动画对象挂在
+        窗口上，随窗口销毁。
+        同色且脉冲还在进行中就不重启：连发动作/平台级重复投递只刷新
+        文本、脉冲不中断——淡出中途重启正是「突然又亮一次再快速消失」
+        的病根（去重闸对失败路径不占闸，拦不住这类重复投递）；换色
+        （绿↔红）或动画已结束才重新起脉冲。"""
         anim = getattr(self, "_status_flash_anim", None)
+        if anim is not None \
+                and anim.state() == QtCore.QAbstractAnimation.Running \
+                and getattr(self, "_flash_color", None) == QtGui.QColor(color):
+            return
         if anim is None:
             anim = QtCore.QVariantAnimation(self)
             anim.setStartValue(0.0)
