@@ -1111,13 +1111,33 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         选中态），避免选中高亮一直挂在缩略图上。"""
         self.list.setCurrentRow(-1)
 
+    # 同一贴图重复赋值去重窗口（秒）：双击序列偶尔会漏进第二发（平台级
+    # DblClick、事件循环重入），表现为状态栏连闪两次 + 赋值执行两遍；
+    # 窗口略大于系统双击间隔（~500ms），与 Recipe Library 的
+    # _apply_gated 同款契约：失败不占闸，修正后可立即重试
+    ASSIGN_DEDUP_WINDOW = 0.75
+
     def _on_double_click(self, item):
+        """双击赋贴图；入口层同贴图去重见 ASSIGN_DEDUP_WINDOW。"""
         hdr_path = item.data(QtCore.Qt.UserRole)
+        now = time.monotonic()
+        last = getattr(self, "_last_assign", None)
+        if last is not None and last[0] == hdr_path \
+                and now - last[1] < self.ASSIGN_DEDUP_WINDOW:
+            self.status.setText("（同一贴图的重复赋值已忽略，稍候再试）")
+            return
+        if self._do_assign(hdr_path):
+            self._last_assign = (hdr_path, now)
+
+    def _do_assign(self, hdr_path):
+        """执行赋值；返回 True = 已真正应用（占用去重闸），False = 未应用
+        （回滚时间戳：失败/未选中不占闸，修正后可立即重试）。"""
         if not os.path.exists(hdr_path):
             # 网格数据可能过期（文件被外部删除/盘断开）：坏路径写进
             # env_map 会渲染出黑天还报"成功"
-            self._status_flash.error("贴图文件不存在（可能已被移动或删除），请刷新库")
-            return
+            self._status_flash.error(
+                "贴图文件不存在（可能已被移动或删除），请刷新库")
+            return False
         try:
             targets = get_target_nodes()
         except Exception as exc:  # 无场景/非 GUI 环境兜底
@@ -1125,7 +1145,7 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
             targets = []
         if not targets:
             self.status.setText("请先在场景中选中灯光节点（可多选），再双击缩略图")
-            return
+            return False
         if len(targets) == 1:
             try:
                 node_path, parm = assign_hdr(hdr_path, targets[0])
@@ -1135,15 +1155,17 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
                 log.warning("assign failed: %s", exc, exc_info=True)
                 self._status_flash.error(
                     "赋值失败: {}: {}".format(type(exc).__name__, exc))
-            return
+                return False
+            return True
         ok, failed = assign_hdr_to_nodes(hdr_path, targets)
         msg = "已把贴图赋给 {}/{} 个灯光".format(len(ok), len(targets))
         if failed:
             msg += "；失败 {} 个（{}）".format(len(failed), failed[0][1])
         if ok:
             self._status_flash.success(msg)
-        else:
-            self._status_flash.error(msg)
+            return True
+        self._status_flash.error(msg)
+        return False
 
     def _on_context_menu(self, pos):
         item = self.list.itemAt(pos)
