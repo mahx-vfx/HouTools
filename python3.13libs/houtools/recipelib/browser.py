@@ -44,6 +44,12 @@ log = get_logger("recipelib.browser")
 
 TOOL_ID = "recipe_library"
 
+# 代码块拖入编辑器后触发面板重建的载体参数（按序取首个命中者）：
+# wrangle 家族 → autobind（第二栏 Bindings，工作流看不见）、
+# python SOP → maintainstate。见 _refresh_dropped_editor_display。
+_CARRIER_PARM_NAMES = ("autobind", "maintainstate")
+_REFRESH_TOGGLE_DELAY_MS = 150
+
 
 def _push_houdini_error(message):
     """把错误推到 Houdini 左下角状态栏（红色 severity=Error）。
@@ -2524,6 +2530,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         if info is None:
             return
         if info.category != "tool":
+            if getattr(info, "is_code", False):
+                self._start_code_drag(info)
+                return
             self.status.setText(
                 "{} 是 {} 类型：请先选中目标节点后双击应用（拖拽仅支持 Tool）"
                 .format(self._display_label(info),
@@ -2613,6 +2622,185 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         ghost = state["ghost"]
         ghost.hide()
         ghost.deleteLater()
+
+    def _start_code_drag(self, info):
+        """代码块拖拽（终态）：放行原生落点 + 参数模板可见性往返触发
+        面板重建修复显示；网络编辑器分支 = 代码节点并入 / 空白创建节点。
+
+        探针实证（2026-10-18/20 用户会话）：内建 VEX 编辑器是 GL 虚拟
+        控件，其原生落点把多行文本写进编辑器但显示层不重算（只渲染首
+        行、其余可框选不可见）——数据始终正确（代码正常执行），纯显示
+        bug；MIME 格式（text/CRLF/官方 nodePath）、拖拽来源（外部文本/
+        文件拖）、Ctrl+Enter 提交全部无关。机制——纯公开 API，无模拟/
+        无剪贴板/无注入：
+        1. QDrag 正常发车、**不拦截 Drop**——Houdini 自己的落点处理
+           负责定位+写入（定位与数据都对）；
+        2. exec 返回非 Ignore（落点被接受）后走
+           _refresh_dropped_editor_display：拖放瞬间光标悬在编辑器上，
+           paneTabUnderCursor 识别节点，跨事件周期翻载体参数
+           （autobind/maintainstate）的隐藏旗标两次——每次真实变更各
+           触发一次面板整体重建，编辑器控件销毁重建后显示正常，结束时
+           旗标归位；
+        3. 载体缺失/识别失败一律静默（普通文本框的原生落点显示本来就
+           是好的）。
+        拖在网络编辑器上：原生落点不接受外来文本（exec 返回 Ignore），
+        落点命中代码节点 → NodeCodeDialog 并入；空白 → 创建对应节点
+        并填码（同 recipe 拖拽语义）。
+        """
+        drag = QtGui.QDrag(self)
+        mime = QtCore.QMimeData()
+        mime.setText(info.code)   # 纯文本兜底（其他控件的通用路径）
+        try:
+            # 同时携带 Houdini 官方 nodePath 拖放格式（载荷=代码文本）：
+            # 部分原生控件按 MIME 类型走不同落点行为（hou.qt.mimeType）。
+            # 实验证实多行载荷在任何格式下都触发同一显示 bug，保留该
+            # 格式只为最大化与原生拖放的兼容面，显示修复不依赖它。
+            import hou
+            fmt = getattr(hou.qt.mimeType, "nodePath",
+                          "application/sidefx-houdini-node.path")
+            mime.setData(fmt, info.code.encode("utf-8"))
+        except Exception as exc:
+            log.debug("nodePath mime unavailable: %s", exc)
+        drag.setMimeData(mime)
+        pm = codeblock.render_code_pixmap(
+            info.code, info.language, 72, 48,
+            self.list.devicePixelRatioF())
+        drag.setPixmap(pm)
+        drag.setHotSpot(QtCore.QPoint(pm.width() // 2, pm.height() // 2))
+        result = drag.exec(QtCore.Qt.CopyAction)
+        drag.deleteLater()
+        if result != QtCore.Qt.IgnoreAction:
+            self._refresh_dropped_editor_display()
+            return
+        pane = store.network_editor_under_cursor()
+        if pane is None:
+            self.status.setText("已取消拖拽")
+            return
+        # 拖在已有代码节点上：弹自建编辑器并入（内建 VEX 编辑器的多行
+        # 拖放渲染是 SideFX bug——格式/拖拽来源/文件拖/Ctrl+Enter 全部
+        # 实验排除，2026-10-18；自建编辑器是第三方工具验证多年的替代
+        # 形态，见 codeblock.NodeCodeDialog）
+        try:
+            target = codeblock.find_code_node_at(pane, info.language)
+        except Exception as exc:
+            log.debug("find code node failed: %s", exc)
+            target = None
+        if target is not None:
+            parm_name = codeblock.code_parm_name(target, info.language)
+            try:
+                existing = target.parm(parm_name).unexpandedString()
+            except Exception as exc:
+                log.debug("read existing code failed: %s", exc)
+                existing = ""
+            dlg = codeblock.NodeCodeDialog(
+                self, target.path(), parm_name, info.language,
+                existing, info.code)
+            accepted = dlg.exec_() == QtWidgets.QDialog.Accepted
+            code_out = dlg.result_code() if accepted else None
+            dlg.deleteLater()   # exec_ 的模态框用完即释放，防积存
+            if not accepted:
+                return
+            try:
+                import hou
+                with hou.undos.group("HouTools 并入代码块"):
+                    target.parm(parm_name).set(code_out)
+            except Exception as exc:
+                log.warning("merge code failed: %s", exc, exc_info=True)
+                self.status.setText("并入失败: {}".format(exc))
+                _push_houdini_error(str(exc))
+                return
+            self.status.setText("已把「{}」并入 {}".format(
+                self._display_label(info), target.path()))
+            return
+        position = None
+        try:
+            position = pane.cursorPosition()
+        except Exception as exc:
+            log.debug("cursorPosition failed, apply default: %s", exc)
+        try:
+            node = codeblock.create_node_with_code(
+                pane.pwd(), info.language, info.code,
+                self._display_label(info), position)
+            self.status.setText("已在当前网络创建 {} 并填入代码".format(
+                node.name()))
+        except Exception as exc:
+            log.warning("code drag create failed: %s", exc, exc_info=True)
+            self.status.setText("创建失败: {}".format(exc))
+            _push_houdini_error(str(exc))
+
+    def _refresh_dropped_editor_display(self):
+        """原生落点写入后触发参数面板整体重建，修复 GL 编辑器多行拖放
+        只渲染首行的显示 bug（数据本身正确）。
+
+        实测定律（2026-10-20 多轮会话）：parm.set 值变更、重绘（拖面板/
+        切窗口）、别处新开面板（浮动/复制——新实例天生干净但救不了旧实
+        例）、搜索过滤全部无效；唯一有效的是让面板整体重建（编辑器控件
+        销毁重建），且只在「模板组真的变了」时触发——同一脚本内关了又
+        开被判净零变化（节点首次定制那次例外），processEvents 救不了
+        （面板重建走 Houdini 空闲队列，非 Qt 事件）。
+        修复 = 两次真实变更各落一个事件周期：先翻载体隐藏旗标（第一
+        跳），QTimer 延迟后翻回来（第二跳）——各触发一次重建，结束时
+        旗标归位、面板外观零变化（载体选在用户看不到的位置：autobind
+        在 wrangle 第二栏 Bindings）。参数值零触碰。
+        识别失败/无载体一律静默返回（普通文本框的原生落点显示本来就是
+        好的）；锁定 HDA 等修改被拒 → 状态栏提示。"""
+        import hou
+        tab = None
+        try:
+            tab = hou.ui.paneTabUnderCursor()
+        except Exception as exc:
+            log.debug("paneTabUnderCursor failed: %s", exc)
+        node = None
+        if tab is not None:
+            try:
+                if tab.type() == hou.paneTabType.Parm:
+                    node = tab.currentNode()
+            except Exception as exc:
+                log.debug("currentNode failed: %s", exc)
+        ptg = None
+        if node is not None:
+            try:
+                ptg = node.parmTemplateGroup()
+            except Exception as exc:
+                log.debug("parmTemplateGroup failed: %s", exc)
+        carrier = None
+        if ptg is not None:
+            for name in _CARRIER_PARM_NAMES:
+                if ptg.find(name) is not None:
+                    carrier = name
+                    break
+        if ptg is None or carrier is None:
+            self.status.setText("代码已插入落点")
+            return
+        try:
+            with hou.undos.group("HouTools 刷新编辑器"):
+                template = ptg.find(carrier)
+                template.hide(not template.isHidden())
+                ptg.replace(carrier, template)
+                node.setParmTemplateGroup(ptg)
+        except Exception as exc:
+            log.warning("editor display refresh failed: %s", exc, exc_info=True)
+            self.status.setText("刷新编辑器显示失败: {}".format(exc))
+            _push_houdini_error(str(exc))
+            return
+
+        def _toggle_back():
+            # 第二跳必须落在独立事件周期（见 docstring），否则两跳合并
+            # 被判净零变化、面板不重建；旗标按当前值取反，天然自愈
+            try:
+                with hou.undos.group("HouTools 刷新编辑器"):
+                    ptg2 = node.parmTemplateGroup()
+                    t2 = ptg2.find(carrier)
+                    t2.hide(not t2.isHidden())
+                    ptg2.replace(carrier, t2)
+                    node.setParmTemplateGroup(ptg2)
+            except RuntimeError as exc:
+                log.debug("editor display restore skipped: %s", exc)
+            except Exception as exc:
+                log.warning("editor display restore failed: %s", exc, exc_info=True)
+
+        QtCore.QTimer.singleShot(_REFRESH_TOGGLE_DELAY_MS, _toggle_back)
+        self.status.setText("代码已插入落点（已触发面板重建）")
 
     def _apply_code_blocks(self):
         """代码块数据变更后的轻量重建：不重扫 HDA 库，只并表 + 重建

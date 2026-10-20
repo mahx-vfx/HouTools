@@ -28,16 +28,19 @@
 - **编辑弹窗等宽字体必须在挂树后 `apply_mono` 压回**——fonts.py 的 ChildAdded 过滤器会把工具字体刷给刚加进布局的编辑器（QPlainTextEdit/行号栏都中招）。
 - **弹窗按钮中文化同理必须挂布局后调**：`localize_buttons(self)` 走 `findChildren(QDialogButtonBox)`——把按钮盒自身当 dialog 传入、或按钮盒还没挂进布局就调用，都找不到盒子→按钮留英文（2026-10 用户反馈「新建代码块」弹窗 OK/Cancel 是英文即此坑）。
 
-## 触发方式 = 双击追加到选中节点（唯一，2026-10-18 拍板收敛）
+## 触发之一 = 双击追加到选中节点
 
-`codeblock.append_to_nodes` 把代码**追加**到全部选中节点的代码参数尾部（现有内容非空时空行分隔），VEX→`snippet`、Python→`python`（22.0.429 无头实测 attribwrangle/volumewrangle/python SOP 均有该参数）；逐节点独立容错（无参数/锁定跳过并汇报），整批一个 undo 组。
+`codeblock.append_to_nodes` 把代码**追加**到全部选中节点的代码参数尾部（现有内容非空时空行分隔），VEX→`snippet`、Python→`python`（22.0.429 无头实测 attribwrangle/volumewrangle/python SOP 均有该参数）；逐节点独立容错（无参数/锁定/关键帧/表达式/channel reference 跳过并汇报），整批一个 undo 组。
 
-## 拖拽触发为何移除（存档，勿在主分支重试同类方案）
+## 拖拽触发 = 双通路（2026-10-21 从 feature/codeblock-drag 定案并入）
 
-- 内建 VEX 编辑器（GL 虚拟控件）的多行拖放渲染是 SideFX bug：内容写进编辑器但显示层不重算——只渲染首行、其余可框选/可删但不可见；纯文本/CRLF/官方 nodePath 格式（与原生节点拖拽逐位对齐）/外部拖源/txt 文件拖全部复现；Ctrl+Enter 提交不救；Qt 合成事件对虚拟控件无效；编辑器私有撤销栈 API 不可达——手动 Ctrl+Z/Ctrl+Shift+Z 虽能重建显示但无法编程触发，OS 注入被用户否决。
-- **完整实验代码与逐轮结论存档在 `feature/codeblock-drag` 分支**（含 nodePath 伪装、撤销/重做重建显示、自建编辑器并入弹窗等全部尝试）；若未来 SideFX 修复该 bug 或提供编辑器 API，从该分支恢复。
-- 存档知识：官方拖放 MIME 协议=hou.qt.mimeType（nodePath=`application/sidefx-houdini-node.path` 等，Qt 拖拽可 setData 伪装、文档明确"部分原生控件按 MIME 走不同落点行为"）；多行编辑器是"缓冲+Ctrl+Enter 提交"模式（官方文档），但提交键也不救拖放渲染；第三方 VEX 编辑器（pw_Houdini_VEX_Editor 等）从不和内建编辑器死磕，全部自建 Qt 编辑器绑定参数——本工具最终亦取此路。
-- **关键发现：`QApplication::notify` 对拖放族事件有"须有活动原生拖放（drag manager 激活）"的短路——无活动拖放时合成 sendEvent 的 Drop 在进应用过滤器之前就被丢弃（无头探针实证）**，故过滤器单测只能直调 `eventFilter(obj, drop_ev)`（GL 输入模拟分支无法无头测试，仅 Qt 文本控件分支可测），真实拖放时事件正常流经过滤器；已知边角不变：Esc 取消与"落在不接受拖放的空白"不可区分（都无 Drop），Esc 恰停在网络编辑器上会误创建。
+- **拖入文本编辑框（VEX/Python 编辑器）**：放行原生落点（Houdini 自己的落点处理负责定位+写入，**数据始终正确**——拖入后代码正常执行，坏的只是 GL 编辑器显示层：只渲染首行、其余可框选/可删但不可见）+ `browser._refresh_dropped_editor_display` 触发参数面板整体重建（编辑器控件销毁重建后显示正常）。
+- **实测定律**：parm.set 值变更（同值/往返）、重绘（拖面板/切窗口）、别处新开面板（浮动/复制——新实例天生干净但救不了旧实例）、搜索过滤全部无效；**唯一有效的是面板整体重建**，且只在「模板组真的变了」时触发——同一脚本内关了又开=净零变化被判无事发生（节点首次定制那次例外），processEvents 救不了（面板重建走 Houdini 空闲队列，非 Qt 事件）。
+- **修复 = 两次真实变更各落一个事件周期**：载体参数（wrangle 家族→`autobind`，第二栏 Bindings 工作流不可见；python SOP→`maintainstate`）的隐藏旗标第一跳翻转（撤销组「HouTools 刷新编辑器」）→ `QTimer.singleShot(150)` 第二跳翻回——各触发一次重建，结束时旗标归位=面板外观零变化；参数值零触碰。识别走拖放瞬间光标所在的参数面板（`hou.ui.paneTabUnderCursor()`→`currentNode()`，ParameterEditor 继承 PathBasedPaneTab）；识别失败/无载体一律静默不做（普通文本框原生落点显示本来就是好的）；锁定 HDA 拒改→状态栏提示。
+- **拖入网络编辑器**：`find_code_node_at` 矩形命中代码节点 → `NodeCodeDialog` 并入（预填现有代码+空行追加，确认 parm.set 写回单 undo 组）；空白 → `create_node_with_code` 创建对应节点（VEX→attribwrangle、Python→python SOP，仅 SOP 网络，层级不符中文报错）并填码，失败不残留半截节点。
+- 载体选型理由：变化必须真实发生但用户不可见——autobind 在第二栏（工作流盯第一栏编辑框）；vex_threadjobsize 被 Hide When 压着但 Numbers 模式会在第一栏显形，否决。
+- 历史方案存档（全部判死，详见 feature/codeblock-drag 分支的逐轮实验）：值往返 parm.set、undo/redo 管线重建（原方案 G）、接管 Drop 走 Qt 文本控件/粘贴管线、Qt 合成事件、OS 级 SendInput。
+- 存档知识（仍有效）：官方拖放 MIME 协议=hou.qt.mimeType（nodePath=`application/sidefx-houdini-node.path` 等）；多行编辑器是"缓冲+Ctrl+Enter 提交"模式（官方文档），提交键不救拖放渲染；`QApplication::notify` 对拖放族事件有"须有活动原生拖放"的短路——过滤器单测只能直调 `eventFilter(obj, drop_ev)`；已知边角：Esc 取消与"落在不接受拖放的空白"不可区分（都无 Drop），Esc 恰停在网络编辑器上会误创建。
 
 ## 水印 = Houdini 官方节点图标（2026-10-18 用户指定）
 
