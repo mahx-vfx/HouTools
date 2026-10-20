@@ -945,15 +945,20 @@ _NETWORK_HINTS = {
 }
 
 
+# 双击/投递重复到来时的语义级去重：节点代码尾部已含本代码块就跳过
+# （平台级 DblClick 幽灵投递无法在事件层根治，尾部幂等让它无害）
+DUP_TAIL_HINT = "尾部已含本代码块，跳过重复追加"
+
+
 def append_to_nodes(nodes, language, code):
     """把代码**追加**到选中节点的代码参数（追加不是覆盖，用户拍板）。
 
     现有内容非空时以空行分隔接在其后；空内容直接写入。逐节点独立
-    容错：无匹配参数 / 参数锁定 / 带关键帧、表达式或 channel reference
-    跳过并记录原因，不中断整批（同 paste_bbox 的逐分量容错约定）。
-    整批一个 undo 组。返回 (appended, skipped)：appended 是节点路径列表，
-    skipped 是 "路径: 原因" 列表；一个都没选中/全不匹配由调用方决定如何
-    反馈。
+    容错：无匹配参数 / 参数锁定 / 带关键帧、表达式、channel reference、
+    尾部已含本代码块（重复投递幂等）跳过并记录原因，不中断整批（同
+    paste_bbox 的逐分量容错约定）。整批一个 undo 组。返回
+    (appended, skipped)：appended 是节点路径列表，skipped 是 "路径: 原因"
+    列表；一个都没选中/全不匹配由调用方决定如何反馈。
 
     ⚠ 预检三态（2026-10 复审补，与 paste_bbox 的 deleteAllKeyframes 教训
     同源）：不预检直接 set 有三种静默失效——参数带表达式时 set() 不生效
@@ -1003,8 +1008,13 @@ def append_to_nodes(nodes, language, code):
                         "{}: {} 是 channel reference，已跳过"
                         "（写入会覆盖被引用的参数）".format(path, parm_name))
                     continue
+                block = code.strip("\n")
                 existing = parm.evalAsString()
-                value = (existing.rstrip() + "\n\n" + code.strip("\n")) \
+                if block and existing.rstrip().endswith(block):
+                    skipped.append("{}: {} {}".format(
+                        path, parm_name, DUP_TAIL_HINT))
+                    continue
+                value = (existing.rstrip() + "\n\n" + block) \
                     if existing.strip() else code
                 parm.set(value, follow_parm_reference=False)
                 appended.append(path)

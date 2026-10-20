@@ -2375,31 +2375,14 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         """成功反馈：状态栏文本 + 绿色高亮闪烁一下（2026-10 用户指定，
         双击/拖拽应用成功时一眼可见）。失败路径走 _status_error 红闪
         （2026-10-21 用户指定）。闪烁器为 ui.status_flash.StatusFlash
-        共享实现（HDR Library 同款）。
-        ⚠ 临时诊断：文字尾部 {调用函数名 距上次闪烁秒差} 用于判定幽灵
-        二次闪烁的触发时序，结论得出后移除。"""
-        import sys
-        import time
-        caller = sys._getframe(1).f_code.co_name
-        now = time.monotonic()
-        last = getattr(self, "_diag_last_flash", None)
-        delta = "首次" if last is None else "+{:.2f}s".format(now - last)
-        self._diag_last_flash = now
-        self._status_flash.success("{} {{{} {}}}".format(text, caller, delta))
+        共享实现（HDR Library 同款）。"""
+        self._status_flash.success(text)
 
     def _status_error(self, text):
         """失败反馈：状态栏文本 + 红色高亮闪烁一下（与 _status_success
         同款脉冲、项目错误色 #d1283e）。只用于真实失败；前置未满足的
-        引导文案不闪，保持纯文字。
-        ⚠ 临时诊断标记同 _status_success。"""
-        import sys
-        import time
-        caller = sys._getframe(1).f_code.co_name
-        now = time.monotonic()
-        last = getattr(self, "_diag_last_flash", None)
-        delta = "首次" if last is None else "+{:.2f}s".format(now - last)
-        self._diag_last_flash = now
-        self._status_flash.error("{} {{{} {}}}".format(text, caller, delta))
+        引导文案不闪，保持纯文字。"""
+        self._status_flash.error(text)
 
     # 同一配方重复应用去重窗口（秒）：双击序列偶尔会漏进第二发（拖拽
     # 落网后紧跟的平台级 DblClick、事件循环重入、连点节奏尾巴等），表现
@@ -2457,9 +2440,18 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     return False
                 appended, skipped = codeblock.append_to_nodes(
                     nodes, info.language, info.code)
+                dups = [s for s in skipped if codeblock.DUP_TAIL_HINT in s]
+                skipped = [s for s in skipped
+                           if codeblock.DUP_TAIL_HINT not in s]
                 if appended:
                     msg = "已把「{}」追加到 {} 个节点".format(
                         self._display_label(info), len(appended))
+                elif dups:
+                    # 幽灵双击（平台重复投递）的语义级根治：尾部已含本代
+                    # 码块的追加是空操作，纯文字不闪烁
+                    self.status.setText("「{}」已在选中节点代码尾部，未重复追加".format(
+                        self._display_label(info)))
+                    return False
                 else:
                     msg = "追加失败：「{}」没有可填充的节点".format(
                         self._display_label(info))
@@ -2467,6 +2459,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     msg += "；跳过 {} 个（{}）".format(len(skipped),
                                                       skipped[0])
                 if appended:
+                    if dups:
+                        msg += "；重复跳过 {} 个".format(len(dups))
                     self._status_success(msg)   # 全部/部分成功都闪烁
                 else:
                     self._status_error(msg)   # 全失败红色闪烁
