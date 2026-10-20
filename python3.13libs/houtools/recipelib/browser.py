@@ -2728,6 +2728,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self._code_drag_active = False
             QtWidgets.QApplication.instance().removeEventFilter(self)
         drag.deleteLater()
+        # 拖拽落网后紧跟的平台级 DblClick 会再跑一次 _apply_recipe（闪烁
+        # 中途二次高亮 + 选中节点被误追加），与 _finish_drag 同款：先盖
+        # 去重时间戳，让紧跟的第二发被 _apply_gated 吞掉
+        self._last_apply = (info.name, time.monotonic())
         if self._code_drag_vetoed:
             return   # Drop 已被吞掉，什么都没写入，提示已在过滤器里给出
         if result != QtCore.Qt.IgnoreAction:
