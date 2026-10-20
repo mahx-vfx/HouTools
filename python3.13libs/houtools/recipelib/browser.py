@@ -2375,14 +2375,21 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         """成功反馈：状态栏文本 + 绿色高亮闪烁一下（2026-10 用户指定，
         双击/拖拽应用成功时一眼可见）。失败路径走 _status_error 红闪
         （2026-10-21 用户指定）。闪烁器为 ui.status_flash.StatusFlash
-        共享实现（HDR Library 同款）。"""
-        self._status_flash.success(text)
+        共享实现（HDR Library 同款）。
+        ⚠ 临时诊断：文字尾部 {调用函数名} 标记用于定位幽灵二次闪烁的
+        触发源，定位后移除。"""
+        import sys
+        caller = sys._getframe(1).f_code.co_name
+        self._status_flash.success("{} {{{}}}".format(text, caller))
 
     def _status_error(self, text):
         """失败反馈：状态栏文本 + 红色高亮闪烁一下（与 _status_success
         同款脉冲、项目错误色 #d1283e）。只用于真实失败；前置未满足的
-        引导文案不闪，保持纯文字。"""
-        self._status_flash.error(text)
+        引导文案不闪，保持纯文字。
+        ⚠ 临时诊断标记同 _status_success。"""
+        import sys
+        caller = sys._getframe(1).f_code.co_name
+        self._status_flash.error("{} {{{}}}".format(text, caller))
 
     # 同一配方重复应用去重窗口（秒）：双击序列偶尔会漏进第二发（拖拽
     # 落网后紧跟的平台级 DblClick、事件循环重入等），表现为状态栏连闪
