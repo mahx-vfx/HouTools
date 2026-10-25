@@ -18,10 +18,12 @@
 本模块不 import hou，无头环境（smoke test）可完整测试。
 """
 
+import collections
 import hashlib
 import os
 import re
 import shutil
+import threading
 
 from houtools.core.constants import PROJECT_ROOT, SETTINGS_DIR
 from houtools.core.log import get_logger
@@ -66,10 +68,25 @@ def safe_name(name):
     return re.sub(r"[^0-9a-zA-Z_]+", "__", name).strip("_") or "recipe"
 
 
+def _fold_counts(names):
+    """内部名集合 → 折叠串出现次数计数（键一律 lower() 比较）。
+
+    unique_safe_name / register_names 的撞名检测数据结构：safe_name 折叠
+    不是单射（a::b / a/b / a-b 同折 a__b），且 NTFS 等大小写不敏感文件
+    系统上 Foo.png 与 foo.png 是同一文件——检测键用小写，"Foo" 与 "foo"
+    这类仅大小写差异的内部名也按撞名处理（消歧只作用于新登记的名字；
+    存量 plain 登记有恒定化兜着，不回溯改写）。
+    """
+    counts = collections.Counter()
+    for n in names:
+        counts[safe_name(n).lower()] += 1
+    return counts
+
+
 def unique_safe_name(name):
     """safe_name 的单射版：与库内其他 recipe 折叠撞名时加摘要消歧。
 
-    撞名检测以元数据出现过的其他内部名为准（_other_recipe_names，
+    撞名检测以元数据出现过的其他内部名为准（_iter_metadata_names，
     含文档登记与 stems 已登记名），摘要 = 内部名的 md5 前 8 位（照
     hdrlight/browser.py thumb_path 对 __ 连接歧义的同一解法）。
 
@@ -84,16 +101,18 @@ def unique_safe_name(name):
     第 2 个折叠撞名的名字若看不见它也会拿到 plain 名——导入包内撞名
     曾因此双双落 plain、缩略图互相覆盖。
     """
-    recorded = (_SETTINGS.get("stems") or {}).get(name)
+    stems = dict(_SETTINGS.get("stems") or {})
+    recorded = stems.get(name)
     if recorded:
         return recorded
-    stems = dict(_SETTINGS.get("stems") or {})
     stem = safe_name(name)
-    for other in _other_recipe_names(name):
-        if safe_name(other) == stem:
-            stem = stem + "-" + hashlib.md5(
-                name.encode("utf-8")).hexdigest()[:8]
-            break
+    names = _iter_metadata_names()
+    counts = _fold_counts(names)
+    # 名字自己已进元数据键（tags 等）但尚未登记 stems 时，计数里含自己
+    # 一份，检查时扣掉；其余任何名字折到同一串（含仅大小写差异）即撞名
+    if counts[stem.lower()] > (1 if name in names else 0):
+        stem = stem + "-" + hashlib.md5(
+            name.encode("utf-8")).hexdigest()[:8]
     stems[name] = stem
     _SETTINGS.set("stems", stems)
     return stem
@@ -108,24 +127,31 @@ def register_names(names):
     后续名字探测到。本函数在内存中把批内名字一并纳入撞名检测、整批
     解析完一次落盘，两个问题同时解决；先入批者保 plain、后到撞名者
     落摘要，与 unique_safe_name 的恒定化语义一致。
+
+    折叠计数在进循环前对整个数据源一次算好，批内每登记者把 plain
+    折叠串计入增量计数（extra）供后续名字互查——原实现对每个名字全库
+    重扫 safe_name，数百名字的包是 O(N×M) 次正则调用，现在 O(N+M)。
     """
     names = [str(n) for n in names if n]
     if not names:
         return
     stems = dict(_SETTINGS.get("stems") or {})
     meta_names = _iter_metadata_names()
-    seen = set(n for n in names if stems.get(n))   # 已登记者也参与撞名检测
+    counts = _fold_counts(meta_names)
+    extra = collections.Counter()
     for name in names:
         if stems.get(name):
             continue
-        stem = safe_name(name)
-        for other in (meta_names | seen) - {name}:
-            if safe_name(other) == stem:
-                stem = stem + "-" + hashlib.md5(
-                    name.encode("utf-8")).hexdigest()[:8]
-                break
+        plain = safe_name(name)
+        key = plain.lower()
+        own = 1 if name in meta_names else 0
+        if counts[key] - own + extra[key] > 0:
+            stem = plain + "-" + hashlib.md5(
+                name.encode("utf-8")).hexdigest()[:8]
+        else:
+            stem = plain
         stems[name] = stem
-        seen.add(name)
+        extra[key] += 1
     _SETTINGS.set("stems", stems)
 
 
@@ -318,7 +344,9 @@ def rekey_metadata_name(old, new):
         docs.add(new)
         _SETTINGS.set("docs", sorted(docs), save=False)
         changed = True
-    # 文档目录按 unique_safe_name 派生：旧键的目录改挂到新键名下
+    # 文档目录按 unique_safe_name 派生：旧键的目录改挂到新键名下。
+    # 必须在 stems 迁移之前取——doc_dir 内部走 unique_safe_name，old 键
+    # 若先从 stems 摘除会在这里被重新登记回来
     old_dir, new_dir = doc_dir(old), doc_dir(new)
     if old != new and os.path.isdir(old_dir) and not os.path.exists(new_dir):
         try:
@@ -327,6 +355,15 @@ def rekey_metadata_name(old, new):
         except OSError as exc:
             log.warning("cannot rename code doc dir %s -> %s: %s",
                         old_dir, new_dir, exc)
+    # stems 登记随键迁移（放在 doc_dir 之后，见上）：登记表只应覆盖存活
+    # 名册，旧键残留会让已改挂的名字永远参与撞名检测
+    stems = dict(_SETTINGS.get("stems") or {})
+    if old in stems:
+        value = stems.pop(old)
+        if new not in stems:
+            stems[new] = value
+        _SETTINGS.set("stems", stems, save=False)
+        changed = True
     if changed:
         _SETTINGS.save()
     return changed
@@ -514,7 +551,20 @@ def set_thumb_from_file(name, src):
     ext = os.path.splitext(src)[1].lower() or ".png"
     THUMBS_DIR.mkdir(parents=True, exist_ok=True)
     dst = str(THUMBS_DIR / (unique_safe_name(name) + ext))
-    shutil.copyfile(src, dst)
+    # 先写临时名再 os.replace 原子落位：重设同扩展名缩略图时 dst 就是
+    # 旧文件本身，直接 copyfile 会先截断它——源在网络盘/USB 被拔、盘满
+    # 等中途失败会让旧缩略图被毁而记录仍指向它（坏图且不可恢复）。
+    # 临时名带 PID+线程 id（同 settings.JsonStore 约定，防并发互踩）
+    tmp = "{}.~tmp{}_{}".format(dst, os.getpid(), threading.get_ident())
+    try:
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, dst)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError as exc:
+                log.warning("cannot remove partial thumb %s: %s", tmp, exc)
     thumbs = dict(_SETTINGS.get("thumbs") or {})
     thumbs[name] = _to_stored(dst)
     _SETTINGS.set("thumbs", thumbs)
@@ -554,8 +604,19 @@ def set_thumb_from_pixmap(name, pixmap, fmt="PNG"):
         ext, save_args = ".png", ("PNG",)
     THUMBS_DIR.mkdir(parents=True, exist_ok=True)
     dst = str(THUMBS_DIR / (unique_safe_name(name) + ext))
-    if not pixmap.save(dst, *save_args):
-        raise RuntimeError("缩略图保存失败: {}".format(dst))
+    # 先写临时名再原子替换（同 set_thumb_from_file）：重设同扩展名时
+    # dst 就是旧文件本身，save 中途失败会截断旧图
+    tmp = "{}.~tmp{}_{}".format(dst, os.getpid(), threading.get_ident())
+    try:
+        if not pixmap.save(tmp, *save_args):
+            raise RuntimeError("缩略图保存失败: {}".format(dst))
+        os.replace(tmp, dst)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError as exc:
+                log.warning("cannot remove partial thumb %s: %s", tmp, exc)
     thumbs = dict(_SETTINGS.get("thumbs") or {})
     thumbs[name] = _to_stored(dst)
     _SETTINGS.set("thumbs", thumbs)
@@ -694,6 +755,30 @@ def stem_owners(stem):
     目标目录/文件名已被"本次导入之外"的配方占用时，调用方可拒绝写入）。"""
     stems = _SETTINGS.get("stems") or {}
     return sorted(n for n, s in stems.items() if s == stem)
+
+
+def stems_snapshot():
+    """stems 段快照（复制 dict）：导入流程在批量登记前留存，失败/取消时
+    restore_stems 回滚用——登记发生在文件搬运之前（缩略图落盘要靠它
+    定名），不回滚就违背"元数据落盘前不改任何设置"的导入取消契约。"""
+    return dict(_SETTINGS.get("stems") or {})
+
+
+def restore_stems(snapshot):
+    """把 stems 段整体还原为快照内容（幂等）。单会话 UI 线程内使用，
+    不防跨进程并发写（同 data_manager.save 的已知限制）。"""
+    _SETTINGS.set("stems", dict(snapshot or {}))
+
+
+def forget_stem(name):
+    """删除配方后摘除其 stems 登记（幂等；与 delete_doc_dir 等清理动作
+    同一时机调用）。登记表只应覆盖存活名册：已删名的 stem 留在
+    _iter_metadata_names 里会让后续新配方拿到不必要的摘要名，登记只增
+    不减也让 recipelib.json 与撞名扫描随历史无限膨胀。"""
+    stems = dict(_SETTINGS.get("stems") or {})
+    if name in stems:
+        del stems[name]
+        _SETTINGS.set("stems", stems)
 
 
 def _other_recipe_names(name):

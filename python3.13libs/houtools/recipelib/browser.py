@@ -3584,6 +3584,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         metadata.set_display_name(info.name, None)
         metadata.set_color(info.name, None)
         metadata.delete_doc_dir(info.name)
+        metadata.forget_stem(info.name)   # 登记表只留存活名册，防只增不减
         self._thumb_cache.pop(info.name, None)
         self._cover_cache.clear()
         self.reload()

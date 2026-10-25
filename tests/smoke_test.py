@@ -686,6 +686,49 @@ def main():
     assert engine._dw_exe_path
     print("ExecutionEngine instantiation OK")
 
+    # 引擎 BaseException 逃逸兜底（2026-10 审查修复回归）：SystemExit 穿透
+    # 逐任务 except Exception 时，收尾仍发 all_completed（UI 不卡「停止中」），
+    # 且在途任务补发一条失败的 task_completed（日志有始有终）
+    from houtools.automation import task_types as ht_task_types
+    eng = ExecutionEngine([ht_task_types.TaskItem(
+        task_type=ht_task_types.TaskType.BUTTON_CLICK,
+        params=ht_task_types.ButtonClickParams(node_path="/obj/geo1",
+                                               parm_name="execute"),
+        enabled=True)])
+
+    def _boom(params):
+        raise SystemExit("bye")
+
+    eng._execute_button_click = _boom
+    done, task_results = [], []
+    eng.all_completed.connect(
+        lambda s, f, ts, te: done.append((s, f)))
+    eng.task_completed.connect(
+        lambda i, ok, msg, el: task_results.append(ok))
+    eng.run()   # 无头直接驱动（不经 QThread.start）
+    assert done == [(0, 1)], done
+    assert task_results == [False], task_results
+    print("ExecutionEngine SystemExit guard OK")
+
+    # _strip_owned_tees：多面板 tee 链收尾（2026-10 审查修复回归）——
+    # 自己的 tee 埋在别人 tee 下面时也要能摘掉（旧实现只剥栈顶，W1 先
+    # 收尾会把 tee 永久留在链里、被 W2 收尾顶回栈顶），别人的存活层不动
+    import io
+    from houtools.automation.window import _LogTee, _strip_owned_tees
+    w1, w2 = object(), object()
+    sink = io.StringIO()
+    t1 = _LogTee(sink, lambda m: None, owner=w1)
+    t2 = _LogTee(t1, lambda m: None, owner=w2)
+    out = _strip_owned_tees(t2, w1)   # W1 先收尾：埋在 W2 下也须摘掉
+    assert out is t2 and t2._original is sink, (out, t2._original)
+    a = _LogTee(sink, lambda m: None, owner=w1)
+    b = _LogTee(a, lambda m: None, owner=w2)
+    out = _strip_owned_tees(b, w2)    # W2 收尾：只摘自己，W1 的层原样保留
+    assert out is a and a._original is sink, (out, a._original)
+    out = _strip_owned_tees(a, w1)    # 幂等：链上没有可摘层时原样返回
+    assert out is sink
+    print("stdout tee splice OK")
+
     # Hdr Library:子文件夹分类扫描 + 缩略图相对路径命名
     from houtools.hdrlight import browser as hdr_browser
     with tempfile.TemporaryDirectory() as tmp:
@@ -1329,6 +1372,47 @@ def main():
                             assert rl_meta.unique_safe_name(a) == s1
                             assert rl_meta.unique_safe_name(b) == s2
                     print("import-order stems collision OK")
+
+                    # 大小写折叠撞名（2026-10 审查修复回归）：NTFS 等大小写
+                    # 不敏感盘上 Foo.png 与 foo.png 是同一文件——仅大小写
+                    # 差异的内部名也按撞名处理，后到者拿摘要名
+                    with tempfile.TemporaryDirectory() as tcase:
+                        case_store = houtools.core.settings.JsonStore(
+                            "_smoke_casecollide.json",
+                            defaults=dict(rl_meta._DEFAULTS))
+                        _track_rm(case_store.path)
+                        with patch.object(rl_meta, "_SETTINGS", case_store), \
+                             patch.object(rl_meta, "THUMBS_DIR",
+                                          Path(tcase) / "thumbs"):
+                            s1 = rl_meta.unique_safe_name("pkg::Foo")
+                            s2 = rl_meta.unique_safe_name("pkg/foo")
+                            assert s1 == rl_meta.safe_name("pkg::Foo"), (s1, s2)
+                            assert s2 != s1, (s1, s2)
+                    print("case-fold stems collision OK")
+
+                    # stems 登记表随名册收敛（2026-10 审查修复回归）：rekey
+                    # 后旧键摘除、删配方 forget_stem 摘除、快照可还原——
+                    # 否则已删名永久参与撞名检测（新配方拿到不必要的摘要名），
+                    # 登记只增不减让 recipelib.json 与撞名扫描无限膨胀
+                    with tempfile.TemporaryDirectory() as tstem:
+                        stem_store = houtools.core.settings.JsonStore(
+                            "_smoke_stemgc.json",
+                            defaults=dict(rl_meta._DEFAULTS))
+                        _track_rm(stem_store.path)
+                        with patch.object(rl_meta, "_SETTINGS", stem_store), \
+                             patch.object(rl_meta, "THUMBS_DIR",
+                                          Path(tstem) / "thumbs"):
+                            old, new = "htcode::X", "code::x"
+                            rl_meta.register_names([old])
+                            assert rl_meta.rekey_metadata_name(old, new)
+                            snap = rl_meta.stems_snapshot()
+                            assert old not in snap and new in snap, snap
+                            assert rl_meta.unique_safe_name(new) == snap[new]
+                            rl_meta.forget_stem(new)
+                            assert new not in rl_meta.stems_snapshot()
+                            rl_meta.restore_stems({})
+                            assert rl_meta.stems_snapshot() == {}
+                    print("stems GC (rekey/forget/restore) OK")
 
             # 浏览器窗口：list_recipes / selected_nodes / 网络编辑器全部打桩
             infos = [

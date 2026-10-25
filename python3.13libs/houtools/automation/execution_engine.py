@@ -82,6 +82,8 @@ class ExecutionEngine(QThread):
         success_count = 0
         fail_count = 0
         run_start_time = None
+        cur_idx = None      # 在途任务号/起始时刻：BaseException 逃逸时补发
+        cur_start = None    # task_completed 用（该任务在日志里有始有终）
 
         try:
             for idx, task in enumerate(self._tasks):
@@ -90,7 +92,9 @@ class ExecutionEngine(QThread):
                 if not task.enabled:
                     continue
 
+                cur_idx = idx
                 start_time = datetime.now()
+                cur_start = start_time
                 if run_start_time is None:
                     run_start_time = start_time
                 self.task_started.emit(idx, task.task_type.value, start_time.strftime("%H:%M:%S"))
@@ -115,14 +119,24 @@ class ExecutionEngine(QThread):
                     self.task_completed.emit(idx, False, str(e), elapsed)
                     fail_count += 1
 
+                cur_idx = None   # 任务已收账，此后逃逸不再归属任何任务
                 self.msleep(100)
         except BaseException as exc:
             # 记账后吞掉：SystemExit 属按钮回调脚本的行为，不应连带杀掉
-            # 引擎线程的收尾（finally 仍发 all_completed，UI 正常复位）
+            # 引擎线程的收尾（finally 仍发 all_completed，UI 正常复位）。
+            # 逐任务的 except Exception 接不住非 Exception 的
+            # BaseException——在途任务缺一条 task_completed，按失败补发
             logger.error("engine aborted by %s: %s",
                          type(exc).__name__, exc, exc_info=True)
             fail_count += 1
+            if cur_idx is not None:
+                elapsed = ((datetime.now() - cur_start).total_seconds()
+                           if cur_start else 0.0)
+                self.task_completed.emit(
+                    cur_idx, False, str(exc) or type(exc).__name__, elapsed)
         finally:
+            # timestamp 仅用于日志展示（唯一消费方 _on_all_completed 只打印
+            # 不解析；2026-10 由 "%Y/%m/%d/%H:%M:%S" 改为空格分隔）
             timestamp = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
             total_elapsed = (datetime.now() - run_start_time).total_seconds() if run_start_time else 0
             self.all_completed.emit(success_count, fail_count, timestamp, total_elapsed)

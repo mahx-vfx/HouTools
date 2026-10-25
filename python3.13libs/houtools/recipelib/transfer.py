@@ -38,6 +38,7 @@ code_blocks 段——读取端仍解析该键，导入时落成文件并改挂�
 import json
 import os
 import shutil
+import threading
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -117,8 +118,10 @@ def _extract_member(zf, info, dst, budget=None):
     先写临时文件再 os.replace 原子落位：直接开正式名写一半失败（磁盘
     满/包损坏）会留下截断文件——.hda 落 lib_dir 后每次 reload 都对着
     坏文件告警重试、回滚名单还抓不到"正在写的这个"；文档/缩略图/代码
-    文件同理。临时名带 PID（同盘并发导入互不干扰，同 settings.JsonStore
-    的约定）。
+    文件同理。临时名带 PID+线程 id（同 settings.JsonStore 的约定，
+    同进程两线程并发导入也不互踩）。落位前顺带过图片像素维度护栏
+    （_assert_image_dimensions）——在临时文件上检查，像素炸弹根本
+    不会以正式名落盘。
     """
     if info.file_size > MAX_MEMBER_UNCOMPRESSED:
         raise TransferError("包内文件过大: {}（{} MB）".format(
@@ -133,10 +136,11 @@ def _extract_member(zf, info, dst, budget=None):
     parent = os.path.dirname(dst)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    tmp = dst + ".~part%d" % os.getpid()
+    tmp = dst + ".~part%d_%d" % (os.getpid(), threading.get_ident())
     try:
         with zf.open(info) as src, open(tmp, "wb") as out:
             shutil.copyfileobj(src, out, 1024 * 1024)
+        _assert_image_dimensions(tmp)
         os.replace(tmp, dst)
     finally:
         if os.path.exists(tmp):
@@ -148,14 +152,18 @@ def _extract_member(zf, info, dst, budget=None):
 
 # 图片像素维度上限：zip 配额只数声明字节数，而 PNG/GIF 头里的像素数与
 # 字节数无关（几 KB 的 PNG 可声明 1e5 x 1e5）——导入后文档/卡片渲染时
-# QImage / QMovie（CacheAll 全帧缓存）会按全分辨率尝试数 GB 分配。导入
-# 即按 QImageReader 探尺寸拦下；视频没有 QImageReader 解码器，维持字节
-# 配额约束。
+# QImage / QMovie（CacheAll 全帧缓存）会按全分辨率尝试数 GB 分配。解压
+# 落位前按 QImageReader 探尺寸拦下（见 _extract_member）；视频没有
+# QImageReader 解码器，维持字节配额约束。
 MAX_IMAGE_PIXELS = 50 * 1000 * 1000
 
 
 def _assert_image_dimensions(path):
-    """图片类成员的像素维度护栏；超限抛 TransferError（导入即拒收）。"""
+    """图片类成员的像素维度护栏；超限抛 TransferError（导入即拒收）。
+
+    由 _extract_member 在 os.replace 之前对临时文件调用——检查放在
+    落位后会让超限图片已经以正式名留在 thumbs/docs 目录（元数据未
+    引用、也没有清理路径），成为永久垃圾。"""
     if os.path.splitext(str(path))[1].lower() not in metadata.IMAGE_EXTS:
         return
     from PySide6 import QtGui
@@ -581,176 +589,188 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
                  + len(code_plan) + len(legacy_blocks) + 1)
         done = 0
 
-        # 先整批登记 stems（一次落盘）：包内名字尚未进本地元数据，逐个
-        # unique_safe_name 探测不到批内撞名伙伴（曾双双落 plain、缩略图
-        # 互相覆盖），批量登记在内存中互查后才落盘，兼消掉逐名落盘的
-        # 写放大（数百名字 = 数百次整文件 tmp+replace）
-        metadata.register_names(
-            [str(n) for n in (manifest.get("recipes") or [])]
-            + [n for n, _arc, _ext in thumb_plan])
+        stems_before = metadata.stems_snapshot()
+        committed = False
+        try:
+            # 先整批登记 stems（一次落盘）：包内名字尚未进本地元数据，逐个
+            # unique_safe_name 探测不到批内撞名伙伴（曾双双落 plain、缩略图
+            # 互相覆盖），批量登记在内存中互查后才落盘，兼消掉逐名落盘的
+            # 写放大（数百名字 = 数百次整文件 tmp+replace）
+            metadata.register_names(
+                [str(n) for n in (manifest.get("recipes") or [])]
+                + [n for n, _arc, _ext in thumb_plan])
 
-        # ---- 1) 缩略图：按本地 unique_safe_name 重映射落盘 ----
-        # 包内文件名来自导出方的 safe_name，与本地布局无关；直用包内名
-        # 会在折名撞名时整文件覆盖本地另一配方的缩略图（导入端漏配
-        # unique_safe_name 防线），本地撞名时摘要名也与查找路径一致
-        new_thumbs = {}
-        for name, arc, ext in thumb_plan:
-            if _report(progress, done, total,
-                       "导入缩略图 {}".format(name)):
-                raise TransferCancelled()
-            dst = str(Path(metadata.THUMBS_DIR)
-                      / (metadata.unique_safe_name(name) + ext))
-            _extract_member(zf, members[arc], dst, budget)
-            _assert_image_dimensions(dst)
-            new_thumbs[name] = metadata._to_stored(dst)
-            done += 1
+            # ---- 1) 缩略图：按本地 unique_safe_name 重映射落盘 ----
+            # 包内文件名来自导出方的 safe_name，与本地布局无关；直用包内名
+            # 会在折名撞名时整文件覆盖本地另一配方的缩略图（导入端漏配
+            # unique_safe_name 防线），本地撞名时摘要名也与查找路径一致
+            new_thumbs = {}
+            for name, arc, ext in thumb_plan:
+                if _report(progress, done, total,
+                           "导入缩略图 {}".format(name)):
+                    raise TransferCancelled()
+                dst = str(Path(metadata.THUMBS_DIR)
+                          / (metadata.unique_safe_name(name) + ext))
+                _extract_member(zf, members[arc], dst, budget)
+                new_thumbs[name] = metadata._to_stored(dst)
+                done += 1
 
-        # ---- 2) 文档：包内有的整目录替换（含 assets），没有的不动 ----
-        # 先解到 <safe>.~incoming 临时目录、全部成员解完才换入：中途
-        # 失败（包损坏/磁盘满等）不破坏本地已有文档——旧版"先删后写"
-        # 会在解包失败时让本地文档凭空消失。取消检查在目录边界，换入的
-        # 都是完整目录，取消后重跑仍然幂等。落盘目录名经 _doc_target_map
-        # 重映射（见该函数 docstring）
-        doc_map = _doc_target_map(doc_dirs, manifest)
-        docs_root = Path(metadata.DOCS_DIR)
-        root_abs = os.path.realpath(str(docs_root)) + os.sep
-        for safe in doc_dirs:
-            if _report(progress, done, total, "导入文档 {}".format(safe)):
-                raise TransferCancelled()
-            local = doc_map[safe]
-            prefix = _DOC_ARC_DIR + safe + "/"
-            target = docs_root / local
-            # 二次防线：目录名已在 _doc_dirs_of 过检，这里再断言落点
-            # 收敛在 DOCS_DIR 之内
-            if not (os.path.realpath(str(target)) + os.sep).startswith(root_abs):
-                raise TransferError("包内文档路径不合法: {}".format(local))
-            incoming = docs_root / (local + ".~incoming")
-            shutil.rmtree(str(incoming), ignore_errors=True)
-            incoming.mkdir(parents=True)
-            try:
-                for arc in members:
-                    if arc.startswith(prefix):
-                        rel = arc[len(prefix):]
-                        if not _doc_member_ok(rel):
-                            log.warning("import: skip non-media doc "
-                                        "member %s", arc)
-                            continue
-                        member_dst = incoming / _safe_rel(rel)
-                        _extract_member(zf, members[arc], member_dst, budget)
-                        _assert_image_dimensions(member_dst)
-            except Exception:
+            # ---- 2) 文档：包内有的整目录替换（含 assets），没有的不动 ----
+            # 先解到 <safe>.~incoming 临时目录、全部成员解完才换入：中途
+            # 失败（包损坏/磁盘满等）不破坏本地已有文档——旧版"先删后写"
+            # 会在解包失败时让本地文档凭空消失。取消检查在目录边界，换入的
+            # 都是完整目录，取消后重跑仍然幂等。落盘目录名经 _doc_target_map
+            # 重映射（见该函数 docstring）
+            doc_map = _doc_target_map(doc_dirs, manifest)
+            docs_root = Path(metadata.DOCS_DIR)
+            root_abs = os.path.realpath(str(docs_root)) + os.sep
+            for safe in doc_dirs:
+                if _report(progress, done, total, "导入文档 {}".format(safe)):
+                    raise TransferCancelled()
+                local = doc_map[safe]
+                prefix = _DOC_ARC_DIR + safe + "/"
+                target = docs_root / local
+                # 二次防线：目录名已在 _doc_dirs_of 过检，这里再断言落点
+                # 收敛在 DOCS_DIR 之内
+                if not (os.path.realpath(str(target)) + os.sep).startswith(root_abs):
+                    raise TransferError("包内文档路径不合法: {}".format(local))
+                incoming = docs_root / (local + ".~incoming")
                 shutil.rmtree(str(incoming), ignore_errors=True)
-                raise
-            backup = docs_root / (local + ".~old")
-            shutil.rmtree(str(backup), ignore_errors=True)
-            swapped = False
-            try:
-                if target.exists():
-                    os.rename(str(target), str(backup))
-                os.rename(str(incoming), str(target))
-                swapped = True
-            finally:
-                if swapped:
-                    shutil.rmtree(str(backup), ignore_errors=True)
-                else:
-                    # 换入失败：旧目录原样还原，本地文档不受影响
-                    if backup.exists() and not target.exists():
-                        os.rename(str(backup), str(target))
+                incoming.mkdir(parents=True)
+                try:
+                    for arc in members:
+                        if arc.startswith(prefix):
+                            rel = arc[len(prefix):]
+                            if not _doc_member_ok(rel):
+                                log.warning("import: skip non-media doc "
+                                            "member %s", arc)
+                                continue
+                            member_dst = incoming / _safe_rel(rel)
+                            _extract_member(zf, members[arc], member_dst, budget)
+                except Exception:
                     shutil.rmtree(str(incoming), ignore_errors=True)
-            done += 1
+                    raise
+                backup = docs_root / (local + ".~old")
+                shutil.rmtree(str(backup), ignore_errors=True)
+                swapped = False
+                try:
+                    if target.exists():
+                        os.rename(str(target), str(backup))
+                    os.rename(str(incoming), str(target))
+                    swapped = True
+                finally:
+                    if swapped:
+                        shutil.rmtree(str(backup), ignore_errors=True)
+                    else:
+                        # 换入失败：旧目录原样还原，本地文档不受影响
+                        if backup.exists() and not target.exists():
+                            os.rename(str(backup), str(target))
+                        shutil.rmtree(str(incoming), ignore_errors=True)
+                done += 1
 
-        # ---- 3) .hda 库文件（导入后由浏览器 reload 自动安装） ----
-        # 逐文件检查取消；取消/失败时删除本次已复制的文件——它们尚未
-        # 安装（安装走 reload），留着会让"取消后重跑"因目标名被占生成
-        # _2 重复文件（同名定义装两份，行为不可预期）
-        hda_copied = []
-        if hda_import:
-            if not lib_dir:
-                raise TransferError("未指定 .hda 的导入目标文件夹")
-            if _report(progress, done, total, "复制库文件..."):
-                raise TransferCancelled()
-            os.makedirs(lib_dir, exist_ok=True)
-            taken = {n.lower() for n in os.listdir(lib_dir)}
-            try:
-                for arc, original in hda_import:
-                    if _report(progress, done, total,
-                               "复制库文件 {}".format(original)):
-                        raise TransferCancelled()
-                    stem, ext = os.path.splitext(original)
-                    dst, i = original, 2
-                    while dst.lower() in taken:   # 与盘上已有文件重名
-                        dst = "{}_{}{}".format(stem, i, ext)
-                        i += 1
-                    taken.add(dst.lower())
-                    _extract_member(zf, members[arc], Path(lib_dir) / dst,
-                                    budget)
-                    hda_copied.append(dst)
-                    done += 1
-            except BaseException:
-                for dst in hda_copied:
-                    try:
-                        os.remove(str(Path(lib_dir) / dst))
-                    except OSError as exc:
-                        log.warning("cannot clean up copied hda %s: %s",
-                                    dst, exc)
-                raise
+            # ---- 3) .hda 库文件（导入后由浏览器 reload 自动安装） ----
+            # 逐文件检查取消；取消/失败时删除本次已复制的文件——它们尚未
+            # 安装（安装走 reload），留着会让"取消后重跑"因目标名被占生成
+            # _2 重复文件（同名定义装两份，行为不可预期）
+            hda_copied = []
+            if hda_import:
+                if not lib_dir:
+                    raise TransferError("未指定 .hda 的导入目标文件夹")
+                if _report(progress, done, total, "复制库文件..."):
+                    raise TransferCancelled()
+                os.makedirs(lib_dir, exist_ok=True)
+                taken = {n.lower() for n in os.listdir(lib_dir)}
+                try:
+                    for arc, original in hda_import:
+                        if _report(progress, done, total,
+                                   "复制库文件 {}".format(original)):
+                            raise TransferCancelled()
+                        stem, ext = os.path.splitext(original)
+                        dst, i = original, 2
+                        while dst.lower() in taken:   # 与盘上已有文件重名
+                            dst = "{}_{}{}".format(stem, i, ext)
+                            i += 1
+                        taken.add(dst.lower())
+                        _extract_member(zf, members[arc], Path(lib_dir) / dst,
+                                        budget)
+                        hda_copied.append(dst)
+                        done += 1
+                except BaseException:
+                    for dst in hda_copied:
+                        try:
+                            os.remove(str(Path(lib_dir) / dst))
+                        except OSError as exc:
+                            log.warning("cannot clean up copied hda %s: %s",
+                                        dst, exc)
+                    raise
 
-        # ---- 4) 代码块：文件解回 vex_python_lib/（同名覆盖）+ 旧包
-        # json 段落成文件并改挂元数据键（落盘目标只取 basename，包内
-        # 成员名不可信） ----
-        code_done = 0
-        pending_rekeys = []   # 旧包 htcode::X 的元数据改挂，攒到第 5 步
-        root_abs = os.path.realpath(str(codeblock.CODELIB_ROOT)) + os.sep
-        for rel, lang in code_plan:
-            if _report(progress, done, total, "导入代码块 {}".format(rel)):
-                raise TransferCancelled()
-            target = codeblock.code_dir(lang) / os.path.basename(rel)
-            if not (os.path.realpath(str(target)) + os.sep).startswith(root_abs):
-                raise TransferError("包内代码路径不合法: {}".format(rel))
-            _extract_member(zf, members[_CODE_ARC_DIR + rel], target, budget)
-            code_done += 1
-            done += 1
-        for name, rec in legacy_blocks.items():
-            if _report(progress, done, total, "导入代码块 {}".format(name)):
-                raise TransferCancelled()
-            stem = codeblock.free_stem(name.split("::")[-1] or name)
-            codeblock.save_code(stem, rec.get("language", "vex"),
-                                rec.get("code", ""))
-            if stem != name:
-                pending_rekeys.append((name, stem))
-            code_done += 1
-            done += 1
+            # ---- 4) 代码块：文件解回 vex_python_lib/（同名覆盖）+ 旧包
+            # json 段落成文件并改挂元数据键（落盘目标只取 basename，包内
+            # 成员名不可信） ----
+            code_done = 0
+            pending_rekeys = []   # 旧包 htcode::X 的元数据改挂，攒到第 5 步
+            root_abs = os.path.realpath(str(codeblock.CODELIB_ROOT)) + os.sep
+            for rel, lang in code_plan:
+                if _report(progress, done, total, "导入代码块 {}".format(rel)):
+                    raise TransferCancelled()
+                target = codeblock.code_dir(lang) / os.path.basename(rel)
+                if not (os.path.realpath(str(target)) + os.sep).startswith(root_abs):
+                    raise TransferError("包内代码路径不合法: {}".format(rel))
+                _extract_member(zf, members[_CODE_ARC_DIR + rel], target, budget)
+                code_done += 1
+                done += 1
+            for name, rec in legacy_blocks.items():
+                if _report(progress, done, total, "导入代码块 {}".format(name)):
+                    raise TransferCancelled()
+                stem = codeblock.free_stem(name.split("::")[-1] or name)
+                codeblock.save_code(stem, rec.get("language", "vex"),
+                                    rec.get("code", ""))
+                if stem != name:
+                    pending_rekeys.append((name, stem))
+                code_done += 1
+                done += 1
 
-        # ---- 5) 元数据合并，一次落盘（不可取消点：文件已就位） ----
-        _report(progress, done, total, "合并元数据...")
-        local = metadata.all_metadata()
-        favs = list(local["favorites"])
-        for n in meta["favorites"]:
-            if n not in favs:
-                favs.append(n)
-        merged_thumbs = dict(local["thumbs"])
-        merged_thumbs.update(new_thumbs)
-        tags = dict(local["tags"])
-        tags.update(meta["tags"])
-        display = dict(local["display_names"])
-        display.update(meta["display_names"])
-        colors = dict(local["colors"])
-        colors.update(meta["colors"])
-        metadata.bulk_set(favorites=favs, tags=tags, thumbs=merged_thumbs,
-                          display_names=display, colors=colors)
-        # 登记本次导入产生文档的名字（unique_safe_name 撞名检测的数据源；
-        # 按 manifest 里的 recipe 名反查，导出端的包内目录名与本地
-        # doc_dir 在非撞名场景下天然一致）
-        metadata.register_doc_names(
-            n for n in (str(x) for x in manifest.get("recipes") or [])
-            if metadata.doc_exists(n))
-        # 旧包代码块的元数据改挂放在"不可取消点"之后执行：rekey 立即
-        # 改写 favorites/tags/...，循环中途取消会留下半迁移状态（与
-        # "取消不改任何设置"的契约相悖）；且必须在 bulk_set 之后——包内
-        # 元数据可能仍以旧键 htcode::X 携带条目，先 rekey 后合并会把
-        # 旧键原样加回来
-        for old, new in pending_rekeys:
-            metadata.rekey_metadata_name(old, new)
+            # ---- 5) 元数据合并，一次落盘（不可取消点：文件已就位） ----
+            _report(progress, done, total, "合并元数据...")
+            local = metadata.all_metadata()
+            favs = list(local["favorites"])
+            for n in meta["favorites"]:
+                if n not in favs:
+                    favs.append(n)
+            merged_thumbs = dict(local["thumbs"])
+            merged_thumbs.update(new_thumbs)
+            tags = dict(local["tags"])
+            tags.update(meta["tags"])
+            display = dict(local["display_names"])
+            display.update(meta["display_names"])
+            colors = dict(local["colors"])
+            colors.update(meta["colors"])
+            metadata.bulk_set(favorites=favs, tags=tags, thumbs=merged_thumbs,
+                              display_names=display, colors=colors)
+            committed = True   # 不可取消点已过：此后失败不再回滚 stems
+                               # （register_doc_names/rekey 还会继续改设置，
+                               # 此时回滚反与已合并的元数据失步）
+            # 登记本次导入产生文档的名字（unique_safe_name 撞名检测的数据源；
+            # 按 manifest 里的 recipe 名反查，导出端的包内目录名与本地
+            # doc_dir 在非撞名场景下天然一致）
+            metadata.register_doc_names(
+                n for n in (str(x) for x in manifest.get("recipes") or [])
+                if metadata.doc_exists(n))
+            # 旧包代码块的元数据改挂放在"不可取消点"之后执行：rekey 立即
+            # 改写 favorites/tags/...，循环中途取消会留下半迁移状态（与
+            # "取消不改任何设置"的契约相悖）；且必须在 bulk_set 之后——包内
+            # 元数据可能仍以旧键 htcode::X 携带条目，先 rekey 后合并会把
+            # 旧键原样加回来
+            for old, new in pending_rekeys:
+                metadata.rekey_metadata_name(old, new)
+        finally:
+            if not committed:
+                # 失败/取消回滚本次登记增量：导入的取消契约是"元数据落盘
+                # 前不改任何设置"，而登记发生在文件搬运之前（缩略图落盘
+                # 要靠它定名）。committed 之后（bulk_set 已过的不可取消
+                # 点）不回滚——rekey 等后续动作可能已改过设置，回滚反而
+                # 制造不一致
+                metadata.restore_stems(stems_before)
     return {
         "metadata_names": len(set(meta["tags"]) | set(meta["display_names"])
                               | set(meta["colors"]) | set(new_thumbs)

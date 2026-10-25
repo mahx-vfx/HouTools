@@ -165,22 +165,46 @@ class _LogTee:
         return getattr(original, name)
 
 
+def _strip_owned_tees(stream, owner):
+    """从重定向链的**任意位置**摘掉 owner 的（及无属主的遗留）tee 层。
+
+    只剥栈顶的旧写法有个漏网交错：W1、W2 都开着日志同时执行时，W2 的
+    tee 叠在 W1 之上，W1 先收尾只能跳过（顶层不是自己的），其 tee 永久
+    埋在链里；W2 收尾还原自己捕获的 _original 恰是 W1 的 tee，反而把它
+    顶回栈顶——此后全进程 print 都过一层惰性 tee（_log_active 已关，
+    无害直通），直到 W1 面板销毁才被 destroyed 钩子摘掉。改为沿
+    _original 链 splice：prev._original 跳过被摘层，别的存活面板正在用
+    的层原样保留。返回新的流头（顶层非自家层时与入参相同，调用方原样
+    赋回 sys.stdout/stderr 即可）。幂等：链上没有可摘层时原样返回。
+    """
+    head = stream
+    prev = None
+    cur = stream
+    while isinstance(cur, _LogTee):
+        nxt = cur._original
+        if cur._owner is None or cur._owner is owner:
+            if prev is None:
+                head = nxt
+            else:
+                prev._original = nxt
+        else:
+            prev = cur
+        cur = nxt
+    return head
+
+
 def _force_restore_stdout(owner=None):
-    """模块级兜底：摘掉还挂在 sys.stdout/stderr 上的 _LogTee。
+    """模块级兜底：摘掉还挂在 sys.stdout/stderr 上的本属主 _LogTee
+    （沿链任意位置，含无属主的遗留 tee）。
 
     面板在执行中被销毁时（pane 可关、收不到 closeEvent），实例的
     _restore_stdout 不可达，进程级重定向会一直挂着——此后全 Houdini
     的 print 都写进已销毁面板的日志。挂在面板 destroyed 信号上调用
     （连普通函数按直连处理，销毁时必触发，信号会把濒死的窗口对象作为
-    owner 传入），沿 _original 链解包。只摘属主匹配（含无属主的遗留
-    tee）的层：别的存活面板正在用的 tee 不能动。
+    owner 传入）。别的存活面板正在用的 tee 不能动。
     """
-    while isinstance(sys.stdout, _LogTee) \
-            and (sys.stdout._owner is None or sys.stdout._owner is owner):
-        sys.stdout = sys.stdout._original
-    while isinstance(sys.stderr, _LogTee) \
-            and (sys.stderr._owner is None or sys.stderr._owner is owner):
-        sys.stderr = sys.stderr._original
+    sys.stdout = _strip_owned_tees(sys.stdout, owner)
+    sys.stderr = _strip_owned_tees(sys.stderr, owner)
 
 
 # ── 运行中引擎留痕 ───────────────────────────────────────────
@@ -2465,14 +2489,12 @@ class AutomationWindow(QWidget):
         # 写入日志头部（任务列表信息）
         self._write_log_header()
 
-        # 重定向 stdout/stderr 到日志文件
+        # 重定向 stdout/stderr 到日志文件（不另存 _orig_stdout：收尾走
+        # _strip_owned_tees 按属主沿链摘除，不依赖捕获值——多面板嵌套时
+        # 捕获值可能是别人的 tee，用它还原反而把别人的层顶掉）
         if self._log_to_disk_enabled:
-            self._orig_stdout = sys.stdout
-            self._orig_stderr = sys.stderr
-            sys.stdout = _LogTee(self._orig_stdout, self._write_log,
-                                 owner=self)
-            sys.stderr = _LogTee(self._orig_stderr, self._write_log,
-                                 owner=self)
+            sys.stdout = _LogTee(sys.stdout, self._write_log, owner=self)
+            sys.stderr = _LogTee(sys.stderr, self._write_log, owner=self)
             # 面板在执行中被销毁时的进程级重定向兜底（destroyed → 模块级
             # _force_restore_stdout / _close_log_file）在 __init__ 已连接，
             # 这里不重复连——每次 Start 追加连接会让连接表随执行次数增长
@@ -2549,36 +2571,16 @@ class AutomationWindow(QWidget):
         （换配置重载设置等），只要还有挂着的重定向就一律还原，否则开关
         关掉后 tee 永远卸不下来。共享状态清理持 _log_lock：引擎线程可能
         正持锁在途 _write_log，无锁收尾会关掉在写句柄、或让迟到写入重算
-        路径拆出新文件。只摘**自己属主**的 tee：sys.stdout 当前是别的
-        面板（或第三方）的重定向时不能动——多面板并存时无属主判断会
-        互踩（W1 收尾把 W2 的 tee 顶掉、W2 开工剥掉 W1 的）。
+        路径拆出新文件。沿 _original 链 splice 摘掉**自己属主**（含无属主
+        遗留）的层——不要求自家层在栈顶：多面板并存时自己的 tee 可能埋
+        在别人下面（W1、W2 同时执行、W1 先收尾），只剥栈顶会让它漏摘并
+        在对方收尾时被顶回栈顶；splice 对别人的存活层不动。
         """
         with self._ensure_log_lock():
             self._log_active = False
-            if hasattr(self, "_orig_stdout"):
-                if not isinstance(sys.stdout, _LogTee) \
-                        or sys.stdout._owner is self:
-                    sys.stdout = self._orig_stdout
-                if not isinstance(sys.stderr, _LogTee) \
-                        or sys.stderr._owner is self:
-                    sys.stderr = self._orig_stderr
-                del self._orig_stdout
-                del self._orig_stderr
-                self._current_log_path = None  # 清除日志路径缓存
-            elif isinstance(sys.stdout, _LogTee):
-                # 兜底:上次收尾没走到(面板带着重定向被销毁等)导致实例属性
-                # 丢失、sys.stdout 仍是被包的 tee。沿 _original 链解包,防止
-                # 下次执行在 tee 之上再包一层(嵌套后同一行输出会写多份日志)
-                # ——只剥自己/无属主的层，别人的 tee 不动
-                while isinstance(sys.stdout, _LogTee) \
-                        and (sys.stdout._owner is None
-                             or sys.stdout._owner is self):
-                    sys.stdout = sys.stdout._original
-                while isinstance(sys.stderr, _LogTee) \
-                        and (sys.stderr._owner is None
-                             or sys.stderr._owner is self):
-                    sys.stderr = sys.stderr._original
-                self._current_log_path = None
+            sys.stdout = _strip_owned_tees(sys.stdout, self)
+            sys.stderr = _strip_owned_tees(sys.stderr, self)
+            self._current_log_path = None  # 清除日志路径缓存
             self._close_log_file()   # 重定向解除后日志句柄一并释放
 
     # ── 工具栏动作 ──────────────────────────────────────────

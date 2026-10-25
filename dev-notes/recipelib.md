@@ -130,18 +130,19 @@
 - 导出先写 `.~part` 成功才原子替换（取消/失败不留半个 zip）、导入元数据 bulk_set 最后一次落盘（中途取消不改设置，已解文件成孤儿无害、重跑幂等）；进度走同步 QProgressDialog（`_run_with_progress`：setValue 模态下自动 processEvents，无需 QThread）；zip 内 json/md 走 deflate、媒体/hda 走 store（媒体已压缩，deflate 只烧 CPU）；元数据批量读写走 `metadata.all_metadata/bulk_set`（逐键 setter 一条一存，导入会写盘爆量）。
 - smoke test 有完整导出→导入往返（临时目录双环境 + 同名冲突跳过 + 坏包拒绝 + 取消清理 + zip-slip 断言）。
 - **导入防路径穿越**：manifest 的 `hda_files.*.original` 由包作者任意伪造，落盘目标只取 `os.path.basename`（`../` 与绝对路径均无效）；**文档目录名同样来自包内成员、同样可伪造且直接喂给 rmtree**——`_doc_dirs_of` 对目录名过 `_safe_rel` 同款校验（`docs/../doc.md` 曾折出 ".." 让 rmtree 删掉整个 settings/、`docs//doc.md` 折出空段删掉 DOCS_DIR 本身，读取阶段拒绝、导入前再断言 realpath 收敛在 DOCS_DIR 内），文档替换走"解到 `<safe>.~incoming` → 成功才换入"的 staging（旧版"先删后写"在解包失败时会让本地文档凭空消失）。
-- **`_extract_member` 先写 `.~part`（带 PID）再 os.replace 原子落位**（2026-10 审查修复）：直写正式名中途失败会留截断文件——.hda 落库后每次 reload 对着坏文件告警重试、回滚名单抓不到"正在写的这个"；缩略图/代码文件同理。
-- **stems 必须是撞名检测数据源的一部分**（2026-10 审查修复）：`_iter_metadata_names` 现含 stems 键——名字解析后先落 stems、后进元数据键，漏了它"紧邻写入的撞名伙伴"探测不到前者（导入包内 `a::b` 与 `a/b` 撞名曾双双落 plain、缩略图互相覆盖且被恒定化冻结）。导入流程另走 `metadata.register_names`（批内互查 + 整批一次落盘，兼消逐名落盘的写放大）。
-- **图片像素维度护栏**：zip 配额只数声明字节数，PNG/GIF 头里的像素数与字节数无关（几 KB 可声明 1e5x1e5）、渲染时 QImage/QMovie 全分辨率解码会尝试数 GB 分配——导入即按 QImageReader 探尺寸，超 50MP 拒收（`_assert_image_dimensions`；视频无解码器，维持字节配额）。
+- **`_extract_member` 先写 `.~part`（带 PID+线程 id）再 os.replace 原子落位**（2026-10 审查修复）：直写正式名中途失败会留截断文件——.hda 落库后每次 reload 对着坏文件告警重试、回滚名单抓不到"正在写的这个"；缩略图/代码文件同理。图片像素维度护栏也在**落位前**对临时文件过（`_assert_image_dimensions`）——落位后再查会让像素炸弹已以正式名留在 thumbs/docs（元数据不引用、无人清理的永久垃圾）。
+- **stems 必须是撞名检测数据源的一部分**（2026-10 审查修复）：`_iter_metadata_names` 现含 stems 键——名字解析后先落 stems、后进元数据键，漏了它"紧邻写入的撞名伙伴"探测不到前者（导入包内 `a::b` 与 `a/b` 撞名曾双双落 plain、缩略图互相覆盖且被恒定化冻结）。导入流程另走 `metadata.register_names`（批内互查 + 整批一次落盘）；折叠计数进循环前一次算好、批内登记走增量计数——原实现对每个名字全库重扫 safe_name，数百名字的包是 O(N×M) 次正则调用。登记发生在文件搬运**之前**（缩略图落盘靠它定名），故整段包在 try/finally 里：失败/取消回滚快照（`stems_snapshot`/`restore_stems`），bulk_set（不可取消点）之后不回滚（rekey 可能已改设置，回滚反制造不一致）。
+- **图片像素维度护栏**：zip 配额只数声明字节数，PNG/GIF 头里的像素数与字节数无关（几 KB 可声明 1e5x1e5）、渲染时 QImage/QMovie 全分辨率解码会尝试数 GB 分配——`_extract_member` 落位前按 QImageReader 探尺寸，超 50MP 拒收（视频无解码器，维持字节配额）。
 - **旧包 code_blocks 的元数据改挂（rekey）挪到第 5 步不可取消点之后**：循环中途取消不再留半迁移状态；且必须在 bulk_set 之后（包内元数据可能仍以旧键 htcode::X 携带条目，先 rekey 后合并会把旧键加回来）。
 - **导入同名冲突对照含出厂 recipe 全集**（只对用户库名单会漏 $HFS 同名、恰好制造按优先级二选一）。
 
 ## safe_name 撞名与迁移
 
-- **safe_name 折叠非单射（a::b 与 a/b 同折 a__b，"保留全名可防互撞"是错误结论）**：写入/读取路径一律走 `metadata.unique_safe_name`——与库内其他内部名真实撞名时追加 md5 前 8 位摘要（照 HDR thumb_path 的解法），**解析结果登记进内部键 `stems` 恒定化**（不恒定则后出现的撞名伙伴会把先写者的 plain 路径"翻转"成摘要路径、已有文件失联；恒定后先写者保 plain、后写者落摘要），未撞名者与 safe_name 完全一致、存量零迁移。
+- **safe_name 折叠非单射（a::b 与 a/b 同折 a__b，"保留全名可防互撞"是错误结论）**：写入/读取路径一律走 `metadata.unique_safe_name`——与库内其他内部名真实撞名时追加 md5 前 8 位摘要（照 HDR thumb_path 的解法），**解析结果登记进内部键 `stems` 恒定化**（不恒定则后出现的撞名伙伴会把先写者的 plain 路径"翻转"成摘要路径、已有文件失联；恒定后先写者保 plain、后写者落摘要），未撞名者与 safe_name 完全一致、存量零迁移。撞名比较按折叠串 **lower()**（2026-10 复审补）：NTFS 等大小写不敏感盘上 Foo.png 与 foo.png 是同一文件，"Foo"/"foo" 这类仅大小写差异的内部名同样消歧（消歧只作用新登记，存量 plain 有恒定化兜着不回溯）。
 - 撞名检测数据源 = 元数据键 + 内部键 `docs`（write_doc/导入登记，纯文档零元数据的 recipe 也要参与互查）；撞名对的旧 plain 文档目录由 `migrate_colliding_doc_dirs` 在 reload 开头幂等改名（缩略图是存储式路径无需迁移）；`delete_doc_dir` 按 unique 名比对防连锁误伤；换扩展名重设缩略图/清除缩略图时按 unique 前缀清理旧文件（跳过仍被引用的，防孤儿）。
+- **stems 登记表只覆盖存活名册（2026-10 复审补）**：`rekey_metadata_name` 同步搬登记（旧键摘除、新键经 doc_dir 已先行登记故不覆盖；stems 迁移必须在 doc_dir 计算**之后**——doc_dir 内部走 unique_safe_name，先摘会被重新登记回来）；删配方走 `forget_stem`；否则已删名永久参与撞名检测（新配方拿到不必要的摘要名）、recipelib.json 与撞名扫描随历史只增不减。缩略图写入（set_thumb_from_file/from_pixmap）同样先写 `.~tmp`（PID+线程 id）再原子替换——重设同扩展名时目标名就是旧文件本身，直写中途失败会毁掉旧图。
 
 ## 已知代价备忘（暂不修，2026-10 复审）
 
 - **showEvent 触发的 reload 是主线程全量扫库**（hideEvent 置 `_need_reload`，重开面板即 `store.list_recipes` → `ensure_libraries_installed` 逐 .hda `definitionsInFile` 检视 + 逐 recipe 解析 `data.recipe.json`，uieady 启动时同样跑一遍）——冻结的是整个 Houdini 界面，lib_dirs 指向共享盘/大库时明显。库规模变大后做两件事：① 先 `os.stat` 各 .hda 取 mtime+size 指纹，与上次一致就跳过重扫；② 真正扫描挪 QThread（HOM 调用仍回主线程，按 Conventions「线程」约定），扫描期间状态栏提示"正在扫描库…"。reload 现已顺带清 `_thumb_cache`/`_cover_cache`（另一会话改过缩略图文件时重扫才拿得到新图，与导入路径同款）。
-- `metadata.unique_safe_name` 非纯函数（解析结果写进 stems 段落盘）：**导入流程已改走 `register_names` 批量登记**（导入开头一次落盘、取消不再留登记条目）；面板内单名调用（设缩略图/写文档）仍逐名落盘，频率低可接受。
+- `metadata.unique_safe_name` 非纯函数（解析结果写进 stems 段落盘）：**导入流程已改走 `register_names` 批量登记**（导入开头一次落盘、失败/取消回滚快照，见上）；面板内单名调用（设缩略图/写文档）仍逐名落盘，频率低可接受。
