@@ -1013,16 +1013,6 @@ def append_to_nodes(nodes, language, code):
     return appended, skipped
 
 
-_NETWORK_HINTS = {
-    "Object": "OBJ（/obj 层级）",
-    "Lop": "LOP（Solaris）",
-    "Dop": "DOP",
-    "Cop": "COP",
-    "Cop2": "COP2",
-    "Chop": "CHOP",
-}
-
-
 def create_node_with_code(parent, language, code, display_label="",
                           position=None):
     """在 parent 网络里创建对应节点并填入代码（拖代码块进网络编辑器）。

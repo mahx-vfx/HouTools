@@ -285,8 +285,8 @@ class SnipOverlay(QtCore.QObject):
         for ov in self._overlays:
             try:
                 ov.close()
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                log.debug("close screen overlay failed: %s", exc)
 
     def repaint_all(self):
         """选框是共享状态，任何变化都要让全部遮罩重绘。"""

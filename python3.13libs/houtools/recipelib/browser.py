@@ -1304,6 +1304,12 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self.preview_name = _PreviewNameLabel()
         self.preview_name.setWordWrap(True)
         self.preview_name.setStyleSheet("font-weight: bold; font-size: 14px;")
+        # 显示名/备注/元信息来自共享库与导入包（半可信）：QLabel 默认
+        # AutoText，Qt.mightBeRichText 命中时按富文本渲染——<img src=
+        # "file:///..."> 会读本地文件进 UI、未闭合标签吞掉后续文字。
+        # 文本类 QLabel 一律钉 PlainText（富文本区集中在 _show_tags，
+        # 那边已 html.escape）
+        self.preview_name.setTextFormat(QtCore.Qt.PlainText)
         self.preview_name.setToolTip("双击可自定义显示名称（支持中文）")
         self.preview_name.nameDoubleClicked.connect(self._rename_selected)
         # 元信息卡片：前三行纵排 + 两列信息（左：分类/版本，右：层级/焦点，
@@ -1311,6 +1317,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         # 会拉伸行距留空隙；改左右双列 VBox 紧凑堆叠
         self.preview_meta = QtWidgets.QLabel()
         self.preview_meta.setStyleSheet("color: #9a9aa2;")
+        self.preview_meta.setTextFormat(QtCore.Qt.PlainText)
         self.meta_cell_category = QtWidgets.QLabel()
         self.meta_cell_network = QtWidgets.QLabel()
         self.meta_cell_version = QtWidgets.QLabel()
@@ -1324,6 +1331,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self.meta_cell_version.setWordWrap(False)
         self.meta_cell_network.setWordWrap(False)
         self.meta_cell_targets.setWordWrap(False)
+        for _plain in (self.meta_cell_category, self.meta_cell_network,
+                       self.meta_cell_version, self.meta_cell_targets):
+            _plain.setTextFormat(QtCore.Qt.PlainText)
         line_h = self.fontMetrics().height()
         self.preview_meta.setFixedHeight(line_h * 3)
         for cell in (self.meta_cell_category, self.meta_cell_network,
@@ -1359,6 +1369,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         meta_lay.addLayout(meta_row)
         self.preview_comment = QtWidgets.QLabel()
         self.preview_comment.setWordWrap(True)
+        self.preview_comment.setTextFormat(QtCore.Qt.PlainText)
         # 贴顶：comment 拉伸占据 meta 卡片与文档之间的富余空间，
         # 垂直居中会让文字悬在半空
         self.preview_comment.setAlignment(QtCore.Qt.AlignLeft
@@ -1436,6 +1447,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
         self.status = QtWidgets.QLabel("双击卡片应用；或按住卡片拖入网络编辑器。")
         self.status.setObjectName("statusLabel")
+        self.status.setTextFormat(QtCore.Qt.PlainText)
         self._status_flash = StatusFlash(self.status)
 
         lay = QtWidgets.QVBoxLayout(self)
@@ -1484,6 +1496,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             log.warning("legacy code block migration failed: %s", exc,
                         exc_info=True)
         self._code_infos = codeblock.list_code_infos()
+        # 全量重扫即缓存失效：共享 settings/ 的另一会话可能改过缩略图
+        # 文件，_thumb_cache 按名缓存会继续显示旧图（导入路径同款清理）
+        self._thumb_cache.clear()
+        self._cover_cache.clear()
         lib_dirs = metadata.get_lib_dirs()
         self._recipes = []
         error_text = None
@@ -2364,8 +2380,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 # movie 挂在 preview_label 下：不显式释放则 C++ 对象随
                 # label 滞留，CacheAll 的 GIF 全帧缓存一并滞留
                 movie.deleteLater()
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                log.debug("stop preview movie failed: %s", exc)
         self.preview_label.setMovie(None)
         self._preview_movie = None
 
@@ -2551,11 +2567,19 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             if et == QtCore.QEvent.MouseMove:
                 ghost = state["ghost"]
                 ghost.move(QtGui.QCursor.pos() + QtCore.QPoint(16, 16))
-                over = store.network_editor_under_cursor() is not None
-                ghost.setStyleSheet(
-                    "background-color: rgba(13, 99, 153, 0.55);"
-                    if over else
-                    "background-color: rgba(13, 99, 153, 0.25);")
+                # 落点探查（HOM 的 paneTabUnderCursor）按 ~50ms 节流、
+                # 样式只在翻转时写：拖拽全程每个 MouseMove 都查会话 +
+                # setStyleSheet 重复解析 repolish，60Hz 下全程白烧
+                now = time.monotonic()
+                if now - state.get("over_check_at", 0.0) >= 0.05:
+                    state["over_check_at"] = now
+                    over = store.network_editor_under_cursor() is not None
+                    if over != state.get("was_over"):
+                        state["was_over"] = over
+                        ghost.setStyleSheet(
+                            "background-color: rgba(13, 99, 153, 0.55);"
+                            if over else
+                            "background-color: rgba(13, 99, 153, 0.25);")
                 return True
             if et == QtCore.QEvent.MouseButtonRelease \
                     and event.button() == QtCore.Qt.LeftButton:
@@ -2866,9 +2890,22 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         侧栏/网格，当前选中还在时按新数据刷新预览。"""
         self._code_infos = codeblock.list_code_infos()
         self._info_by_name = {r.name: r for r in self._recipes}
+        clashes = sorted(
+            set(self._info_by_name) & {c.name for c in self._code_infos})
+        if clashes:
+            # 与 reload() 同款撞名告警：创建侧查重只查代码目录、看不到
+            # recipe 名册，新建/编辑撞名时 update 会用代码块静默顶掉
+            # 同名 recipe——轻量路径此前漏了这层，用户要到下次全量重扫
+            # 才看得到警告
+            log.warning("code blocks shadow same-name recipes: %s",
+                        ", ".join(clashes))
         self._info_by_name.update({c.name: c for c in self._code_infos})
         self._rebuild_sidebar()
         self._apply_filter()
+        if clashes:
+            self.status.setText(
+                "警告：代码块与配方重名（{}），同名配方卡片不可达"
+                .format("、".join(clashes)))
         if self._preview_info is not None:
             current = self._info_by_name.get(self._preview_info.name)
             if current is not None:
@@ -2987,7 +3024,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         if info is None:
             return
         if getattr(info, "is_code", False):
-            self._on_code_card_menu(pos, info)
+            self._on_code_card_menu(pos, info, item)
             return
         fav = metadata.is_favorite(info.name)
         menu = QtWidgets.QMenu(self)
@@ -3037,10 +3074,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         elif act is not None and act is act_del:
             self._delete_recipe(info)
 
-    def _on_code_card_menu(self, pos, info):
+    def _on_code_card_menu(self, pos, info, item=None):
         """代码块卡片右键：编辑代码/显示名/文档/缩略图三件套/颜色/删除
         （结构对照 recipe 卡片菜单，少了「删除 Recipe」的出厂保护——
-        代码块永远可删）。"""
+        代码块永远可删）。item 为右键命中的卡片条目。"""
         fav = metadata.is_favorite(info.name)
         menu = QtWidgets.QMenu(self)
         act_fav = menu.addAction("取消收藏" if fav else "收藏")
@@ -3080,7 +3117,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         elif act is act_thumb_snip:
             self._snip_thumb(info)
         elif act is not None and act is act_thumb_clear:
-            self._clear_thumb(info, self.list.currentItem())
+            self._clear_thumb(info, item)
         elif act is act_color:
             self._set_color(info)
         elif act is act_copy:
@@ -3247,10 +3284,16 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         current = self.list.currentItem()
         if current is None:
             return
-        info = self._info_by_name.get(current.data(QtCore.Qt.UserRole))
+        name = current.data(QtCore.Qt.UserRole)
+        info = self._info_by_name.get(name)
         if info is not None:
             self._apply_filter()
-            self._update_preview(info)
+            # 过滤视图下元数据变更可能把条目滤出网格：_apply_filter 已把
+            # 预览清成空态，此时再刷预览会显示一张网格里不存在的卡
+            current = self.list.currentItem()
+            if current is not None \
+                    and current.data(QtCore.Qt.UserRole) == name:
+                self._update_preview(info)
 
     # ---------------- 元数据操作 ----------------
 
@@ -3280,7 +3323,13 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         metadata.set_favorite(info.name, fav)
         self._rebuild_sidebar()
         self._apply_filter()
-        self._update_preview(info)
+        # 过滤视图（收藏/标签）下取消收藏可能把卡片移出网格：_apply_filter
+        # 末尾已按幸存条目对齐/清空预览，这里只在条目幸存时补刷，防"预览
+        # 显示一张网格里不存在的卡"（预览右键全在操作隐形卡）
+        current = self.list.currentItem()
+        if current is not None \
+                and current.data(QtCore.Qt.UserRole) == info.name:
+            self._update_preview(info)
         self.status.setText("{}：{}".format(
             self._display_label(info), "已收藏" if fav else "已取消收藏"))
 
@@ -3335,7 +3384,12 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self._show_tags(tags)
         self._rebuild_sidebar()
         self._apply_filter()
-        self._update_preview(info)
+        # 同 _set_favorite：标签过滤视图下删掉本配方正在用的标签会把卡片
+        # 移出网格，仅条目幸存时才刷预览
+        current = self.list.currentItem()
+        if current is not None \
+                and current.data(QtCore.Qt.UserRole) == info.name:
+            self._update_preview(info)
         self.status.setText("{}：标签已更新".format(self._display_label(info)))
 
     def _set_thumb(self, info):
@@ -3360,7 +3414,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     info.name, dlg.result_pixmap(),
                     fmt=metadata.thumb_format_for_source(path))
         except (OSError, RuntimeError) as exc:
-            QtWidgets.QMessageBox.warning(self, "设置缩略图", str(exc))
+            warn(self, "设置缩略图", str(exc))
             return
         self._thumb_cache.pop(info.name, None)
         self._cover_cache.clear()
@@ -3390,7 +3444,13 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self._thumb_cache.pop(info.name, None)
         self._cover_cache.clear()
         if item is not None:
-            item.setIcon(self._base_icon(info))
+            try:
+                item.setIcon(self._base_icon(info))
+            except RuntimeError:
+                # 菜单/确认弹窗 exec_ 的嵌套事件循环里，搜索防抖等异步
+                # 重建可能已删掉旧 item 的 C++ 对象——随后的
+                # _refresh_current_item 会整表重建刷新图标，这里不必硬刷
+                log.debug("stale list item on clear thumb: %s", info.name)
         self._refresh_current_item()
 
     # ---------------- 截取缩略图（屏幕框选，capture.SnipOverlay） ----------------
@@ -3471,16 +3531,16 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         if ov is not None:
             try:
                 ov.close()   # 会话逐屏关闭；遮罩 WA_DeleteOnClose 自行释放
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                log.debug("close snip overlay failed: %s", exc)
 
     def _open_doc_for(self, info):
         if self._doc_dialog is not None:
             try:
                 self._doc_dialog.close()
                 self._doc_dialog.deleteLater()
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                log.debug("close previous doc dialog failed: %s", exc)
         self._doc_dialog = DocEditorDialog(self, info,
                                            display_label=self._display_label(info))
         self._doc_dialog.docSaved.connect(self._on_doc_saved)
@@ -3516,8 +3576,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             store.delete_recipe(info.name)
         except Exception as exc:
             log.warning("delete recipe failed: %s", exc, exc_info=True)
-            QtWidgets.QMessageBox.warning(self, "删除 Recipe",
-                                          "删除失败: {}".format(exc))
+            warn(self, "删除 Recipe", "删除失败: {}".format(exc))
             return
         metadata.clear_thumb(info.name)
         metadata.set_favorite(info.name, False)
@@ -3557,15 +3616,16 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             try:
                 self._doc_dialog.close()
                 self._doc_dialog.deleteLater()
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                log.debug("close doc dialog failed: %s", exc)
             self._doc_dialog = None
-        if MediaDialog._current is not None:
+        media = MediaDialog._current()
+        if media is not None:
             try:
-                MediaDialog._current.close()
-                MediaDialog._current.deleteLater()
-            except RuntimeError:
-                pass
+                media.close()
+                media.deleteLater()
+            except RuntimeError as exc:
+                log.debug("close media dialog failed: %s", exc)
         self._stop_preview_movie()
         if self._drag_state is not None:
             self._teardown_drag()
@@ -3585,8 +3645,8 @@ def show_recipe_library():
     try:
         import hou
         parent = hou.qt.mainWindow()
-    except (ImportError, AttributeError):
-        pass
+    except (ImportError, AttributeError) as exc:
+        log.debug("hou parent unavailable (headless): %s", exc)
 
     pin = bool(_UI_SETTINGS.get("pin_on_top"))
 

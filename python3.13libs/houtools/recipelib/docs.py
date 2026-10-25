@@ -153,8 +153,8 @@ class MarkdownMediaView(_DocPreview):
                 # CacheAll 的全帧缓存随之滞留（loadResource 里创建的
                 # movie 都登记在 _movies，在这里统一释放）
                 movie.deleteLater()
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                log.debug("stop doc movie failed (deleted C++ obj): %s", exc)
         self._movies.clear()
 
     def _on_movie_frame(self, url_str):
@@ -192,24 +192,38 @@ class MarkdownMediaView(_DocPreview):
         return super().loadResource(rtype, url)
 
 
+# MediaDialog 的单例状态：模块级字典 + NameError 守卫活过 Reload（见
+# MediaDialog docstring）
+try:
+    _MEDIA_DIALOG_STATE
+except NameError:
+    _MEDIA_DIALOG_STATE = {"current": None}
+
+
 class MediaDialog(QtWidgets.QDialog):
     """媒体播放对话框：GIF 用 QMovie 循环，视频用 QMediaPlayer。
 
-    非模态（看文档时可反复对照网络），同一时刻一个实例。
+    非模态（看文档时可反复对照网络），同一时刻一个实例。单例状态挂
+    模块级字典（NameError 守卫活过 Reload）：类属性在 Reload 重建类
+    后归 None、旧实例的 closeEvent 却写回旧类——单例保证会静默失效
+    （可同时开两个播放器）。
     """
 
-    _current = None
+    @classmethod
+    def _current(cls):
+        return _MEDIA_DIALOG_STATE["current"]
 
     @classmethod
     def open_media(cls, parent, path):
-        if cls._current is not None:
+        prev = _MEDIA_DIALOG_STATE["current"]
+        if prev is not None:
             try:
-                cls._current.close()
-                cls._current.deleteLater()
-            except RuntimeError:
-                pass
+                prev.close()
+                prev.deleteLater()
+            except RuntimeError as exc:
+                log.debug("close previous media dialog failed: %s", exc)
         dlg = cls(parent, path)
-        cls._current = dlg
+        _MEDIA_DIALOG_STATE["current"] = dlg
         dlg.show()
         dlg.raise_()
         return dlg
@@ -276,7 +290,8 @@ class MediaDialog(QtWidgets.QDialog):
         if self._player is not None:
             self._player.stop()
             self._player.setVideoOutput(None)
-        type(self)._current = None
+        if _MEDIA_DIALOG_STATE["current"] is self:
+            _MEDIA_DIALOG_STATE["current"] = None
         super().closeEvent(event)
 
 

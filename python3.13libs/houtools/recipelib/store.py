@@ -347,10 +347,48 @@ def _read_header(info, hfs):
 
 
 def get_recipe(name, lib_dirs=None):
-    """按内部名取单个 RecipeInfo（找不到返回 None）。"""
-    for info in list_recipes(lib_dirs):
-        if info.name == name:
+    """按内部名取单个 RecipeInfo（找不到返回 None）。
+
+    单查短路：安装前置（ensure_libraries_installed）不可省，但分类枚举
+    到该名字即止、头部只解析这一个——原实现跑完整 list_recipes 再挑名
+    字，一次单查要付全量枚举的逐 recipe nodeType/JSON 代价。
+    """
+    if not lib_dirs:
+        return None
+    import hou
+    import recipeutils as ru
+
+    keep = ensure_libraries_installed(lib_dirs)
+    if not keep:
+        return None
+
+    lib_path = _definition_library(name)
+    if not lib_path or _norm(lib_path) not in keep:
+        return None
+
+    mapping = [
+        ("tool", ru.RecipeCategory.tool),
+        ("node", ru.RecipeCategory.nodePreset),
+        ("parm", ru.RecipeCategory.parmPreset),
+        ("decoration", ru.RecipeCategory.decoration),
+        ("parmTemplate", ru.RecipeCategory.parmTemplate),
+        ("data", ru.RecipeCategory.data),
+    ]
+    hfs = hou.text.expandString("$HFS")
+    for cat_key, cat in mapping:
+        try:
+            names = ru.recipeNames(cat, include_label=False, pad=False)
+        except Exception as exc:
+            log.warning("recipeNames(%s) failed: %s", cat_key, exc)
+            continue
+        if name not in names:
+            continue
+        # 同 list_recipes 的去重语义：跨分类重名以枚举序在前的分类为准
+        info = RecipeInfo(name=name, category=cat_key, library=lib_path)
+        _read_header(info, hfs)
+        if info.library and _norm(info.library) in keep:
             return info
+        return None
     return None
 
 
@@ -489,8 +527,8 @@ def ensure_items_visible(name, result, editor):
         try:
             data = hou.data.dataFromRecipe(name) or {}
             anchor_name = (data.get("tags") or {}).get("target_tag")
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("dataFromRecipe(%s) probe failed: %s", name, exc)
         anchor = items.get(anchor_name) or next(iter(items.values()))
         bounds = editor.visibleBounds()
         lo = bounds.min()
