@@ -72,48 +72,60 @@ class ExecutionEngine(QThread):
         """遍历所有任务，派发给对应的执行器。
 
         ``all_completed`` 无论正常跑完还是被取消都会发出（取消只是提前
-        break），UI 层依赖它复位状态，不可去掉。
+        break），UI 层依赖它复位状态，不可去掉。整个循环包在 try/finally
+        里保证这一点：按钮回调脚本抛出的 SystemExit 等非 Exception 的
+        BaseException 会穿透逐任务的 except Exception（_run_deferred 的
+        wrapper 捕的是 BaseException 并在引擎线程原样重抛），漏了
+        finally 会让 all_completed 永不发——UI 永久停在「停止中…」，
+        stdout 重定向也挂到面板销毁才恢复。
         """
         success_count = 0
         fail_count = 0
         run_start_time = None
 
-        for idx, task in enumerate(self._tasks):
-            if self._cancelled:
-                break
-            if not task.enabled:
-                continue
+        try:
+            for idx, task in enumerate(self._tasks):
+                if self._cancelled:
+                    break
+                if not task.enabled:
+                    continue
 
-            start_time = datetime.now()
-            if run_start_time is None:
-                run_start_time = start_time
-            self.task_started.emit(idx, task.task_type.value, start_time.strftime("%H:%M:%S"))
+                start_time = datetime.now()
+                if run_start_time is None:
+                    run_start_time = start_time
+                self.task_started.emit(idx, task.task_type.value, start_time.strftime("%H:%M:%S"))
 
-            try:
-                if task.task_type == TaskType.BUTTON_CLICK:
-                    self._execute_button_click(task.params)
-                elif task.task_type == TaskType.FLIPBOOK:
-                    self._execute_flipbook(task.params)
-                elif task.task_type == TaskType.HOME_ASSISTANT:
-                    self._execute_home_assistant(task.params)
-                elif task.task_type == TaskType.OPEN_DW:
-                    self._execute_open_dw(task.params)
-                else:
-                    raise ValueError(f"未知任务类型: {task.task_type}")
+                try:
+                    if task.task_type == TaskType.BUTTON_CLICK:
+                        self._execute_button_click(task.params)
+                    elif task.task_type == TaskType.FLIPBOOK:
+                        self._execute_flipbook(task.params)
+                    elif task.task_type == TaskType.HOME_ASSISTANT:
+                        self._execute_home_assistant(task.params)
+                    elif task.task_type == TaskType.OPEN_DW:
+                        self._execute_open_dw(task.params)
+                    else:
+                        raise ValueError(f"未知任务类型: {task.task_type}")
 
-                elapsed = (datetime.now() - start_time).total_seconds()
-                self.task_completed.emit(idx, True, "执行成功", elapsed)
-                success_count += 1
-            except Exception as e:
-                elapsed = (datetime.now() - start_time).total_seconds()
-                self.task_completed.emit(idx, False, str(e), elapsed)
-                fail_count += 1
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    self.task_completed.emit(idx, True, "执行成功", elapsed)
+                    success_count += 1
+                except Exception as e:
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    self.task_completed.emit(idx, False, str(e), elapsed)
+                    fail_count += 1
 
-            self.msleep(100)
-
-        timestamp = datetime.now().strftime("%Y/%m/%d/%H:%M:%S")
-        total_elapsed = (datetime.now() - run_start_time).total_seconds() if run_start_time else 0
-        self.all_completed.emit(success_count, fail_count, timestamp, total_elapsed)
+                self.msleep(100)
+        except BaseException as exc:
+            # 记账后吞掉：SystemExit 属按钮回调脚本的行为，不应连带杀掉
+            # 引擎线程的收尾（finally 仍发 all_completed，UI 正常复位）
+            logger.error("engine aborted by %s: %s",
+                         type(exc).__name__, exc, exc_info=True)
+            fail_count += 1
+        finally:
+            timestamp = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+            total_elapsed = (datetime.now() - run_start_time).total_seconds() if run_start_time else 0
+            self.all_completed.emit(success_count, fail_count, timestamp, total_elapsed)
 
     # ── 取消 ──────────────────────────────────────────────
 

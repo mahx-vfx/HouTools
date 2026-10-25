@@ -128,16 +128,25 @@ class AutomationDataManager:
                 cls._backup_corrupt(path)
 
         # 空字符串/纯空白视同"未配置"——补写默认(与 load_dw_exe_path
-        # 的"空值回默认"同语义)
+        # 的"空值回默认"同语义)。tmp+os.replace 原子落位（同 save/）：
+        # 裸 open("w") 中途崩溃会留下截断 JSON，下次读失败只能回默认
+        # 值、用户的 dw_exe_path 丢回默认
         value = data.get("dw_exe_path")
         if not (isinstance(value, str) and value.strip()):
             data["dw_exe_path"] = DW_EXE_PATH_DEFAULT
+            tmp_path = path + ".~tmp%d_%d" % (os.getpid(),
+                                              threading.get_ident())
             try:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "w", encoding="utf-8") as f:
+                with open(tmp_path, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, path)
             except Exception as exc:
                 logger.warning("无法写入应用配置文件: %s (%s)", path, exc)
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
         return data
 
@@ -156,7 +165,10 @@ class AutomationDataManager:
                 if isinstance(value, str) and value.strip():
                     return value.strip()
         except Exception as exc:
-            logger.debug("读取应用配置失败，使用默认 DW 路径: %s (%s)", path, exc)
+            # 读失败（权限/占用等）静默回默认路径会让引擎对"用户从未配
+            # 置过的路径"报"路径不存在"，至少留 warning 可检索
+            logger.warning("读取应用配置失败，暂用默认 DW 路径: %s (%s)",
+                           path, exc)
         return DW_EXE_PATH_DEFAULT
 
     # ── 核心 IO ──────────────────────────────────────────
@@ -255,7 +267,12 @@ class AutomationDataManager:
         tmp_path = path + ".~tmp%d_%d" % (os.getpid(), threading.get_ident())
         # 名字带 PID/线程 id：固定临时名在同盘并发写时会互踩（两个
         # Houdini 开同一 $HIP、或 reload 后新旧实例并存），os.replace
-        # 可能把对方半写的文件搬上正式名
+        # 可能把对方半写的文件搬上正式名。
+        # ⚠ 已知限制（跨进程，暂不修）：save/save_settings 是"读现有 →
+        # 改一半 → 整写回"，两个进程开同一 $HIP 时后写者会以自己的旧
+        # 快照覆盖对方刚写入的另一半（tmp 名只防半写、不防陈旧合并基）。
+        # 需要多进程共写时再引入文件锁或 mtime 比对；单会话内两写者都
+        # 在主线程、无此问题
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)  # 仅此处创建配置目录
             # 读取现有数据（保留 settings）；读不出来先留底再覆盖，
@@ -288,8 +305,9 @@ class AutomationDataManager:
             logger.warning("保存配置失败: %s (%s)", path, exc)
             try:
                 os.unlink(tmp_path)
-            except OSError:
-                pass
+            except OSError as exc2:
+                logger.debug("cannot remove config tmp %s: %s",
+                             tmp_path, exc2)
             return False
 
     @classmethod
@@ -377,8 +395,9 @@ class AutomationDataManager:
             logger.warning("保存设置失败: %s (%s)", path, exc)
             try:
                 os.unlink(tmp_path)
-            except OSError:
-                pass
+            except OSError as exc2:
+                logger.debug("cannot remove config tmp %s: %s",
+                             tmp_path, exc2)
             return False
 
     @classmethod
@@ -393,7 +412,7 @@ class AutomationDataManager:
           - **不验证 JSON 有效性**(空文件 / 损坏文件也会出现在列表中,
             由 ``load()`` 容错处理返回 ``[]``)
           - 文件名按字典序排序(sorted)——保证 UI 下拉显示稳定
-          - 出错时静默返回空列表(权限错误等)
+          - 出错时返回空列表并记 warning(权限错误等不该伪装成"没有配置")
 
         Returns:
             排序后的 basename 列表,例 ``["Automation", "MAtest1", "MAtest2"]``。
@@ -408,7 +427,9 @@ class AutomationDataManager:
                 if name.endswith(".json")
                 and os.path.isfile(os.path.join(json_dir, name))
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("列出配置目录失败（按无配置处理）: %s (%s)",
+                           json_dir, exc)
             return []
 
     # ── 序列化 / 反序列化 ─────────────────────────────────

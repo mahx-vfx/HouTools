@@ -133,12 +133,16 @@ def _sanitize_config_name(text) -> str | None:
 class _LogTee:
     """同时写入原始 stdout/stderr 和日志文件的 tee 流。
 
-    用于执行期间捕获所有 print() 输出到日志文件。
+    用于执行期间捕获所有 print() 输出到日志文件。``owner`` 记录安装该
+    tee 的窗口实例：stdout 重定向是进程级单槽，多面板并存时（复制停靠
+    页签等可造出第二个 Automation 面板）没有属主就无法区分"自己的 tee"
+    与"别人的 tee"——收尾会互踩（W1 收尾顶掉 W2 的、W2 开工剥掉 W1 的）。
     """
 
-    def __init__(self, original, log_fn):
+    def __init__(self, original, log_fn, owner=None):
         self._original = original
         self._log_fn = log_fn
+        self._owner = owner
 
     def write(self, text):
         self._original.write(text)
@@ -161,20 +165,21 @@ class _LogTee:
         return getattr(original, name)
 
 
-def _force_restore_stdout():
-    """模块级兜底：摘掉还挂在 sys.stdout/stderr 上的任何 _LogTee。
+def _force_restore_stdout(owner=None):
+    """模块级兜底：摘掉还挂在 sys.stdout/stderr 上的 _LogTee。
 
     面板在执行中被销毁时（pane 可关、收不到 closeEvent），实例的
     _restore_stdout 不可达，进程级重定向会一直挂着——此后全 Houdini
     的 print 都写进已销毁面板的日志。挂在面板 destroyed 信号上调用
-    （连普通函数按直连处理，销毁时必触发），沿 _original 链解包。
+    （连普通函数按直连处理，销毁时必触发，信号会把濒死的窗口对象作为
+    owner 传入），沿 _original 链解包。只摘属主匹配（含无属主的遗留
+    tee）的层：别的存活面板正在用的 tee 不能动。
     """
-    if not isinstance(sys.stdout, _LogTee) \
-            and not isinstance(sys.stderr, _LogTee):
-        return
-    while isinstance(sys.stdout, _LogTee):
+    while isinstance(sys.stdout, _LogTee) \
+            and (sys.stdout._owner is None or sys.stdout._owner is owner):
         sys.stdout = sys.stdout._original
-    while isinstance(sys.stderr, _LogTee):
+    while isinstance(sys.stderr, _LogTee) \
+            and (sys.stderr._owner is None or sys.stderr._owner is owner):
         sys.stderr = sys.stderr._original
 
 
@@ -200,7 +205,31 @@ def _release_engine(engine: "ExecutionEngine"):
     try:
         _LIVE_ENGINES.remove(engine)
     except ValueError:
-        pass
+        logger.debug("engine %r not in _LIVE_ENGINES (already released)",
+                     engine)
+
+
+# 任务槽小图标缓存（jump/folder）：每个任务槽重建图标 = 重复读盘 +
+# QSvgRenderer 解析 + 光栅化，100 槽配置每次 _load_data/切配置付 100 倍
+# 代价。纯渲染缓存，Reload 后重建一次即可，无需 NameError 守卫。
+_SLOT_ICON_CACHE: dict = {}
+
+
+def _jump_icon_cached():
+    """跳转按钮图标（构建一次，复用）。"""
+    if "jump" not in _SLOT_ICON_CACHE:
+        _SLOT_ICON_CACHE["jump"] = _render_jump_icon()
+    return _SLOT_ICON_CACHE["jump"]
+
+
+def _folder_icon_cached() -> QIcon:
+    """打开文件夹按钮图标（构建一次，复用）。"""
+    icon = _SLOT_ICON_CACHE.get("folder")
+    if icon is None:
+        icon = QIcon(str(Path(__file__).resolve().parent.parent
+                         / "icons" / "folder.svg"))
+        _SLOT_ICON_CACHE["folder"] = icon
+    return icon
 
 
 def _render_jump_icon() -> QIcon | None:
@@ -385,6 +414,11 @@ def _activate_existing_panel(desktop) -> bool:
                     win.raise_()
                     win.activateWindow()
                     activated = True
+                elif _any_panel_running():
+                    # 重复的浮动实例里有引擎在跑:直接 close 只会协作式
+                    # 放弃在途任务(可能数小时),本轮回跳过、空闲后再去重
+                    logger.info("skip closing duplicate floating panel: "
+                                "an Automation instance is running")
                 else:
                     fp.close()  # 重复的浮动实例
             else:
@@ -393,6 +427,15 @@ def _activate_existing_panel(desktop) -> bool:
             continue
 
     return activated
+
+
+def _any_panel_running() -> bool:
+    """任一存活的 Automation 面板正在执行（或处于「停止中」）。"""
+    for widget in _iter_live_panels():
+        if getattr(widget, "_running", False) \
+                or getattr(widget, "_cancel_requested", False):
+            return True
+    return False
 
 
 def _qt_floating_window(panel):
@@ -447,7 +490,8 @@ def _apply_centered_position(panel, main, frame_w, frame_h):
             screen_h - c.y() - frame_h // 2,
         ))
         return True
-    except Exception:
+    except Exception as exc:
+        logger.debug("centered position failed: %s", exc)
         return False
 
 
@@ -492,8 +536,9 @@ class _PanelCenterFilter(QObject):
             if main is not None and fg.width() > 0 and fg.height() > 0:
                 _apply_centered_position(
                     self._panel, main, fg.width(), fg.height())
-        except Exception:
-            pass  # 定位失败:保持 Houdini 摆位,150ms 兜底校正仍在
+        except Exception as exc:
+            # 定位失败:保持 Houdini 摆位,150ms 兜底校正仍在
+            logger.debug("panel center filter positioning failed: %s", exc)
         app = QApplication.instance()
         if app is not None:
             app.removeEventFilter(self)
@@ -563,8 +608,9 @@ def open_floating_panel():
             if int(w) <= 0 or int(h) <= 0:
                 w, h = 620, 578  # 显示前 size() 无效:创建尺寸+标题栏近似
             _apply_centered_position(panel, main, int(w), int(h))
-        except Exception:
-            pass  # 面板已销毁或定位失败:保持 Houdini 的摆位
+        except Exception as exc:
+            # 面板已销毁或定位失败:保持 Houdini 的摆位
+            logger.debug("panel centering failed: %s", exc)
 
     _center_panel()  # 状态层先写好,供 Houdini show 时采用
 
@@ -1218,8 +1264,7 @@ class AutomationWindow(QWidget):
         open_folder_btn.setObjectName("flipbookOpenFolder")
         open_folder_btn.setFixedSize(22, 22)
         open_folder_btn.setToolTip("打开输出路径文件夹")
-        _folder_icon = str(Path(__file__).resolve().parent.parent / "icons" / "folder.svg")
-        open_folder_btn.setIcon(QIcon(_folder_icon))
+        open_folder_btn.setIcon(_folder_icon_cached())
         open_folder_btn.setIconSize(QSize(18, 18))
         open_folder_btn.setStyleSheet(
             "QPushButton { border: none; padding: 0px; background: transparent; }"
@@ -1242,7 +1287,7 @@ class AutomationWindow(QWidget):
         jump_btn.setObjectName("slotJumpBtn")
         jump_btn.setFixedSize(22, 22)
         jump_btn.setToolTip("在网络编辑器中跳转到该任务的目标节点")
-        jump_icon = _render_jump_icon()
+        jump_icon = _jump_icon_cached()
         if jump_icon is not None:
             jump_btn.setIcon(jump_icon)
             jump_btn.setIconSize(QSize(16, 16))
@@ -1290,8 +1335,10 @@ class AutomationWindow(QWidget):
             try:
                 import hou
                 resolved = hou.text.expandString(raw_path)
-            except Exception:
-                pass
+            except Exception as exc:
+                # 展开失败保留原字面量（无头/变量未定义），isdir 会如实
+                # 报"文件夹不存在"
+                logger.debug("expandString failed for %r: %s", raw_path, exc)
             # 取父目录（文件路径 → 所在文件夹）
             if os.path.splitext(resolved)[1]:
                 folder = os.path.dirname(resolved)
@@ -1904,7 +1951,10 @@ class AutomationWindow(QWidget):
     def _load_settings(self):
         """从配置文件加载设置。"""
         settings = AutomationDataManager.load_settings(self._current_config_name)
-        self._log_to_disk_enabled = settings.get("log_to_disk", False)
+        # as_bool 归一：手改配置 "log_to_disk": "false" 是 truthy，裸取
+        # 会反向启用磁盘日志（同模块其余布尔读点的约定）
+        self._log_to_disk_enabled = as_bool(
+            settings.get("log_to_disk", False), False)
 
     def _save_settings(self):
         """保存设置到配置文件(失败弹窗提示,不静默)。"""
@@ -2166,7 +2216,7 @@ class AutomationWindow(QWidget):
                     severity=hou.severityType.Warning,
                 )
             except ImportError:
-                pass
+                logger.debug("setStatusMessage unavailable (headless)")
             return
         name = self._config_combo.itemText(index)
         if not name:
@@ -2183,6 +2233,20 @@ class AutomationWindow(QWidget):
         清空部件焦点,内联编辑不可靠。同名配置已存在时**不覆盖**(否则
         会把用户任务清成空),仅切换并加载其已有内容。
         """
+        # 运行中/停止中拒绝(与 _on_config_changed 同款守卫):新建同样会
+        # 重建全部槽(未保存编辑丢失)并经 _load_settings 覆写运行设置
+        # (日志会中途静默停写)——此前唯独这个入口漏了守卫
+        if getattr(self, "_running", False) \
+                or getattr(self, "_cancel_requested", False):
+            try:
+                import hou
+                hou.ui.setStatusMessage(
+                    "Automation: 执行中不能新建配置，请先停止",
+                    severity=hou.severityType.Warning,
+                )
+            except ImportError:
+                logger.debug("setStatusMessage unavailable (headless)")
+            return
         name, ok = dialogs.prompt_text(self, "新建配置", "配置名称:")
         if not ok:
             return
@@ -2405,8 +2469,10 @@ class AutomationWindow(QWidget):
         if self._log_to_disk_enabled:
             self._orig_stdout = sys.stdout
             self._orig_stderr = sys.stderr
-            sys.stdout = _LogTee(self._orig_stdout, self._write_log)
-            sys.stderr = _LogTee(self._orig_stderr, self._write_log)
+            sys.stdout = _LogTee(self._orig_stdout, self._write_log,
+                                 owner=self)
+            sys.stderr = _LogTee(self._orig_stderr, self._write_log,
+                                 owner=self)
             # 面板在执行中被销毁时的进程级重定向兜底（destroyed → 模块级
             # _force_restore_stdout / _close_log_file）在 __init__ 已连接，
             # 这里不重复连——每次 Start 追加连接会让连接表随执行次数增长
@@ -2483,13 +2549,19 @@ class AutomationWindow(QWidget):
         （换配置重载设置等），只要还有挂着的重定向就一律还原，否则开关
         关掉后 tee 永远卸不下来。共享状态清理持 _log_lock：引擎线程可能
         正持锁在途 _write_log，无锁收尾会关掉在写句柄、或让迟到写入重算
-        路径拆出新文件。
+        路径拆出新文件。只摘**自己属主**的 tee：sys.stdout 当前是别的
+        面板（或第三方）的重定向时不能动——多面板并存时无属主判断会
+        互踩（W1 收尾把 W2 的 tee 顶掉、W2 开工剥掉 W1 的）。
         """
         with self._ensure_log_lock():
             self._log_active = False
             if hasattr(self, "_orig_stdout"):
-                sys.stdout = self._orig_stdout
-                sys.stderr = self._orig_stderr
+                if not isinstance(sys.stdout, _LogTee) \
+                        or sys.stdout._owner is self:
+                    sys.stdout = self._orig_stdout
+                if not isinstance(sys.stderr, _LogTee) \
+                        or sys.stderr._owner is self:
+                    sys.stderr = self._orig_stderr
                 del self._orig_stdout
                 del self._orig_stderr
                 self._current_log_path = None  # 清除日志路径缓存
@@ -2497,9 +2569,14 @@ class AutomationWindow(QWidget):
                 # 兜底:上次收尾没走到(面板带着重定向被销毁等)导致实例属性
                 # 丢失、sys.stdout 仍是被包的 tee。沿 _original 链解包,防止
                 # 下次执行在 tee 之上再包一层(嵌套后同一行输出会写多份日志)
-                while isinstance(sys.stdout, _LogTee):
+                # ——只剥自己/无属主的层，别人的 tee 不动
+                while isinstance(sys.stdout, _LogTee) \
+                        and (sys.stdout._owner is None
+                             or sys.stdout._owner is self):
                     sys.stdout = sys.stdout._original
-                while isinstance(sys.stderr, _LogTee):
+                while isinstance(sys.stderr, _LogTee) \
+                        and (sys.stderr._owner is None
+                             or sys.stderr._owner is self):
                     sys.stderr = sys.stderr._original
                 self._current_log_path = None
             self._close_log_file()   # 重定向解除后日志句柄一并释放
