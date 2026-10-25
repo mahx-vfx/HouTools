@@ -8,6 +8,7 @@ import os
 import re
 import json
 import subprocess
+import time
 from dataclasses import dataclass
 
 from PySide6.QtWidgets import (
@@ -384,7 +385,14 @@ class _ProbeWorker(QThread):
             self._probe_ffmpeg(info, startup)
             return
 
-        data = json.loads(result.stdout)
+        try:
+            data = json.loads(result.stdout)
+        except ValueError as e:
+            # 退出码 0 但输出不是 JSON（异常构建等）：回退 ffmpeg 解析，
+            # 不让整条探测链以"分析失败"收场
+            logger.debug("ffprobe 输出非 JSON，回退 ffmpeg 解析: %s", e)
+            self._probe_ffmpeg(info, startup)
+            return
 
         # 查找视频流
         for stream in data.get("streams", []):
@@ -792,8 +800,8 @@ def show_video_to_sequence_window():
     try:
         import hou
         parent = hou.qt.mainWindow()
-    except (ImportError, AttributeError):
-        pass
+    except (ImportError, AttributeError) as exc:
+        logger.debug("hou parent unavailable (headless): %s", exc)
     return window_manager.open_window(
         "video_to_sequence", lambda: _VideoToSequenceWindow(parent)
     )
@@ -1111,8 +1119,19 @@ class _VideoToSequenceWindow(QDialog):
         """加载视频：重置状态、按文件名填充输出目录并启动后台探测。
 
         浏览按钮、拖放（窗口级与 _VideoSourceGroup）和路径框手动加载
-        共用此入口。
+        共用此入口。转换进行中一律拒绝：重置状态会让面板与仍在写盘的
+        旧转换互不相认（收尾弹窗/路径框指向不同目录），先完成或取消
+        当前转换再换片。
         """
+        if self._extract_worker is not None \
+                and self._extract_worker.isRunning():
+            self._status_label.setVisible(True)
+            self._status_label.setText(
+                "转换进行中，请先完成或取消当前转换再更换视频")
+            self._status_label.setStyleSheet(
+                "color: #d29a55; font-size: 12px;")
+            self._path_edit.setText(self._current_video_path)
+            return
         self._reset_video_state()
         self._current_video_path = filepath
         self._video_info = None
@@ -1286,6 +1305,22 @@ class _VideoToSequenceWindow(QDialog):
         ):
             for path in stale:
                 bak = path + ".bak"
+                if os.path.exists(bak):
+                    # 上次进程崩溃遗留的 .bak 是那轮旧序列的唯一副本：
+                    # 无条件 os.replace 覆盖会把它永久丢掉。先按时间戳
+                    # 改名保底（不进 _stale_baks，不参与还原/清理，留给
+                    # 用户手动处置）
+                    keep = "{}.{}".format(
+                        bak, time.strftime("%Y%m%d%H%M%S"))
+                    try:
+                        os.replace(bak, keep)
+                        logger.warning(
+                            "发现上次崩溃遗留的旧序列备份，已改名保留: %s",
+                            keep)
+                    except OSError as e:
+                        logger.warning(
+                            "旧序列备份保底改名失败 %s -> %s: %s",
+                            bak, keep, e)
                 try:
                     os.replace(path, bak)
                     self._stale_baks.append((bak, path))
@@ -1511,7 +1546,7 @@ class _VideoToSequenceWindow(QDialog):
                 use_bg_parm.set(1)
 
         except ImportError:
-            pass
+            logger.debug("hou unavailable, skip camera background (headless)")
         except Exception as exc:
             # 锁定参数/节点被删等：帧已经全部写完，装饰性步骤失败不能
             # 掀掉完成回调（异常穿出槽会让"完成"弹窗永远不出现）
@@ -1554,8 +1589,8 @@ class _VideoToSequenceWindow(QDialog):
             val = hou.text.expandString("$RFSTART")
             if val and val != "$RFSTART":
                 return int(float(val))
-        except (ImportError, ValueError, TypeError, AttributeError):
-            pass
+        except (ImportError, ValueError, TypeError, AttributeError) as exc:
+            logger.debug("rfstart lookup failed, default 1001: %s", exc)
         return 1001
 
     def _find_scene_cameras(self) -> list:
