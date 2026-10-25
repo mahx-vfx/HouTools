@@ -16,7 +16,7 @@
 
 ## 转换流程
 
-- 开工前扫描输出目录同前缀旧序列并询问是否清除（防新旧帧混杂），完成帧数只报 ffmpeg progress 的 frames_done；取消时提示已写入帧数。
+- 开工前扫描输出目录同前缀旧序列并询问是否清除（防新旧帧混杂），完成帧数只报 ffmpeg progress 的 frames_done；取消时提示已写入帧数。**改名 .bak 前若 .bak 已存在（上次进程崩溃的遗留、那轮旧序列的唯一副本），先按时间戳改名保底**（`.bak.<YYYYmmddHHMMSS>`，不进还原/清理名单、留用户手动处置）——无条件覆盖会把原始帧永久丢掉（2026-10 审查修复）。
 - closeEvent 对探测线程只 cancel 不 wait（子进程不可中断，wait 必然白等）；实现 `is_close_deferred()` 配合 window_manager（见 AGENTS.md「窗口单例」行），延迟关闭收尾自删；showEvent 撤销未决的延迟关闭。
 - **转换不再重新探测**（窗口 `_video_info` 作为构造参数传入 `_ExtractWorker`，原 worker 从零重探最坏多等一次全片解码、且两次帧数可能不一致致进度条对不上）。
 

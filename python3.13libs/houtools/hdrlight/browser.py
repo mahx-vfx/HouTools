@@ -1291,8 +1291,9 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
                 thread.resume()  # 若在暂停中，先唤醒使其能响应中断
                 thread.requestInterruption()
                 thread.wait(1000)
-        except RuntimeError:
-            pass  # 已被 deleteLater，C++ 对象不在了
+        except RuntimeError as exc:
+            # 已被 deleteLater，C++ 对象不在了
+            log.debug("stop worker failed (deleted C++ obj): %s", exc)
 
     def _start_worker(self, hdr_paths):
         self._stop_worker()
@@ -1341,8 +1342,8 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
             else:
                 thread.pause()
                 self.pause_btn.setText("继续")
-        except RuntimeError:
-            pass
+        except RuntimeError as exc:
+            log.debug("pause/resume failed (deleted C++ obj): %s", exc)
 
     def _on_stop(self):
         thread = self._thread
@@ -1351,8 +1352,8 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         try:
             thread.resume()  # 暂停中的线程必须先唤醒才能响应中断
             thread.requestInterruption()
-        except RuntimeError:
-            pass
+        except RuntimeError as exc:
+            log.debug("stop failed (deleted C++ obj): %s", exc)
 
     def _on_thumb_ready(self, hdr_path, thumb_path):
         # 批量应用：每张 setIcon 都会触发 QListWidget 一次全网格延迟
@@ -1406,8 +1407,9 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
                     thread.resume()  # 暂停中的线程必须先唤醒才能响应中断
                     thread.requestInterruption()
                     thread.wait(2000)
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                log.debug("close-time stop failed (deleted C++ obj): %s",
+                          exc)
             # 2 秒内没停完就随它去：线程无 parent，窗口销毁不影响它，
             # 信号连到已销毁的窗口会被 Qt 自动断开，跑完自删。
         super().closeEvent(event)
@@ -1425,8 +1427,8 @@ def show_hdr_library():
     try:
         import hou
         parent = hou.qt.mainWindow()
-    except (ImportError, AttributeError):
-        pass
+    except (ImportError, AttributeError) as exc:
+        log.debug("hou parent unavailable (headless): %s", exc)
 
     lib_dir = get_lib_dir()
     pin = bool(_SETTINGS.get("pin_on_top"))

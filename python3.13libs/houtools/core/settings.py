@@ -87,8 +87,8 @@ class JsonStore:
                 log.error("cannot save %s: %s", self.path, exc)
                 try:
                     tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                except OSError as unlink_exc:
+                    log.debug("cannot remove tmp %s: %s", tmp, unlink_exc)
 
     def get(self, key, default=None):
         with self._lock:

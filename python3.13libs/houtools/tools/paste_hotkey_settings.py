@@ -35,8 +35,8 @@ def current_key() -> str:
         assigned = hou.hotkeys.assignments(CONTEXT, SYMBOL)
         if assigned:
             return assigned[0]
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("query current hotkey failed: %s", exc)
     return DEFAULT_KEY
 
 
@@ -77,8 +77,8 @@ def run():
     parent = None
     try:
         parent = hou.qt.mainWindow()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("main window unavailable: %s", exc)
     window_manager.open_window(TOOL_ID, lambda: _PasteHotkeyDialog(parent))
 
 
@@ -151,8 +151,8 @@ class _PasteHotkeyDialog(QDialog):
                     hou.ui.setStatusMessage(
                         f"Paste as Object Merge 快捷键已恢复默认:"
                         f"{DEFAULT_KEY}", hou.severityType.ImportantMessage)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("setStatusMessage failed: %s", exc)
                 self.accept()
             else:
                 self._hint.setText("Houdini 拒绝了默认键位。")
@@ -169,6 +169,6 @@ class _PasteHotkeyDialog(QDialog):
             hou.ui.setStatusMessage(
                 f"Paste as Object Merge 快捷键已设为:{key}",
                 hou.severityType.ImportantMessage)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("setStatusMessage failed: %s", exc)
         self.accept()

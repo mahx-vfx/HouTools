@@ -130,6 +130,10 @@
 - 导出先写 `.~part` 成功才原子替换（取消/失败不留半个 zip）、导入元数据 bulk_set 最后一次落盘（中途取消不改设置，已解文件成孤儿无害、重跑幂等）；进度走同步 QProgressDialog（`_run_with_progress`：setValue 模态下自动 processEvents，无需 QThread）；zip 内 json/md 走 deflate、媒体/hda 走 store（媒体已压缩，deflate 只烧 CPU）；元数据批量读写走 `metadata.all_metadata/bulk_set`（逐键 setter 一条一存，导入会写盘爆量）。
 - smoke test 有完整导出→导入往返（临时目录双环境 + 同名冲突跳过 + 坏包拒绝 + 取消清理 + zip-slip 断言）。
 - **导入防路径穿越**：manifest 的 `hda_files.*.original` 由包作者任意伪造，落盘目标只取 `os.path.basename`（`../` 与绝对路径均无效）；**文档目录名同样来自包内成员、同样可伪造且直接喂给 rmtree**——`_doc_dirs_of` 对目录名过 `_safe_rel` 同款校验（`docs/../doc.md` 曾折出 ".." 让 rmtree 删掉整个 settings/、`docs//doc.md` 折出空段删掉 DOCS_DIR 本身，读取阶段拒绝、导入前再断言 realpath 收敛在 DOCS_DIR 内），文档替换走"解到 `<safe>.~incoming` → 成功才换入"的 staging（旧版"先删后写"在解包失败时会让本地文档凭空消失）。
+- **`_extract_member` 先写 `.~part`（带 PID）再 os.replace 原子落位**（2026-10 审查修复）：直写正式名中途失败会留截断文件——.hda 落库后每次 reload 对着坏文件告警重试、回滚名单抓不到"正在写的这个"；缩略图/代码文件同理。
+- **stems 必须是撞名检测数据源的一部分**（2026-10 审查修复）：`_iter_metadata_names` 现含 stems 键——名字解析后先落 stems、后进元数据键，漏了它"紧邻写入的撞名伙伴"探测不到前者（导入包内 `a::b` 与 `a/b` 撞名曾双双落 plain、缩略图互相覆盖且被恒定化冻结）。导入流程另走 `metadata.register_names`（批内互查 + 整批一次落盘，兼消逐名落盘的写放大）。
+- **图片像素维度护栏**：zip 配额只数声明字节数，PNG/GIF 头里的像素数与字节数无关（几 KB 可声明 1e5x1e5）、渲染时 QImage/QMovie 全分辨率解码会尝试数 GB 分配——导入即按 QImageReader 探尺寸，超 50MP 拒收（`_assert_image_dimensions`；视频无解码器，维持字节配额）。
+- **旧包 code_blocks 的元数据改挂（rekey）挪到第 5 步不可取消点之后**：循环中途取消不再留半迁移状态；且必须在 bulk_set 之后（包内元数据可能仍以旧键 htcode::X 携带条目，先 rekey 后合并会把旧键加回来）。
 - **导入同名冲突对照含出厂 recipe 全集**（只对用户库名单会漏 $HFS 同名、恰好制造按优先级二选一）。
 
 ## safe_name 撞名与迁移
@@ -139,5 +143,5 @@
 
 ## 已知代价备忘（暂不修，2026-10 复审）
 
-- **showEvent 触发的 reload 是主线程全量扫库**（hideEvent 置 `_need_reload`，重开面板即 `store.list_recipes` → `ensure_libraries_installed` 逐 .hda `definitionsInFile` 检视 + 逐 recipe 解析 `data.recipe.json`，uieady 启动时同样跑一遍）——冻结的是整个 Houdini 界面，lib_dirs 指向共享盘/大库时明显。库规模变大后做两件事：① 先 `os.stat` 各 .hda 取 mtime+size 指纹，与上次一致就跳过重扫；② 真正扫描挪 QThread（HOM 调用仍回主线程，按 Conventions「线程」约定），扫描期间状态栏提示"正在扫描库…"。
-- `metadata.unique_safe_name` 非纯函数（会把解析结果写进 stems 段落盘）：导入流程的 `_doc_target_map` 在文档解包前调用它——取消/失败的导入会留下无害的 stems 登记条目（先写者保 plain 的既有语义，不出错）。介意的话给 `unique_safe_name` 加 `register=False` 形参、导入成功后再统一登记。
+- **showEvent 触发的 reload 是主线程全量扫库**（hideEvent 置 `_need_reload`，重开面板即 `store.list_recipes` → `ensure_libraries_installed` 逐 .hda `definitionsInFile` 检视 + 逐 recipe 解析 `data.recipe.json`，uieady 启动时同样跑一遍）——冻结的是整个 Houdini 界面，lib_dirs 指向共享盘/大库时明显。库规模变大后做两件事：① 先 `os.stat` 各 .hda 取 mtime+size 指纹，与上次一致就跳过重扫；② 真正扫描挪 QThread（HOM 调用仍回主线程，按 Conventions「线程」约定），扫描期间状态栏提示"正在扫描库…"。reload 现已顺带清 `_thumb_cache`/`_cover_cache`（另一会话改过缩略图文件时重扫才拿得到新图，与导入路径同款）。
+- `metadata.unique_safe_name` 非纯函数（解析结果写进 stems 段落盘）：**导入流程已改走 `register_names` 批量登记**（导入开头一次落盘、取消不再留登记条目）；面板内单名调用（设缩略图/写文档）仍逐名落盘，频率低可接受。
