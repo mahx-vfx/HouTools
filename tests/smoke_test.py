@@ -1294,6 +1294,42 @@ def main():
                                     == rl_meta.safe_name(solo))
                     print("unique_safe_name collision guard OK")
 
+                    # 导入序撞名（2026-10 审查修复回归）：两个折叠撞名的
+                    # 名字未经元数据预登记、按导入序逐个解析——stems 纳入
+                    # 撞名检测数据源后，第二个必须拿到摘要名（修复前互相
+                    # 探测不到、双双落 plain，包内缩略图互相覆盖）；批量
+                    # 登记 register_names（导入入口）同语义
+                    with tempfile.TemporaryDirectory() as tseq:
+                        seq_store = houtools.core.settings.JsonStore(
+                            "_smoke_seqcollide.json",
+                            defaults=dict(rl_meta._DEFAULTS))
+                        _track_rm(seq_store.path)
+                        with patch.object(rl_meta, "_SETTINGS", seq_store), \
+                             patch.object(rl_meta, "THUMBS_DIR",
+                                          Path(tseq) / "thumbs"):
+                            a, b = "pkg::one", "pkg/one"
+                            s1 = rl_meta.unique_safe_name(a)
+                            s2 = rl_meta.unique_safe_name(b)
+                            assert s1 == rl_meta.safe_name(a), (s1, s2)
+                            assert s2 != s1, (s1, s2)
+                    with tempfile.TemporaryDirectory() as treg:
+                        reg_store = houtools.core.settings.JsonStore(
+                            "_smoke_regcollide.json",
+                            defaults=dict(rl_meta._DEFAULTS))
+                        _track_rm(reg_store.path)
+                        with patch.object(rl_meta, "_SETTINGS", reg_store):
+                            a, b = "pkg2::x", "pkg2/x"
+                            rl_meta.register_names([a, b])
+                            s1 = rl_meta.unique_safe_name(a)
+                            s2 = rl_meta.unique_safe_name(b)
+                            assert s1 == rl_meta.safe_name(a), (s1, s2)
+                            assert s2 != s1, (s1, s2)
+                            # 已登记的名字重复批量登记幂等
+                            rl_meta.register_names([a, b])
+                            assert rl_meta.unique_safe_name(a) == s1
+                            assert rl_meta.unique_safe_name(b) == s2
+                    print("import-order stems collision OK")
+
             # 浏览器窗口：list_recipes / selected_nodes / 网络编辑器全部打桩
             infos = [
                 rl_store.RecipeInfo(name="houtools::pyro::a", label="Pyro A",

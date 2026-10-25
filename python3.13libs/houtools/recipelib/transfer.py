@@ -114,6 +114,11 @@ def _extract_member(zf, info, dst, budget=None):
 
     budget：[累计解压字节] 的单元素列表（导入侧配额计数）。解压前按
     ZipInfo 声明大小校验单成员与累计上限——防压缩炸弹/超大成员写满磁盘。
+    先写临时文件再 os.replace 原子落位：直接开正式名写一半失败（磁盘
+    满/包损坏）会留下截断文件——.hda 落 lib_dir 后每次 reload 都对着
+    坏文件告警重试、回滚名单还抓不到"正在写的这个"；文档/缩略图/代码
+    文件同理。临时名带 PID（同盘并发导入互不干扰，同 settings.JsonStore
+    的约定）。
     """
     if info.file_size > MAX_MEMBER_UNCOMPRESSED:
         raise TransferError("包内文件过大: {}（{} MB）".format(
@@ -128,8 +133,38 @@ def _extract_member(zf, info, dst, budget=None):
     parent = os.path.dirname(dst)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    with zf.open(info) as src, open(dst, "wb") as out:
-        shutil.copyfileobj(src, out, 1024 * 1024)
+    tmp = dst + ".~part%d" % os.getpid()
+    try:
+        with zf.open(info) as src, open(tmp, "wb") as out:
+            shutil.copyfileobj(src, out, 1024 * 1024)
+        os.replace(tmp, dst)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError as exc:
+                log.warning("cannot remove partial member %s: %s", tmp, exc)
+
+
+# 图片像素维度上限：zip 配额只数声明字节数，而 PNG/GIF 头里的像素数与
+# 字节数无关（几 KB 的 PNG 可声明 1e5 x 1e5）——导入后文档/卡片渲染时
+# QImage / QMovie（CacheAll 全帧缓存）会按全分辨率尝试数 GB 分配。导入
+# 即按 QImageReader 探尺寸拦下；视频没有 QImageReader 解码器，维持字节
+# 配额约束。
+MAX_IMAGE_PIXELS = 50 * 1000 * 1000
+
+
+def _assert_image_dimensions(path):
+    """图片类成员的像素维度护栏；超限抛 TransferError（导入即拒收）。"""
+    if os.path.splitext(str(path))[1].lower() not in metadata.IMAGE_EXTS:
+        return
+    from PySide6 import QtGui
+    size = QtGui.QImageReader(str(path)).size()
+    if size.isValid() and size.width() * size.height() > MAX_IMAGE_PIXELS:
+        raise TransferError(
+            "图片像素尺寸超限（{}x{}，上限 {}MP）: {}".format(
+                size.width(), size.height(),
+                MAX_IMAGE_PIXELS // (1000 * 1000), path))
 
 
 # --------------------------------------------------------------------------
@@ -304,7 +339,10 @@ def _read_manifest(zf):
         raise TransferError("不是本工具导出的包（缺少 manifest.json）")
     try:
         m = json.loads(raw)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
+        # RecursionError：深层嵌套 JSON 不是 ValueError 子类，漏了会以
+        # 裸 traceback 逃出 import_package，违背"预期内失败一律
+        # TransferError"的本模块契约
         raise TransferError("manifest.json 损坏: {}".format(exc))
     if not isinstance(m, dict) or m.get("app") != APP_TAG:
         raise TransferError("不是本工具导出的包")
@@ -324,7 +362,7 @@ def _read_packaged_metadata(zf):
         raise TransferError("包缺少 recipelib.json，可能已损坏")
     try:
         data = json.loads(raw)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
         raise TransferError("recipelib.json 损坏: {}".format(exc))
     if not isinstance(data, dict):
         raise TransferError("recipelib.json 内容异常")
@@ -543,6 +581,14 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
                  + len(code_plan) + len(legacy_blocks) + 1)
         done = 0
 
+        # 先整批登记 stems（一次落盘）：包内名字尚未进本地元数据，逐个
+        # unique_safe_name 探测不到批内撞名伙伴（曾双双落 plain、缩略图
+        # 互相覆盖），批量登记在内存中互查后才落盘，兼消掉逐名落盘的
+        # 写放大（数百名字 = 数百次整文件 tmp+replace）
+        metadata.register_names(
+            [str(n) for n in (manifest.get("recipes") or [])]
+            + [n for n, _arc, _ext in thumb_plan])
+
         # ---- 1) 缩略图：按本地 unique_safe_name 重映射落盘 ----
         # 包内文件名来自导出方的 safe_name，与本地布局无关；直用包内名
         # 会在折名撞名时整文件覆盖本地另一配方的缩略图（导入端漏配
@@ -555,6 +601,7 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
             dst = str(Path(metadata.THUMBS_DIR)
                       / (metadata.unique_safe_name(name) + ext))
             _extract_member(zf, members[arc], dst, budget)
+            _assert_image_dimensions(dst)
             new_thumbs[name] = metadata._to_stored(dst)
             done += 1
 
@@ -588,8 +635,9 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
                             log.warning("import: skip non-media doc "
                                         "member %s", arc)
                             continue
-                        _extract_member(zf, members[arc],
-                                        incoming / _safe_rel(rel), budget)
+                        member_dst = incoming / _safe_rel(rel)
+                        _extract_member(zf, members[arc], member_dst, budget)
+                        _assert_image_dimensions(member_dst)
             except Exception:
                 shutil.rmtree(str(incoming), ignore_errors=True)
                 raise
@@ -651,6 +699,7 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
         # json 段落成文件并改挂元数据键（落盘目标只取 basename，包内
         # 成员名不可信） ----
         code_done = 0
+        pending_rekeys = []   # 旧包 htcode::X 的元数据改挂，攒到第 5 步
         root_abs = os.path.realpath(str(codeblock.CODELIB_ROOT)) + os.sep
         for rel, lang in code_plan:
             if _report(progress, done, total, "导入代码块 {}".format(rel)):
@@ -668,7 +717,7 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
             codeblock.save_code(stem, rec.get("language", "vex"),
                                 rec.get("code", ""))
             if stem != name:
-                metadata.rekey_metadata_name(name, stem)
+                pending_rekeys.append((name, stem))
             code_done += 1
             done += 1
 
@@ -695,6 +744,13 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
         metadata.register_doc_names(
             n for n in (str(x) for x in manifest.get("recipes") or [])
             if metadata.doc_exists(n))
+        # 旧包代码块的元数据改挂放在"不可取消点"之后执行：rekey 立即
+        # 改写 favorites/tags/...，循环中途取消会留下半迁移状态（与
+        # "取消不改任何设置"的契约相悖）；且必须在 bulk_set 之后——包内
+        # 元数据可能仍以旧键 htcode::X 携带条目，先 rekey 后合并会把
+        # 旧键原样加回来
+        for old, new in pending_rekeys:
+            metadata.rekey_metadata_name(old, new)
     return {
         "metadata_names": len(set(meta["tags"]) | set(meta["display_names"])
                               | set(meta["colors"]) | set(new_thumbs)

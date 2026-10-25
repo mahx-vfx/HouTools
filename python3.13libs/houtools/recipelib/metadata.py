@@ -70,19 +70,24 @@ def unique_safe_name(name):
     """safe_name 的单射版：与库内其他 recipe 折叠撞名时加摘要消歧。
 
     撞名检测以元数据出现过的其他内部名为准（_other_recipe_names，
-    含文档登记），摘要 = 内部名的 md5 前 8 位（照 hdrlight/browser.py
-    thumb_path 对 __ 连接歧义的同一解法）。
+    含文档登记与 stems 已登记名），摘要 = 内部名的 md5 前 8 位（照
+    hdrlight/browser.py thumb_path 对 __ 连接歧义的同一解法）。
 
     解析结果登记进内部键 stems，此后恒定返回登记值——若每次即时
     计算，后出现的撞名伙伴会把先写者的 plain 路径"翻转"成摘要路径、
     已有文件失联。恒定化后先写者保 plain、后写者落摘要，写入顺序
     不影响正确性；未撞名的名字解析值与 safe_name 一致，存量文件
     零迁移。
+
+    ⚠ 撞名检测数据源必须包含 stems 键本身（见 _iter_metadata_names）：
+    唯一调用序列里第 1 个名字解析后只进 stems、尚未进任何元数据键，
+    第 2 个折叠撞名的名字若看不见它也会拿到 plain 名——导入包内撞名
+    曾因此双双落 plain、缩略图互相覆盖。
     """
-    stems = dict(_SETTINGS.get("stems") or {})
-    recorded = stems.get(name)
+    recorded = (_SETTINGS.get("stems") or {}).get(name)
     if recorded:
         return recorded
+    stems = dict(_SETTINGS.get("stems") or {})
     stem = safe_name(name)
     for other in _other_recipe_names(name):
         if safe_name(other) == stem:
@@ -92,6 +97,36 @@ def unique_safe_name(name):
     stems[name] = stem
     _SETTINGS.set("stems", stems)
     return stem
+
+
+def register_names(names):
+    """批量解析并登记 stems（整批一次落盘），导入流程的批量入口。
+
+    逐个调 unique_safe_name 除了每名一次全文件原子写（数百名字的包 =
+    数百次 tmp+replace）外，还有语义坑：批内第 1 个名字登记后只进
+    stems、未进元数据键，靠 _iter_metadata_names 纳入 stems 才能被
+    后续名字探测到。本函数在内存中把批内名字一并纳入撞名检测、整批
+    解析完一次落盘，两个问题同时解决；先入批者保 plain、后到撞名者
+    落摘要，与 unique_safe_name 的恒定化语义一致。
+    """
+    names = [str(n) for n in names if n]
+    if not names:
+        return
+    stems = dict(_SETTINGS.get("stems") or {})
+    meta_names = _iter_metadata_names()
+    seen = set(n for n in names if stems.get(n))   # 已登记者也参与撞名检测
+    for name in names:
+        if stems.get(name):
+            continue
+        stem = safe_name(name)
+        for other in (meta_names | seen) - {name}:
+            if safe_name(other) == stem:
+                stem = stem + "-" + hashlib.md5(
+                    name.encode("utf-8")).hexdigest()[:8]
+                break
+        stems[name] = stem
+        seen.add(name)
+    _SETTINGS.set("stems", stems)
 
 
 # --------------------------------------------------------------------------
@@ -479,11 +514,13 @@ def set_thumb_from_file(name, src):
     ext = os.path.splitext(src)[1].lower() or ".png"
     THUMBS_DIR.mkdir(parents=True, exist_ok=True)
     dst = str(THUMBS_DIR / (unique_safe_name(name) + ext))
-    _clean_stale_thumbs(name, skip={dst})   # 换扩展名重设前清掉旧文件
     shutil.copyfile(src, dst)
     thumbs = dict(_SETTINGS.get("thumbs") or {})
     thumbs[name] = _to_stored(dst)
     _SETTINGS.set("thumbs", thumbs)
+    # 旧扩展名文件最后清：先删后写时新图写失败（磁盘满/源被拔走）会让
+    # 记录指向已删除的旧文件、原图不可恢复
+    _clean_stale_thumbs(name, skip={dst})
     return dst
 
 
@@ -517,12 +554,14 @@ def set_thumb_from_pixmap(name, pixmap, fmt="PNG"):
         ext, save_args = ".png", ("PNG",)
     THUMBS_DIR.mkdir(parents=True, exist_ok=True)
     dst = str(THUMBS_DIR / (unique_safe_name(name) + ext))
-    _clean_stale_thumbs(name, skip={dst})   # 换扩展名重设前清掉旧文件
     if not pixmap.save(dst, *save_args):
         raise RuntimeError("缩略图保存失败: {}".format(dst))
     thumbs = dict(_SETTINGS.get("thumbs") or {})
     thumbs[name] = _to_stored(dst)
     _SETTINGS.set("thumbs", thumbs)
+    # 旧扩展名文件最后清（同 set_thumb_from_file：先删后写会让失败留下
+    # 悬空记录 + 原图丢失）
+    _clean_stale_thumbs(name, skip={dst})
     return dst
 
 
@@ -672,14 +711,18 @@ def _iter_metadata_names():
     """元数据里出现过的全部内部名——unique_safe_name 的撞名检测数据源。
 
     收藏值 + 各内容键的键名 + 文档登记（write_doc/register_doc_names
-    写入）：纯文档、从未打过标签/收藏的 recipe 也要能被看到，否则
-    两个撞名者互相探测不到、文档仍会写进同一目录。
+    写入）+ stems 已登记名：纯文档、从未打过标签/收藏的 recipe 也要能
+    被看到，否则两个撞名者互相探测不到、文档仍会写进同一目录；stems
+    键必须同入数据源——名字解析后先落 stems、后进元数据键，漏了它
+    "同批/紧邻写入的撞名伙伴"就探测不到前者（导入包内撞名曾因此
+    双双落 plain、缩略图互相覆盖）。
     """
     data = all_metadata()
     names = set(data["favorites"])
     for key in ("tags", "thumbs", "display_names", "colors"):
         names.update(data[key].keys())
     names.update(_SETTINGS.get("docs") or [])
+    names.update((_SETTINGS.get("stems") or {}).keys())
     return names
 
 
