@@ -468,8 +468,10 @@ class _ProbeWorker(QThread):
             info.width = int(res_match.group(1))
             info.height = int(res_match.group(2))
 
-        # 解析 FPS
-        fps_match = re.search(r"(\d+(?:\.\d+)?)\s*fps", output)
+        # 解析 FPS（同分辨率一样锚定 Video: 流行）：文件名里的 "24fps"
+        # （render_24fps.mov）在 Input #0 行、先于流行，裸 search 会先
+        # 命中它，nb_frames 缺失时 fps×duration 的帧数估算随之全错
+        fps_match = re.search(r"Video:.*?(\d+(?:\.\d+)?)\s*fps", output)
         if fps_match:
             info.fps = float(fps_match.group(1))
 
@@ -548,11 +550,15 @@ class _ExtractWorker(QThread):
         # ffmpeg 未启动时（探测阶段）_process 为 None，terminate 无从谈起，
         # 这里只能置标志——真正的拦截在 _extract 的 Popen 前检查
         self._cancelled = True
-        if self._process:
+        # 局部捕获后再判空调用：worker 线程收尾在 `proc, self._process =
+        # self._process, None`，if 判真后 terminate 前 _process 变 None 会
+        # AttributeError 穿出主线程 Qt 槽
+        proc = self._process
+        if proc is not None:
             try:
-                self._process.terminate()
-            except OSError:
-                pass
+                proc.terminate()
+            except OSError as e:
+                logger.debug("terminate ffmpeg on cancel failed: %s", e)
 
     def run(self):
         try:
@@ -634,52 +640,56 @@ class _ExtractWorker(QThread):
         #   ...
         #   progress=continue  (或 progress=end)
         frames_done = 0
+        returncode = 0
 
         try:
-            for raw_line in self._process.stdout:
-                if self._cancelled:
-                    break
-
-                line = raw_line.decode("utf-8", errors="replace").strip()
-
-                if line.startswith("frame="):
-                    try:
-                        frames_done = int(line.split("=", 1)[1].strip())
-                    except (ValueError, IndexError) as e:
-                        logger.debug("progress 行解析失败 %r: %s", line, e)
-                    self.progress.emit(min(frames_done, total_frames), total_frames)
-
-                # progress=end 表示 ffmpeg 完成
-                if line == "progress=end":
-                    break
-
-        except (OSError, ValueError):
-            # stdout 管道关闭（进程已终止）
-            pass
-
-        self.frames_written = frames_done
-
-        # 收尾必须保证 ffmpeg 真正退出、且等待有界：取消若发生在 Popen 之前，
-        # cancel() 里那次 terminate 被跳过，进程还活着且已无人读 stdout——
-        # 它很快会卡死在 progress 管道写上（缓冲区填满即停），裸 wait() 无超时
-        # 会把线程永久挂起（窗口 closeEvent 靠轮询 isRunning 延迟关闭，
-        # 线程挂起 = 隐藏的窗口永不关闭）
-        proc, self._process = self._process, None
-        returncode = 0
-        if proc is not None:
-            if self._cancelled and proc.poll() is None:
-                try:
-                    proc.terminate()
-                except OSError:
-                    pass
             try:
-                returncode = proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
+                for raw_line in self._process.stdout:
+                    if self._cancelled:
+                        break
+
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+
+                    if line.startswith("frame="):
+                        try:
+                            frames_done = int(line.split("=", 1)[1].strip())
+                        except (ValueError, IndexError) as e:
+                            logger.debug("progress 行解析失败 %r: %s", line, e)
+                        self.progress.emit(
+                            min(frames_done, total_frames), total_frames)
+
+                    # progress=end 表示 ffmpeg 完成
+                    if line == "progress=end":
+                        break
+
+            except (OSError, ValueError) as e:
+                # stdout 管道关闭（进程已终止）：预期路径，留 debug 痕迹
+                logger.debug("stdout progress 读流中断: %s", e)
+            self.frames_written = frames_done
+        finally:
+            # 收尾必须保证 ffmpeg 真正退出、且等待有界：取消若发生在 Popen
+            # 之前，cancel() 里那次 terminate 被跳过，进程还活着且已无人读
+            # stdout——它很快会卡死在 progress 管道写上（缓冲区填满即停），
+            # 裸 wait() 无超时会把线程永久挂起（窗口 closeEvent 靠轮询
+            # isRunning 延迟关闭，线程挂起 = 隐藏的窗口永不关闭）。
+            # 包 finally：Popen 之后若有意外异常穿出 _extract（progress 槽
+            # 抛错等），Popen 析构不杀子进程、ffmpeg 会成孤儿继续写帧——
+            # 任何路径都必须把进程收掉
+            proc, self._process = self._process, None
+            if proc is not None:
+                if self._cancelled and proc.poll() is None:
+                    try:
+                        proc.terminate()
+                    except OSError as e:
+                        logger.debug("terminate ffmpeg failed: %s", e)
                 try:
-                    proc.kill()
-                except OSError:
-                    pass
-                returncode = proc.wait(timeout=5)
+                    returncode = proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    try:
+                        proc.kill()
+                    except OSError as e:
+                        logger.debug("kill ffmpeg failed: %s", e)
+                    returncode = proc.wait(timeout=5)
 
         if self._cancelled:
             self.error.emit("转换已取消")
@@ -775,7 +785,9 @@ class _ExtractWorker(QThread):
             info.width = int(res_match.group(1))
             info.height = int(res_match.group(2))
 
-        fps_match = re.search(r"(\d+(?:\.\d+)?)\s*fps", output)
+        # 同 _probe_ffmpeg：fps 与分辨率一样锚定 Video: 流行，防文件名
+        # 里的 "24fps" 抢先
+        fps_match = re.search(r"Video:.*?(\d+(?:\.\d+)?)\s*fps", output)
         if fps_match:
             info.fps = float(fps_match.group(1))
 
@@ -1148,6 +1160,20 @@ class _VideoToSequenceWindow(QDialog):
 
     def _reset_video_state(self):
         """清空已加载的视频状态（路径框被手动清空时也走这里）。"""
+        if self._extract_worker is not None \
+                and self._extract_worker.isRunning():
+            # 转换中拒绝重置（与 _load_video 的换片拒绝同语义）：ffmpeg
+            # 仍在写盘，清掉 _current_video_path/_video_info、进度归零会
+            # 让面板短暂显示与写盘进程互不相认的状态。恢复路径框文本，
+            # 等 0.5s 内的下一次进度信号把进度条拉回
+            if self._current_video_path:
+                self._path_edit.setText(self._current_video_path)
+            self._status_label.setVisible(True)
+            self._status_label.setText(
+                "转换进行中，请先完成或取消当前转换再更改路径")
+            self._status_label.setStyleSheet(
+                "color: #d29a55; font-size: 12px;")
+            return
         if self._probe_worker is not None and self._probe_worker.isRunning():
             # 不取消会留下孤儿探测（串行跑完最长 450s 的子进程链），期间
             # 关窗还落入线程析构路径——取消并退休，迟到的结果由槽内
@@ -1309,7 +1335,10 @@ class _VideoToSequenceWindow(QDialog):
                     # 上次进程崩溃遗留的 .bak 是那轮旧序列的唯一副本：
                     # 无条件 os.replace 覆盖会把它永久丢掉。先按时间戳
                     # 改名保底（不进 _stale_baks，不参与还原/清理，留给
-                    # 用户手动处置）
+                    # 用户手动处置）。保底改名失败必须跳过该 path——
+                    # 继续执行下面的 os.replace(path, bak) 会把这份唯一
+                    # 副本顶掉（keep 比 bak 长 15 字符，深层目录逼近
+                    # MAX_PATH 时正是"保底失败、让位反而成功"的组合）
                     keep = "{}.{}".format(
                         bak, time.strftime("%Y%m%d%H%M%S"))
                     try:
@@ -1319,8 +1348,9 @@ class _VideoToSequenceWindow(QDialog):
                             keep)
                     except OSError as e:
                         logger.warning(
-                            "旧序列备份保底改名失败 %s -> %s: %s",
-                            bak, keep, e)
+                            "旧序列备份保底改名失败，跳过该文件让位 "
+                            "%s -> %s: %s", bak, keep, e)
+                        continue
                 try:
                     os.replace(path, bak)
                     self._stale_baks.append((bak, path))
@@ -1720,9 +1750,12 @@ class _VideoToSequenceWindow(QDialog):
         try:
             resx.set(width)
             resy.set(height)
-        except hou.OperationFailed as e:
+        except hou.Error as e:
+            # 放宽到 hou.Error：锁定参数（手动 Lock 或来自锁定 HDA 实例）
+            # 抛的是 PermissionError——与 OperationFailed 是兄弟类，只捕后
+            # 者会让异常穿出 Qt 槽、界面零反馈，用户误以为已生效
             logger.warning("设置相机分辨率失败 %s: %s", cam.path(), e)
-            dialogs.warn(self, "错误", f"设置相机分辨率失败:\n{e}")
+            dialogs.warn(self, "错误", f"设置相机分辨率失败（参数被锁定？）:\n{e}")
             return
         self._res_w_edit.setText(str(width))
         self._res_h_edit.setText(str(height))

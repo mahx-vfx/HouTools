@@ -65,6 +65,9 @@ class ExecutionEngine(QThread):
         # 主线程预读 DW 软件路径:hou.getenv 严格说不该在 QThread 里调,
         # 每次运行读一次(而非每任务读)也足够
         self._dw_exe_path = AutomationDataManager.load_dw_exe_path()
+        # 本次运行启动的全部 DW 子进程引用（防 GC ResourceWarning，见
+        # _execute_open_dw 注释）
+        self._dw_processes: list = []
 
     # ── 主循环 ────────────────────────────────────────────
 
@@ -321,13 +324,14 @@ class ExecutionEngine(QThread):
             # CREATE_NO_WINDOW 防配置成控制台程序时弹黑框（与 videoseq
             # 的 get_startup_kwargs 同一套约定）。stdio 全部 DEVNULL：不
             # 重定向时子进程继承 Houdini 的控制台，worker 日志会刷进主
-            # 程序；留引用防 GC 对仍在运行的子进程发 ResourceWarning
-            #（引擎存活期 = 本次运行，收尾后随引擎一起释放）
-            self._dw_process = subprocess.Popen(
+            # 程序；引用挂 list（一次运行可含多个 DW 任务，覆盖赋值会让
+            # 前序 Popen 失去引用、恰好在子进程仍运行时被 GC 发
+            # ResourceWarning——引擎存活期 = 本次运行，收尾后随引擎释放）
+            self._dw_processes.append(subprocess.Popen(
                 [exe_path],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0))
         except OSError as e:
             raise ValueError(f"启动 DW 失败: {exe_path} ({e})") from e

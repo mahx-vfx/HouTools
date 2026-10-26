@@ -491,9 +491,13 @@ class _PreviewCode(codeblock._CodeEditor):
         self._highlighter = None
 
     def set_code(self, code, language):
-        self.setPlainText(code)
+        # 先摘旧高亮器再 setPlainText（与 CodeEditorDialog._on_lang_changed
+        # 同序）：setPlainText 清格式时旧高亮器若还挂着，contentsChange
+        # 会按旧语言规则立即重新着色，新高亮器只覆写自己命中的区间——
+        # 旧规则着、新规则不命中的词残留错色
         if self._highlighter is not None:
             self._highlighter.setDocument(None)   # 摘旧高亮器防双重着色
+        self.setPlainText(code)
         self._highlighter = codeblock.make_highlighter(
             language, self.document())
 
@@ -592,7 +596,10 @@ class _ImageViewerDialog(QtWidgets.QDialog):
         self._base = QtCore.QSize(int(avail.width() * 0.85),
                                   int(avail.height() * 0.85))
         if self._is_gif:
-            self._movie = QtGui.QMovie(image_path)
+            # 挂 self：对话框 C++ 删除时连 movie 一起销毁并断开信号——
+            # 无 parent 的 movie 与本对话框经信号构成引用环，关窗后
+            # frameChanged 会继续向已删的 label 投帧直到循环 GC
+            self._movie = QtGui.QMovie(self)
             self._movie.setCacheMode(QtGui.QMovie.CacheAll)
             self._movie.jumpToFrame(0)
             self._fit = self._movie.currentPixmap().size().scaled(
@@ -633,6 +640,14 @@ class _ImageViewerDialog(QtWidgets.QDialog):
         lay.addWidget(hint)
         self._apply()
         self.resize(self._fit.width() + 4, self._fit.height() + 26)
+
+    def done(self, r):
+        # 关窗先停帧（Esc/双击/X 都经 accept/reject 收口到 done）：
+        # deleteLater 删掉 C++ 对象后 frameChanged 不得再向已删的 label
+        # 投递 RuntimeError
+        if self._movie is not None:
+            self._movie.stop()
+        super().done(r)
 
     def _apply(self):
         """按当前倍率重绘（显示尺寸 = 适配尺寸 × factor）。"""
@@ -1036,6 +1051,7 @@ def _run_with_progress(parent, label, work):
         return None
     finally:
         dlg.close()
+        dlg.deleteLater()   # 隐藏子控件不留滞留实例（同模态框用完即释放约定）
 
 
 class _RecipeLibraryWindow(QtWidgets.QWidget):
@@ -2758,8 +2774,22 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 _push_houdini_error(msg)
                 return
             parm_name = codeblock.code_parm_name(target, info.language)
+            parm = target.parm(parm_name) if parm_name else None
+            # 写回前与 append_to_nodes 同一套三态预检（dev-notes/codeblock.md
+            # 「追加写入的三态预检」）：带表达式/关键帧/channel reference 的
+            # 参数上 set() 静默失效却报成功，带引用时还会顺链覆盖被引用参
+            # 数——并入路径此前漏了同款防护。预检在弹窗前做：不可写参数不
+            # 开窗，也顺带消除"预填 existing 吞成空串"的误导
+            reason = codeblock.check_parm_writable(parm) if parm is not None \
+                else "无 {} 参数".format(parm_name)
+            if reason:
+                msg = "并入已跳过：{} {}".format(target.path(), reason)
+                log.warning(msg)
+                self._status_error(msg)
+                _push_houdini_error(msg)
+                return
             try:
-                existing = target.parm(parm_name).unexpandedString()
+                existing = parm.unexpandedString()
             except Exception as exc:
                 log.debug("read existing code failed: %s", exc)
                 existing = ""
@@ -2774,7 +2804,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             try:
                 import hou
                 with hou.undos.group("HouTools 并入代码块"):
-                    target.parm(parm_name).set(code_out)
+                    # 预检已确认干净参数，follow_parm_reference=False 与
+                    # append_to_nodes 同款双保险
+                    parm.set(code_out, follow_parm_reference=False)
             except Exception as exc:
                 log.warning("merge code failed: %s", exc, exc_info=True)
                 self._status_error("并入失败: {}".format(exc))
@@ -2789,9 +2821,13 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         except Exception as exc:
             log.debug("cursorPosition failed, apply default: %s", exc)
         try:
-            node = codeblock.create_node_with_code(
-                pane.pwd(), info.language, info.code,
-                self._display_label(info), position)
+            import hou
+            # 单 undo 槽（与追加/并入一致）：否则创建+填码落两条记录，
+            # 一次 Ctrl+Z 只撤掉代码、节点残留
+            with hou.undos.group("HouTools 创建代码节点"):
+                node = codeblock.create_node_with_code(
+                    pane.pwd(), info.language, info.code,
+                    self._display_label(info), position)
             self._status_success("已在当前网络创建 {} 并填入代码".format(
                 node.name()))
         except Exception as exc:
@@ -2987,6 +3023,12 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         metadata.set_tags(info.name, [])
         metadata.set_display_name(info.name, None)
         metadata.set_color(info.name, None)
+        # 与 _delete_recipe 同序同语义（代码卡元数据全按内部名复用）：
+        # 弹窗承诺"文档也会一并清理"，stems 登记表只覆盖存活名册——漏了
+        # 这两步，文档目录成永久孤儿、同名重建的新卡继承陈旧文档、已删名
+        # 还参与撞名检测让 recipelib.json 只增不减
+        metadata.delete_doc_dir(info.name)
+        metadata.forget_stem(info.name)
         self._thumb_cache.pop(info.name, None)
         self._cover_cache.clear()
         self._apply_code_blocks()
@@ -3522,9 +3564,17 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self._snip_restore_panel()
 
     def _snip_restore_panel(self):
+        # 面板可能在截图会话期间被 Reload 经 window_manager.close_all 销毁
+        # （pane 收不到 close，Python 包装还在）：show() 的 RuntimeError 只
+        # 记日志——落库已在前一步完成，UI 收尾失败不回滚（thumb-snip 约定
+        # "UI 收尾 RuntimeError 仅记日志"，守卫下沉到本函数供两条信号槽
+        # 与确认异常分支共用）
         self._teardown_snip_overlay()
         self._need_reload = False   # 截图引发的隐藏/重显不触发 reload
-        self.show()
+        try:
+            self.show()
+        except RuntimeError:
+            log.warning("recipe 面板已销毁，跳过截取缩略图面板恢复")
 
     def _teardown_snip_overlay(self):
         ov, self._snip_overlay = self._snip_overlay, None

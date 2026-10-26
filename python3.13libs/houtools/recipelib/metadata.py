@@ -708,8 +708,9 @@ def unregister_doc_name(name):
 def write_doc(name, text):
     path = doc_path(name)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    # 临时名带 PID：固定名会被同盘并发写（两个 Houdini 开同一工程）互踩
-    tmp = path + ".~tmp%d" % os.getpid()
+    # 临时名带 PID+线程 id：固定名会被同盘并发写互踩（两个 Houdini 开同
+    # 一工程；单进程内同 doc 并发写同理，对齐全仓 PID+tid 约定）
+    tmp = "{}.~tmp{}_{}".format(path, os.getpid(), threading.get_ident())
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(text)

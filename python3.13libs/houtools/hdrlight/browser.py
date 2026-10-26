@@ -230,7 +230,9 @@ def _run_oiiotool(cmd, env, timeout, interrupt=None):
                 proc.kill()
                 try:
                     proc.communicate(timeout=5)
-                except Exception:
+                except Exception as exc:
+                    # kill 后收尾仍失败（管道异常等罕见情况）：留痕迹再兜底等待
+                    log.debug("oiiotool post-kill cleanup failed: %s", exc)
                     proc.wait()
                 return b"", -1
 
@@ -240,7 +242,11 @@ def _image_size(oiiotool, image_path, env, interrupt=None):
     out, rc = _run_oiiotool(
         [oiiotool, "--info", image_path], env, 30, interrupt)
     if rc != 0:
-        log.warning("oiiotool --info failed for %s (rc=%s)", image_path, rc)
+        # 停止/关窗/刷新打断时子进程被 kill（rc=-1）属有意行为，与
+        # make_thumbnail 同款守卫，不记假告警
+        if interrupt is None or not interrupt():
+            log.warning("oiiotool --info failed for %s (rc=%s)",
+                        image_path, rc)
         return None
     text = out.decode("utf-8", "ignore")
     # --info 首行格式 "<路径> :   <宽> x   <高>, <N> channel, ..."：
@@ -365,11 +371,13 @@ def scan_hdrs(lib_dir):
 
 
 def clean_stale_thumbs(lib_dir, expected_names=None):
-    """删除已无对应 HDR 的残留缩略图（含历史 .part 与 ~tmp_ 残片），
-    返回删除数量。
+    """删除已无对应 HDR 的残留缩略图（含历史 .part 残片），返回删除数量。
 
-    expected_names：本次扫描已算出的合法缓存文件名集合（刷新路径传入
-    以复用同一次遍历，见 _scan_entries）；None 时自己遍历一遍库目录。
+    ⚠ `~tmp_<线程id>_*.jpg` 在途临时文件一律不删：reload 先 _stop_worker
+    打断旧线程，但中断按 1s 粒度生效（子进程 kill + 收尾可超 1s）、
+    wait(1000) 未必等到线程真正退出——把顺序防护升级为内容防护，旧线程
+    随后的 os.replace 才不会对着被删的临时名失败（单张有兜底但那张白
+    生成）。.part 是历史版本残片、新代码不产，仍照删。
     """
     cache = thumb_cache_dir(lib_dir)
     if not os.path.isdir(cache):
@@ -381,7 +389,10 @@ def clean_stale_thumbs(lib_dir, expected_names=None):
     candidates = glob.glob(os.path.join(cache, "*.jpg")) \
         + glob.glob(os.path.join(cache, "*.part"))
     for f in candidates:
-        if os.path.basename(f) not in expected_names:
+        base = os.path.basename(f)
+        if base.startswith("~tmp_"):
+            continue
+        if base not in expected_names:
             try:
                 os.remove(f)
                 removed += 1
@@ -1189,8 +1200,11 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
             QtWidgets.QApplication.clipboard().setText(path)
         elif act is act_open:
             try:
-                subprocess.Popen(["explorer", "/select,",
-                                  os.path.normpath(path)])
+                # /select, 与路径必须并成单 token：拆开时 list2cmdline 产出
+                # explorer "/select," "C:\...\x.hdr"，部分 Windows 版本
+                # 解析不了（打开文档或父目录而不选中文件）
+                subprocess.Popen(["explorer",
+                                  "/select," + os.path.normpath(path)])
             except OSError as exc:
                 log.warning("explorer 启动失败: %s", exc)
                 self.status.setText("无法启动文件资源管理器: {}".format(exc))
@@ -1236,13 +1250,19 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
             return
         # 校验面与 automation._sanitize_config_name 一致：分隔符之外还须
         # 拒 NUL、纯点号（".." 不含非法字符，makedirs 会静默"成功"并在
-        # 侧栏留下一个指向库目录上级的分类）与 Windows 保留名
+        # 侧栏留下一个指向库目录上级的分类）、Windows 保留名（含保留名+
+        # 扩展名形态）与结尾点/空格——Win32 CreateDirectory 会剥掉结尾
+        # 点/空格，实际建出 "abc" 而 _category_key 记 "abc."，重建侧栏后
+        # 匹配不到（_WINDOWS_RESERVED 检查同样过首个点号前的 stem）
         if any(c in name for c in '\\/:*?"<>|') or "\x00" in name \
                 or name.replace(".", "") == "" \
-                or name.upper() in self._WINDOWS_RESERVED:
+                or name != name.rstrip(". ") \
+                or name.upper() in self._WINDOWS_RESERVED \
+                or name.split(".", 1)[0].upper() in self._WINDOWS_RESERVED:
             dialogs.warn(self, "新建分类",
                          "名称不能包含 \\/ : * ? \" < > | 等字符，"
-                         "也不能是纯点号或 Windows 保留名（CON/NUL 等）")
+                         "也不能是纯点号、Windows 保留名（CON/NUL 等）"
+                         "或以点/空格结尾")
             return
         try:
             os.makedirs(os.path.join(self.lib_dir, name), exist_ok=True)

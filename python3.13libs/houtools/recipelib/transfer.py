@@ -280,7 +280,9 @@ def export_recipes(recipes, zip_path, include_hda=True, progress=None):
 
     # ---- 写包：临时文件 → 成功后原子替换（取消/失败不产半截 zip） ----
     zip_path = os.path.abspath(zip_path)
-    tmp = zip_path + ".~part"
+    # 临时名带 PID+线程 id（同 _extract_member 约定）：固定名会被同盘
+    # 并发写互踩
+    tmp = "{}.~part{}_{}".format(zip_path, os.getpid(), threading.get_ident())
     total = len(entries) + 2
     done = 0
     ok = False
@@ -443,9 +445,16 @@ def _hda_plan(manifest, members, existing):
             hda_skip.append((arc, rec))
         else:
             # manifest 在可信边界之外：original 只取文件名（包作者可
-            # 任意伪造），防 ../ 相对路径与绝对路径把解包目标写出库目录之外
+            # 任意伪造），防 ../ 相对路径与绝对路径把解包目标写出库目录
+            # 之外。裸 ".." / "." 的 basename 是其自身（不收敛），落盘
+            # 目标会指到目录本体、以裸 OSError 而非 TransferError 失败
+            # ——这类伪造名按非法拒绝
             original = str((info or {}).get("original") or arc)
-            hda_import.append((arc, os.path.basename(original)))
+            target = os.path.basename(original)
+            if target in ("", ".", ".."):
+                raise TransferError(
+                    "manifest 的 hda 文件名不合法: {}".format(original))
+            hda_import.append((arc, target))
     return hda_import, hda_skip
 
 

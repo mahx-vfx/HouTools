@@ -40,8 +40,11 @@
             <label>Open Cache Folder [HT]</label>
             <context>
                 <!-- 候选参数清单与 houtools/tools/open_cache_folder.py 的
-                     _OUTPUT_PARMS 保持同步（参数名互不重叠，节点命中其一） -->
-                <expression>kwargs.get("node") is not None and any(kwargs["node"].parm(n) is not None for n in ("sopoutput", "vm_picture", "picture", "outputimage"))</expression>
+                     _OUTPUT_PARMS 保持同步（参数名互不重叠，节点命中其一）。
+                     表达式与 paste_bbox 同款只用最保守 Python 子集（属性
+                     调用+比较+and/or，禁推导式）：求值器语法面无官方承诺，
+                     smoke test 的 eval 对照才有意义 -->
+                <expression>kwargs.get("node") is not None and (kwargs["node"].parm("sopoutput") is not None or kwargs["node"].parm("vm_picture") is not None or kwargs["node"].parm("picture") is not None or kwargs["node"].parm("outputimage") is not None)</expression>
             </context>
             <scriptCode><![CDATA[import houtools.dev.dispatcher as _houtools_dispatcher
 _houtools_dispatcher.run("open_cache_folder", kwargs)

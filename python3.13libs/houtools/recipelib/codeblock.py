@@ -31,6 +31,7 @@
 
 import os
 import re
+import threading
 from datetime import datetime
 from dataclasses import dataclass, field
 
@@ -150,7 +151,10 @@ def save_code(name, language, code):
             old_paths.append(p)
     d = code_dir(language)
     d.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".~tmp%d" % os.getpid())
+    # 临时名带 PID+线程 id（项目通用约定，同 transfer._extract_member）：
+    # 同进程两线程写同一张卡时不互踩
+    tmp = path.with_name("{}.~tmp{}_{}".format(
+        path.name, os.getpid(), threading.get_ident()))
     try:
         with open(str(tmp), "w", encoding="utf-8", newline="\n") as f:
             f.write(str(code or ""))
@@ -402,6 +406,12 @@ class _RuleHighlighter(QtGui.QSyntaxHighlighter):
                              "deco", "directive")
 
     def highlightBlock(self, text):
+        # 主正则判为 comment 的区间：多行开符（"""、'''、/*）落在其中就
+        # 是注释正文（"# 讲解 """ 的用法"、VEX 的 "// /*"），不得开启
+        # 跨行状态。只按 comment 组过滤——string 组不参与：三引号开符
+        # 的前两个引号会被主正则的单行空串匹配消费掉，按 string 过滤
+        # 会把合法 docstring 开符一并误杀
+        comment_spans = []
         it = self.MASTER.globalMatch(text)
         while it.hasNext():
             m = it.next()
@@ -411,12 +421,17 @@ class _RuleHighlighter(QtGui.QSyntaxHighlighter):
                     if fmt is not None:
                         self.setFormat(m.capturedStart(gname),
                                        m.capturedLength(gname), fmt)
+                    if gname == "comment":
+                        comment_spans.append(
+                            (m.capturedStart(gname),
+                             m.capturedStart(gname)
+                             + m.capturedLength(gname)))
                     break
             else:
                 word = m.captured("word")
                 if word:
                     self._color_word(text, m, word)
-        self._highlight_multiline(text)
+        self._highlight_multiline(text, comment_spans)
 
     def _color_word(self, text, m, word):
         fmt = None
@@ -434,9 +449,13 @@ class _RuleHighlighter(QtGui.QSyntaxHighlighter):
             self.setFormat(m.capturedStart("word"),
                            m.capturedLength("word"), fmt)
 
-    def _highlight_multiline(self, text):
+    def _highlight_multiline(self, text, comment_spans=()):
         """/* */ 与三引号串：previousBlockState 接力跨行；同行内开闭
-        正常着色，同行关闭后还能继续开（罕见）也正确。"""
+        正常着色，同行关闭后还能继续开（罕见）也正确。
+
+        comment_spans 是本行主正则判为注释的区间：state 0 找开符时落在
+        其中的候选视为注释正文跳过（继续向后找），防注释里的界定符把
+        后续行整段拖进跨行着色。"""
         if not self.MULTILINE:
             self.setCurrentBlockState(0)
             return
@@ -447,10 +466,19 @@ class _RuleHighlighter(QtGui.QSyntaxHighlighter):
             if state == 0:
                 best = None
                 for st, (start_rx, _end_rx) in self.MULTILINE.items():
-                    m = start_rx.match(text, pos)
-                    if m.hasMatch() and (best is None
-                                         or m.capturedStart() < best[1]):
-                        best = (st, m.capturedStart(), m.capturedEnd())
+                    p = pos
+                    while True:
+                        m = start_rx.match(text, p)
+                        if not m.hasMatch():
+                            break
+                        if any(s <= m.capturedStart() < e
+                               for s, e in comment_spans):
+                            # 开符在注释里：是数据不是构造，跳过它继续找
+                            p = m.capturedStart() + 1
+                            continue
+                        if best is None or m.capturedStart() < best[1]:
+                            best = (st, m.capturedStart(), m.capturedEnd())
+                        break
                 if best is None:
                     return
                 st, start, after = best
@@ -554,7 +582,10 @@ def find_code_node_at(pane, language, position=None):
         try:
             p = child.position()
             s = child.size()
-        except Exception:
+        except Exception as exc:
+            # 损坏节点/已删除边缘：跳过该子节点但留痕可查
+            log.debug("probe node geometry failed for %s: %s",
+                      getattr(child, "path", lambda: "?")(), exc)
             continue
         if (abs(position.x() - p.x()) <= s.x() / 2 + 0.5
                 and abs(position.y() - p.y()) <= s.y() / 2 + 0.5):
@@ -945,24 +976,51 @@ _NETWORK_HINTS = {
 }
 
 
+def check_parm_writable(parm):
+    """代码参数写入前预检关键帧/表达式/channel reference：可写返回 None，
+    否则返回原因（供调用方拼进跳过列表/状态栏）。
+
+    ⚠ 三态预检（2026-10 复审补，与 paste_bbox 的 deleteAllKeyframes 教训
+    同源）：不预检直接 set 有三种静默失效——参数带表达式时 set() 不生效
+    （表达式存活，代码根本没进去）；带关键帧时写入被关键帧盖回；**带
+    channel reference 时 set() 默认 follow_parm_reference=True 会顺着
+    引用链写到被引用的那个参数上**（覆盖别人的 snippet）。命中一律跳过，
+    不清用户的表达式/关键帧（那会破坏既有接线）；引用本质也是 ch()/chs()
+    表达式、理论被 expression 分支覆盖，getReferencedParm 是权威兜底。
+    append_to_nodes 与拖拽并入（browser 代码拖拽的 NodeCodeDialog 确认
+    路径）共用本预检——两条写回通路必须同语义。
+    """
+    if parm.keyframes():
+        # 真实 22.0.429 干净参数返回空元组而非 None——用真值判断，
+        # is not None 会把所有真实节点误判有关键帧
+        return "{} 有关键帧，已跳过（清关键帧后才可写入）".format(parm.name())
+    try:
+        expr = parm.expression()
+    except Exception:
+        expr = None   # 干净参数实测直接抛 OperationFailed
+    if expr:
+        return "{} 带表达式，已跳过（清表达式后才可写入）".format(parm.name())
+    ref = parm.getReferencedParm()
+    if ref is not None and ref.path() != parm.path():
+        return ("{} 是 channel reference，已跳过"
+                "（写入会覆盖被引用的参数）".format(parm.name()))
+    return None
+
+
 def append_to_nodes(nodes, language, code):
     """把代码**追加**到选中节点的代码参数（追加不是覆盖，用户拍板）。
 
     现有内容非空时以空行分隔接在其后；空内容直接写入。逐节点独立
-    容错：无匹配参数 / 参数锁定 / 带关键帧、表达式或 channel reference
+    容错：无匹配参数 / 参数锁定 / 预检命中（见 check_parm_writable）
     跳过并记录原因，不中断整批（同 paste_bbox 的逐分量容错约定）。
     整批一个 undo 组。返回 (appended, skipped)：appended 是节点路径列表，
     skipped 是 "路径: 原因" 列表；一个都没选中/全不匹配由调用方决定如何
     反馈。
 
-    ⚠ 预检三态（2026-10 复审补，与 paste_bbox 的 deleteAllKeyframes 教训
-    同源）：不预检直接 set 有三种静默失效——参数带表达式时 set() 不生效
-    （表达式存活，代码根本没进去）；带关键帧时写入被关键帧盖回；**带
-    channel reference 时 set() 默认 follow_parm_reference=True 会顺着
-    引用链写到被引用的那个参数上**（覆盖别人的 snippet）。命中一律跳过
-    并汇报，不清用户的表达式/关键帧（那会破坏既有接线）；引用本质也是
-    ch()/chs() 表达式、理论被 expression 分支覆盖，getReferencedParm 是
-    权威兜底；干净参数写入时显式 follow_parm_reference=False 双保险。
+    ⚠ 读现有内容必须用 unexpandedString()（2026-10 复审修正）：字符串
+    参数的 evalAsString() 会展开 $ 变量——现有代码里的 "$HIP/..." 被
+    求值成绝对路径后随追加整体写回，用户代码被静默污染。预检已排除
+    关键帧，unexpandedString 此时安全（它只对带关键帧的参数抛错）。
     """
     import hou
     parm_name = _PARM_FOR_LANGUAGE.get(language)
@@ -981,29 +1039,11 @@ def append_to_nodes(nodes, language, code):
                     skipped.append("{}: 无 {} 参数（不是 {} 代码节点）".format(
                         path, parm_name, label))
                     continue
-                if parm.keyframes():
-                    # 真实 22.0.429 干净参数返回空元组而非 None——用真值
-                    # 判断，is not None 会把所有真实节点误判有关键帧
-                    skipped.append(
-                        "{}: {} 有关键帧，已跳过（清关键帧后才可写入）".format(
-                            path, parm_name))
+                reason = check_parm_writable(parm)
+                if reason:
+                    skipped.append("{}: {}".format(path, reason))
                     continue
-                try:
-                    expr = parm.expression()
-                except Exception:
-                    expr = None   # 干净参数实测直接抛 OperationFailed
-                if expr:
-                    skipped.append(
-                        "{}: {} 带表达式，已跳过（清表达式后才可写入）".format(
-                            path, parm_name))
-                    continue
-                ref = parm.getReferencedParm()
-                if ref is not None and ref.path() != parm.path():
-                    skipped.append(
-                        "{}: {} 是 channel reference，已跳过"
-                        "（写入会覆盖被引用的参数）".format(path, parm_name))
-                    continue
-                existing = parm.evalAsString()
+                existing = parm.unexpandedString()
                 value = (existing.rstrip() + "\n\n" + code.strip("\n")) \
                     if existing.strip() else code
                 parm.set(value, follow_parm_reference=False)
@@ -1028,7 +1068,9 @@ def create_node_with_code(parent, language, code, display_label="",
         raise RuntimeError("语言 {} 不支持创建节点".format(language))
     try:
         cat = parent.childTypeCategory().name()
-    except Exception:
+    except Exception as exc:
+        # 异常层级（父节点已删等）：按未知网络处理，留 debug 痕迹
+        log.debug("childTypeCategory probe failed: %s", exc)
         cat = ""
     if cat != "Sop":
         have = _NETWORK_HINTS.get(cat, cat or "未知")

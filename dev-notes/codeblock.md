@@ -64,3 +64,5 @@ smoke test 五段回归（文件存储+迁移/高亮渲染/弹窗查重/面板�
 ## 追加写入的三态预检（2026-10 复审）
 
 - **append_to_nodes 写入前必须预检关键帧 / 表达式 / channel reference**：参数带表达式时 `set()` 不生效（表达式存活，代码根本没进去）；带关键帧时写入被盖回；**带引用时 `set()` 默认 `follow_parm_reference=True` 会顺着引用链写到被引用的那个参数上**（覆盖别人的 snippet）——三种都曾会静默失效却报"追加成功"。命中一律跳过并汇报（不清用户表达式/关键帧，那会破坏既有接线）；引用本质是 ch()/chs() 表达式、理论被 expression 分支覆盖，`getReferencedParm` 做权威兜底；干净参数写入显式 `follow_parm_reference=False` 双保险。无头回归：打桩 `hou.undos` + 鸭子类型参数直测（smoke test "codeblock append pre-check"）。
+- **预检已提成 `codeblock.check_parm_writable(parm)`（2026-10 复审修复）**：拖拽并入通路（browser 的 NodeCodeDialog 确认后写回）此前漏了同款预检——弹窗前先过预检，不可写不开窗，命中红字跳过；两路写回共用一个函数，语义永远同步。
+- **读现有代码必须 `unexpandedString()`，禁 `evalAsString()`**（2026-10 复审修复）：字符串参数的 evalAsString 会展开 `$` 变量——现有代码里的 `"$OS/$F"` 被求值成实际值后随追加整体写回，用户代码被静默污染（无头实测）。预检已排除关键帧，unexpandedString 此时安全（只对带关键帧参数抛错）。smoke test 固化含 `$OS` 的用例。

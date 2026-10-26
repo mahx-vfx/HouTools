@@ -116,8 +116,11 @@ def _sanitize_config_name(text) -> str | None:
     # 安全检查:拒绝路径分隔符(防 ``../`` 或 ``C:\evil`` 等)
     if "/" in text or "\\" in text:
         return None
-    # 拒绝 Windows 保留名(大小写不敏感)
+    # 拒绝 Windows 保留名(大小写不敏感)——含"保留名+扩展名"形态
+    # (nul.txt 在经典 Win32 命名空间同样解析为 NUL 设备)
     if text.upper() in _WINDOWS_RESERVED:
+        return None
+    if text.split(".", 1)[0].upper() in _WINDOWS_RESERVED:
         return None
     # 拒绝 Windows 文件名非法字符与控制符(\x00 已含在控制符段里)
     if re.search(r'[<>:"|?*\x00-\x1f]', text):
@@ -519,10 +522,10 @@ def _apply_centered_position(panel, main, frame_w, frame_h):
         return False
 
 
-# Panel 居中事件过滤器的进程级引用位：过滤器无 parent，语句结束后
-# Python 引用即清零——不自己持有，CPython 会立即析构它、过滤器随之
-# 从应用上自摘（Show 拦截从未生效过，0ms/150ms 定时器一直在兜底）。
-# NameError 守卫活过 Reload（同 _LIVE_ENGINES 约定）
+# Panel 居中事件过滤器的进程级引用位：过滤器无 parent，由本集合持引用
+# 保活到首次 Show 自摘（自摘时同步 discard，防"一次性任务已完成却永久
+# 滞留无 parent QObject + 其持有的 HOM FloatingPanel 包装"）。NameError
+# 守卫活过 Reload（同 _LIVE_ENGINES 约定）
 try:
     _PANEL_FILTERS
 except NameError:
@@ -566,6 +569,9 @@ class _PanelCenterFilter(QObject):
         app = QApplication.instance()
         if app is not None:
             app.removeEventFilter(self)
+            # 一次性任务已完成：同步摘掉持引用（集合里滞留无 parent 的
+            # QObject + 其持有的 HOM FloatingPanel 包装，随面板新建累积）
+            _PANEL_FILTERS.discard(self)
         return False  # 不吞事件,show 流程照常(位置已被改为居中)
 
 
@@ -640,8 +646,8 @@ def open_floating_panel():
 
     app = QApplication.instance()
     if app is not None:
-        # 过滤器无 parent：不自己持有引用，语句结束即被 CPython 析构、
-        # 过滤器随之从应用上自摘（见 _PANEL_FILTERS 注释）
+        # 过滤器无 parent：由 _PANEL_FILTERS 持引用保活到首次 Show 自摘
+        # （自摘时同步 discard，见 _PANEL_FILTERS 注释）
         center_filter = _PanelCenterFilter(panel)
         _PANEL_FILTERS.add(center_filter)
         app.installEventFilter(center_filter)
@@ -1118,7 +1124,9 @@ class AutomationWindow(QWidget):
         self._task_count_input.setFixedWidth(50)
         self._task_count_input.setAlignment(Qt.AlignCenter)
         self._task_count_input.setToolTip("输入任务数量后按 Enter 或点击空白处确认")
-        self._task_count_input.returnPressed.connect(self._on_task_count_changed)
+        # 只连 editingFinished：QLineEdit 里按 Enter 会同时触发
+        # returnPressed 与 editingFinished，双连同一槽是潜伏的双执行
+        # （现槽幂等无害，但后续加入非幂等逻辑就会双份）
         self._task_count_input.editingFinished.connect(self._on_task_count_changed)
         # 让内部编辑器只有点击时才激活，防止自动聚焦导致误输入
         self._task_count_input.setFocusPolicy(Qt.ClickFocus)
@@ -1404,7 +1412,10 @@ class AutomationWindow(QWidget):
         webhook_url_le, enabled_cb,
     ):
         """根据 dict 数据填充一个已创建的槽控件。"""
-        type_str = data.get("type", "BUTTON_CLICK")
+        # 缺 type 字段与未知类型同路：静默默认 BUTTON_CLICK 会在首次 Start
+        # 保存时把原始 params 形状永久改坏（TaskItem.from_dict 对缺 type
+        # 也是报错跳过，行为闭环一致）
+        type_str = data.get("type")
         params = data.get("params", {})
         if not isinstance(params, dict):
             # load() 已就地归一，这里兜直喂脏数据的路径：truthy 非 dict
@@ -1439,11 +1450,12 @@ class AutomationWindow(QWidget):
         elif type_str == "OPEN_DW":
             combo.setCurrentIndex(3)  # 无参数页,占位提示见 page3
         else:
-            # 未知任务类型(新版数据被旧版面板打开/手工编辑等):绝不静默
-            # 落到默认 BUTTON_CLICK —— 那会把原始数据悄悄改坏。渲染为
-            # 禁用占位,原始 dict 挂在槽上由 _collect_data 原样透传,
-            # Start 落盘不破坏未知类型数据。
-            logger.warning("未知任务类型: %s(原始数据已保留,该槽只读)", type_str)
+            # 未知任务类型(新版数据被旧版面板打开/手工编辑)或缺失 type
+            # 字段：绝不静默落到默认 BUTTON_CLICK —— 那会把原始数据悄悄
+            # 改坏。渲染为禁用占位,原始 dict 挂在槽上由 _collect_data 原样
+            # 透传,Start 落盘不破坏数据。
+            logger.warning("未知或缺失任务类型: %r(原始数据已保留,该槽只读)",
+                           type_str)
             slot._raw_data = dict(data)
             # 本槽的 combo 独立追加占位项并切过去:setCurrentIndex 触发
             # _on_type_changed(4) 自动隐藏跳转按钮、切到占位页,随后禁用
@@ -1775,9 +1787,14 @@ class AutomationWindow(QWidget):
         self._slot_layout.removeWidget(slot)
         self._slot_layout.insertWidget(to_index, slot)
 
-        # 调整 _selected_index(槽在 list 中的位置变了,选中指针要跟着挪)
+        # 调整 _selected_index(槽在 list 中的位置变了,选中指针要跟着挪)。
+        # 被拖槽自身也必须跟随——_on_handle_pressed 按下即选中它,故
+        # sel == from_index 是每次真实拖动的常态;漏了它指针停在旧索引、
+        # 指向换位后占据旧位置的另一个槽,Delete 会删错任务
         if self._selected_index is not None:
-            if from_index < to_index:
+            if self._selected_index == from_index:
+                self._selected_index = to_index
+            elif from_index < to_index:
                 # 向下挪:[from, to] 之间的索引都 -1
                 if from_index < self._selected_index <= to_index:
                     self._selected_index -= 1
@@ -1788,7 +1805,9 @@ class AutomationWindow(QWidget):
 
         # _last_selected_index 同理挪(否则 _update_selection_style 会用错槽)
         if self._last_selected_index is not None:
-            if from_index < to_index:
+            if self._last_selected_index == from_index:
+                self._last_selected_index = to_index
+            elif from_index < to_index:
                 if from_index < self._last_selected_index <= to_index:
                     self._last_selected_index -= 1
             else:
@@ -2483,6 +2502,13 @@ class AutomationWindow(QWidget):
 
         # 清除上次日志路径缓存，本次执行重新计算
         self._current_log_path = None
+        # 主线程先把日志路径算好（预热缓存）：置 _log_active 后、首次
+        # _write_log 缓存路径前有一个窗口期，任意线程的 print 都会进
+        # _write_log——窗口期里第一个进入的线程会代调 _get_log_path，
+        # 其内含 hou.getenv（HOM 跨线程无官方承诺，对齐 execution_engine
+        # 的"预读后传入"线程约定）
+        if self._log_to_disk_enabled:
+            self._current_log_path = self._get_log_path()
         # 标记本次执行为活动：tee 安装前 _write_log_header 也要能落盘
         self._log_active = True
 

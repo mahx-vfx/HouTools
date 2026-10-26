@@ -202,6 +202,40 @@ def main():
         assert eval(bbox_expr, {"kwargs": {"node": node}}) == _expected(comps)
     print("paste_bbox context: consistent")
 
+    # OPmenu 全部 context expression 保守子集约束（属性调用+比较+and/or，
+    # 禁 lambda/推导式/walrus——求值器语法面无官方承诺；曾有人把
+    # any(... for n in ...) 写进 Open Cache Folder 条目）
+    for expr_el in ET.parse(ROOT / "OPmenu.xml").iter("expression"):
+        expr_text = (expr_el.text or "")
+        assert "lambda" not in expr_text and ":=" not in expr_text \
+            and " for " not in expr_text, expr_text
+
+    # OPmenu:Open Cache Folder——context 判定与 open_cache_folder.
+    # _OUTPUT_PARMS 双处同步（命中任一候选参数即显示；无参数节点/无节点
+    # 隐藏），用假节点 eval 对照
+    ocf_expr = None
+    for item in ET.parse(ROOT / "OPmenu.xml").iter("scriptItem"):
+        if item.get("id") == "houtools_open_cache_folder":
+            ocf_expr = item.find("context/expression").text
+    assert ocf_expr, "houtools_open_cache_folder context expression missing"
+
+    from houtools.tools.open_cache_folder import _OUTPUT_PARMS
+
+    class _ParmNode:
+        def __init__(self, parms):
+            self._parms = parms
+
+        def parm(self, name):
+            return self._parms.get(name)
+
+    for hit in _OUTPUT_PARMS:
+        node = _ParmNode({hit: object()})
+        assert eval(ocf_expr, {"kwargs": {"node": node}}) is True, hit
+    assert eval(ocf_expr,
+                {"kwargs": {"node": _ParmNode({})}}) is False   # 普通节点
+    assert eval(ocf_expr, {"kwargs": {"node": None}}) is False  # 无节点
+    print("open_cache_folder context: consistent")
+
     ET.parse(ROOT / "python_panels" / "Automation.pypanel")
     print("Automation.pypanel: well-formed")
 
@@ -2127,7 +2161,9 @@ def main():
                     return _types.SimpleNamespace(path=lambda p=self._ref: p)
                 def path(self):
                     return "/obj/n/snippet"
-                def evalAsString(self):
+                def name(self):
+                    return "snippet"
+                def unexpandedString(self):
                     return self._value
                 def set(self, value, follow_parm_reference=True):
                     self.set_value = value
@@ -2139,20 +2175,28 @@ def main():
                     path=lambda: "/obj/n", parm=lambda name: parm)
 
             clean = _AppendParm(value="old", expr_raises=True)
+            # 现有代码含 $ 变量：追加必须以 unexpandedString 读取原样拼接
+            # ——曾用 evalAsString，"$OS $F" 被展开成实际值后随追加整体
+            # 写回，用户代码被静默污染
+            dollar = _AppendParm(value='s@f = "$OS/$F.bgeo";',
+                                 expr_raises=True)
             keyframed = _AppendParm(keyframes=[object()])
             expr_parm = _AppendParm(expression="chs('../other/snippet')")
             ref_parm = _AppendParm(ref_path="/obj/other/snippet")
-            nodes = [_mk_node(clean), _mk_node(keyframed),
-                     _mk_node(expr_parm), _mk_node(ref_parm),
-                     _mk_node(None)]
+            nodes = [_mk_node(clean), _mk_node(dollar),
+                     _mk_node(keyframed), _mk_node(expr_parm),
+                     _mk_node(ref_parm), _mk_node(None)]
             fake_hou = _types.SimpleNamespace(
                 undos=_types.SimpleNamespace(
                     group=lambda name: _ctx.nullcontext()))
             with patch.dict(sys.modules, {"hou": fake_hou}):
                 appended, skipped = rl_cb.append_to_nodes(
                     nodes, "vex", "float x = 1.0;")
-            assert appended == ["/obj/n"], (appended, skipped)
+            assert appended == ["/obj/n", "/obj/n"], (appended, skipped)
             assert clean.set_value == "old\n\nfloat x = 1.0;", clean.set_value
+            assert dollar.set_value == \
+                's@f = "$OS/$F.bgeo";\n\nfloat x = 1.0;', dollar.set_value
+            assert "$OS" in dollar.set_value and "$F" in dollar.set_value
             assert clean.set_kwargs == {"follow_parm_reference": False}, \
                 clean.set_kwargs
             assert len(skipped) == 4, skipped

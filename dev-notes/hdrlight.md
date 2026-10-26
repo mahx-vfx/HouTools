@@ -30,6 +30,10 @@
 - **运行中的线程由模块级 `_LIVE_THREADS` 留引用**（NameError 守卫活过 Reload，同 automation `_LIVE_ENGINES`；线程无 parent 只保证"父窗口死不掉它"，不保证"没人引用就不被 GC 析构"——Qt6 下析构运行中的 QThread 直接 qFatal）。
 - **hoiiotool 路径/OCIO 环境只在主线程解析**（`_oiiotool_path`/`_ocio_env` 会调 `hou.text.expandString`，启动线程前解析好作构造参数传入——工作线程内零 HOM 调用，线程结构上保证）。
 - **缓存名对含 `__` 的相对路径追加 md5 前 8 位后缀**（`__` 连接非单射，`a__b/x.hdr` 与 `a/b/x.hdr` 曾互相覆盖；不含 `__` 的命名不变，旧缓存不受影响）。
+- **`clean_stale_thumbs` 对 `~tmp_` 前缀在途临时文件一律跳过**（2026-10 复审修复）：reload 先 `_stop_worker` 打断旧线程，但中断按 1s 粒度生效、子进程 kill+收尾可超 1s，`wait(1000)` 未必等到线程真正退出——"先停再清"的顺序防护升级为内容防护，旧线程随后的 os.replace 才不会对着被删的临时名失败。`.part` 是历史版本残片照删。
+- **`_image_size` 的失败告警过中断守卫**（同 make_thumbnail）：停止/关窗/刷新 kill 掉的 `--info`（rc=-1）属有意行为，不记假告警。
+- **「打开所在文件夹」的 `/select,` 与路径并成单 token**（2026-10 复审修复）：拆两个参数时 list2cmdline 产出 `explorer "/select," "C:\..."`，部分 Windows 版本不选中文件。
+- **新建分类校验追加结尾点/空格与"保留名+扩展名"**（2026-10 复审修复，与 automation `_sanitize_config_name` 同步）：Win32 CreateDirectory 剥掉结尾点/空格，实际建出 `abc` 而 `_category_key` 记 `abc.`，重建侧栏匹配不到。
 
 ## 库目录
 

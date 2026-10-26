@@ -345,8 +345,11 @@ def _paste_position(editor):
         return editor.cursorPosition()
     except Exception as exc:
         logger.debug("cursorPosition failed, using bounds center: %s", exc)
+        # hou.BoundingRect 不可下标访问（实测 TypeError），必须走
+        # min()/max()（返回 Vector2）
         bounds = editor.visibleBounds()
-        return ((bounds[0] + bounds[2]) / 2.0, (bounds[1] + bounds[3]) / 2.0)
+        lo, hi = bounds.min(), bounds.max()
+        return ((lo.x() + hi.x()) / 2.0, (lo.y() + hi.y()) / 2.0)
 
 
 def _status(message: str):

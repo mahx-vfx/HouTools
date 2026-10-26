@@ -21,7 +21,8 @@
 - **去重浮动面板 close 前查 `_any_panel_running`**：重复实例里有引擎在跑时本轮跳过去重（close = 协作式放弃数小时任务），空闲后再收。
 - 任务槽小图标（jump/folder）模块级缓存：每槽重建 = 重复读盘 + QSvgRenderer 解析，100 槽配置每次载入付 100 倍代价。
 - stdout 重定向恢复不看日志开关现值（开关可能运行中被改），Start 前预还原防 `_LogTee` 嵌套。
-- 未知任务类型渲染为禁用占位槽并**原样透传保存**（不落默认 BUTTON_CLICK）。
+- 未知任务类型**与缺失 type 字段**都渲染为禁用占位槽并**原样透传保存**（不落默认 BUTTON_CLICK——缺 type 走默认会在首次 Start 保存时把原始 params 形状永久改坏，2026-10 复审补齐）。
 - **stdout 重定向的生命周期必须不依赖面板存活**：tee 是进程级替换，面板执行中被销毁时（pane 可关、收不到 closeEvent）实例的 `_restore_stdout` 不可达——`destroyed` 连模块级 `_force_restore_stdout`（沿链 splice 本属主层）+ `_close_log_file` 兜底。
 - `_LogTee` 实现 `__getattr__` 转发原始流（fileno/isatty/encoding 等被第三方库访问时不炸）。
-- 执行日志句柄在 Start 时惰性打开、`_write_log` 全程持 `threading.Lock`（tee 挂在 sys.stdout 上任意线程的 print 都会进来，无锁时两线程同首调 `_get_log_path` 会拿到不同文件、日志分裂）。
+- 执行日志句柄在 Start 时惰性打开、`_write_log` 全程持 `threading.Lock`（tee 挂在 sys.stdout 上任意线程的 print 都会进来，无锁时两线程同首调 `_get_log_path` 会拿到不同文件、日志分裂）。**Start 在主线程先预热 `_get_log_path` 缓存再置 `_log_active`**（2026-10 复审补）：置位后到首次 `_write_log` 缓存路径前的窗口期里，任意线程的 print 会代调 `_get_log_path`——其内含 `hou.getenv`，HOM 跨线程无官方承诺（对齐引擎"预读后传入"约定）。
+- 面板居中过滤器 `_PanelCenterFilter` 由 `_PANEL_FILTERS` 持引用保活到首次 Show 自摘，**自摘时同步 `discard(self)`**（2026-10 复审补，防无 parent QObject 连同其持有的 HOM FloatingPanel 包装滞留累积）。
