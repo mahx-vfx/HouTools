@@ -2025,6 +2025,34 @@ def main():
                     tool_nowm = _render_card(infos[0])
                 assert parm_img != parm_nowm, "节点参数卡应带水印"
                 assert tool_img == tool_nowm, "非节点参数卡不应有水印"
+
+                # GIF 首帧底图：QImageReader 读出的是 QImage，必须经
+                # QPixmap.fromImage 转 QIcon——QIcon(QImage) 在 Houdini
+                # 自带 PySide6 6.8.3 签名标注收 `QPixmap | QImage`、值分发
+                # 实测拒绝（ValueError），曾让带 GIF 缩略图的卡片一进网格
+                # 就掀翻整个 reload。最小 1x1 GIF87a 字节流程序内生成
+                #（GIF 无 Qt 编码器、也不入二进制测试件）
+                gif_bytes = (b'GIF87a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00'
+                             b'\xff\xff\xff\x2c\x00\x00\x00\x00\x01\x00\x01'
+                             b'\x00\x00\x02\x02\x44\x01\x00\x3b')
+                gif_path = str(Path(tmp) / "grid_one_frame.gif")
+                with open(gif_path, "wb") as gf:
+                    gf.write(gif_bytes)
+                rl_meta.set_thumb_from_file("houtools::pyro::a", gif_path)
+                win._thumb_cache.pop("houtools::pyro::a", None)
+                if QtGui.QImageReader(gif_path).canRead():
+                    # 解码插件可用（qgif 依赖与 qjpeg 不同，可能可用）：
+                    # 断言产出真图标而非占位
+                    gif_icon = win._base_icon(infos[0])
+                    assert isinstance(gif_icon, QtGui.QIcon), gif_icon
+                    assert gif_icon is not win._placeholder, \
+                        "GIF 首帧应产出真图标（占位=解码或转换失败）"
+                else:
+                    # 无头环境缺图片解码插件：退化为"该路径不得抛异常"
+                    win._base_icon(infos[0])
+                rl_meta.clear_thumb("houtools::pyro::a")
+                win._thumb_cache.pop("houtools::pyro::a", None)
+
                 # 应用分发：node 预设无选中 → 引导文案（不触 hou）
                 with patch.object(rl_browser.store, "selected_nodes",
                                   return_value=[]):

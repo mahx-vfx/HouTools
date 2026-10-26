@@ -67,6 +67,7 @@
 
 - 元数据（标签/收藏/缩略图路径）存 `settings/recipelib.json`、缩略图文件复制进 `settings/recipe_thumbs/`（有意不写 HDA section：元数据与库文件解耦）。
 - **缩略图路径存相对插件根的相对路径**（`_to_stored`/`_to_abs` 转换，get 返回可用绝对路径；旧版绝对路径由 `migrate_legacy_thumb_paths` 在 reload 开头幂等迁移，跨盘退回绝对；项目整体挪动后仍有效——文档路径本就不持久化，每次从 `__file__` 推导，无此问题）。
+- **GIF 缩略图的网格底图 = QImageReader 读第 0 帧，QImage 必须先 `QPixmap.fromImage` 再进 QIcon**（2026-10 复审修复）：Houdini 自带 PySide6 6.8.3 的 `QIcon(QImage)` 签名标注收 `QPixmap | QImage`、值分发实测拒绝（ValueError）——曾让任何带 GIF 缩略图的卡片一进网格就掀翻整个 reload。与 thumb-snip.md 的 `drawPixmap(QRect, QPixmap, QRectF)` 同款"签名标注与值分发不符"坑（该家族第二例，headless 实证 `QIcon(QImage) FAILS / QIcon(QPixmap) OK`）。smoke test 用程序内生成的最小 1x1 GIF87a 字节流回归（GIF 无 Qt 编码器、也不入二进制测试件；无头环境 qgif 插件缺失时退化为"该路径不得抛异常"）。
 - `thumb_pixmap` 的 QIcon 请求尺寸跟卡片实际显示（max(w,h)×dpr），**不要固定 1024**——QIcon 按请求尺寸缓存位图，大图每 recipe 常驻近原图分辨率；`_cover_cache` 上限 512 条、滑动条拖动中不清（sliderReleased 才清，拖动中全清会让可见卡逐帧重裁剪）。
 - **收藏标识 = 卡片右上角角标**（与 HDR 面板共用 `houtools/ui/badge.py` 的 FavoriteBadge：QtSvg 本体 + QGraphicsDropShadowEffect 高斯投影，名字前缀不加星号；recipelib 的角标由 _CardDelegate 在 paint 时用 `badge_pixmap` 贴**缩略图区右上角=卡片内容区角**——**不能合成进缩略图 QIcon**（HDR 面板仍是合成模式）：缩略图 contain 留白时角标会随图片自身角落漂移、贴不到卡片角，故网格图标一律用 `_base_icon`，无缓存失效问题）。
 - crop 预览从显示图 `_disp` 重采样（每 mouseMove 对原图整块 copy 会卡），`result_pixmap()` 确认时才走原图。

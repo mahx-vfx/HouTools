@@ -2126,7 +2126,13 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 # QMovie 未 start() 时 jumpToFrame 的版本相关行为
                 reader = QtGui.QImageReader(thumb)
                 pm = reader.read()
-                icon = QtGui.QIcon(pm) if not pm.isNull() else None
+                # ⚠ QImage 必须先转 QPixmap 再进 QIcon——Houdini 自带
+                # PySide6 6.8.3 的 QIcon(QImage) 签名标注收
+                # `QPixmap | QImage`、值分发实测拒绝（ValueError），与
+                # capture.drawPixmap(QRect, QPixmap, QRectF) 同款坑
+                #（headless 实证：QIcon(QImage) FAILS / QIcon(QPixmap) OK）
+                icon = (QtGui.QIcon(QtGui.QPixmap.fromImage(pm))
+                        if not pm.isNull() else None)
             else:
                 icon = QtGui.QIcon(thumb)
         if icon is None:
@@ -3001,8 +3007,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
     def _delete_code_block(self, info):
         box = QtWidgets.QMessageBox(self)
         box.setWindowTitle("删除代码块")
-        box.setText("确定删除「{}」？\n{}\n（缩略图与文档也会一并清理）"
-                    .format(self._display_label(info), info.name))
+        # 名称只显示一次（用户指定）：统一走显示链（自定义显示名 > 内部名
+        # 末段），不重复展示内部全名
+        box.setText("确定删除「{}」？\n（缩略图与文档也会一并清理）"
+                    .format(self._display_label(info)))
         box.setStandardButtons(QtWidgets.QMessageBox.Yes
                                | QtWidgets.QMessageBox.No)
         localize_buttons(box)   # Yes → 确认、No → 取消
@@ -3613,8 +3621,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
     def _delete_recipe(self, info):
         box = QtWidgets.QMessageBox(self)
         box.setWindowTitle("删除 Recipe")
-        box.setText("确定删除「{}」？\n{}\n（缩略图与文档也会一并清理）".format(
-            self._display_label(info), info.name))
+        # 名称只显示一次（用户指定）：统一走显示链（自定义显示名 > 官方
+        # label > 内部名末段），不重复展示内部全名
+        box.setText("确定删除「{}」？\n（缩略图与文档也会一并清理）"
+                    .format(self._display_label(info)))
         box.setStandardButtons(QtWidgets.QMessageBox.Yes
                                | QtWidgets.QMessageBox.No)
         localize_buttons(box)   # Yes → 确认、No → 取消
