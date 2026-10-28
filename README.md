@@ -1,8 +1,8 @@
-# HouTools (Houdini 22 / Python 3.13)
+# HouTools (Houdini 21/22 · Python 3.11/3.13)
 
-![Houdini 22.0](https://img.shields.io/badge/Houdini-22.0-FF4747?logo=sidefx&logoColor=white) ![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white) ![PySide6](https://img.shields.io/badge/PySide6-6.8.3-41CD52?logo=qt&logoColor=white) ![Platform Windows](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows11&logoColor=white) ![License GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue?logo=gnu&logoColor=white)
+![Houdini 21/22](https://img.shields.io/badge/Houdini-21.0%20%7C%2022.0-FF4747?logo=sidefx&logoColor=white) ![Python 3.11/3.13](https://img.shields.io/badge/Python-3.11%20%7C%203.13-3776AB?logo=python&logoColor=white) ![PySide6](https://img.shields.io/badge/PySide6-6.8.3-41CD52?logo=qt&logoColor=white) ![Platform Windows](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows11&logoColor=white) ![License GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue?logo=gnu&logoColor=white)
 
-Houdini 22 插件工具集，开发期支持**手动热加载**：改完代码无需重启 Houdini。
+Houdini 21/22 插件工具集——一份代码两版通用（21.0 走 Python 3.11 入口壳，22.0 走 Python 3.13），开发期支持**手动热加载**：改完代码无需重启 Houdini。
 
 > 仅支持 Windows：Automation 的窗口置顶用 Win32 API，部分工具的"打开所在文件夹"依赖 explorer。
 
@@ -10,7 +10,7 @@ Houdini 22 插件工具集，开发期支持**手动热加载**：改完代码�
 
 [![下载 HouTools.zip](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-HouTools.zip-0d6399?style=for-the-badge)](https://gitcode.com/mahx-vfx/HouTools/releases/download/latest/HouTools.zip)
 
-1. 点击上方按钮下载 HouTools.zip，整个解压到 `Documents/houdiniXX.X/packages/`——解压后该目录下即有 `HouTools` 文件夹与 `HouTools.json`；
+1. 点击上方按钮下载 HouTools.zip，整个解压到 `Documents/houdiniXX.X/packages/`（Houdini 21.0 / 22.0 同一个包直装两版）——解压后该目录下即有 `HouTools` 文件夹与 `HouTools.json`；
 2. 启动 Houdini，顶部菜单即出现 **HouTools**。
 
 若需将 HouTools 文件夹放置到其他位置，修改 `packages/HouTools.json` 里 `$HOUDINI_PACKAGE_PATH/HouTools` 的路径即可。
