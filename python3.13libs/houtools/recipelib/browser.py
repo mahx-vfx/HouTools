@@ -1642,11 +1642,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         except Exception as exc:
             log.debug("factory recipes unavailable: %s", exc)
             return names
-        for cat in (ru.RecipeCategory.tool, ru.RecipeCategory.nodePreset,
-                    ru.RecipeCategory.parmPreset,
-                    ru.RecipeCategory.decoration,
-                    ru.RecipeCategory.parmTemplate,
-                    ru.RecipeCategory.data):
+        for _key, cat in store.category_mapping():
             try:
                 names.update(ru.recipeNames(cat, include_label=False,
                                             pad=False))

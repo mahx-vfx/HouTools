@@ -87,7 +87,8 @@ description: HouTools 发版流程（版本号更新、README/About 手册同步
 脚本行为与原因：
 
 - 只打运行必需文件：README.md（进包，供用户对照安装/用法）+ 三份菜单 XML +
-  `python3.13libs/` + `python_panels/` + `scripts/` + `docs/`（About 页面用）；
+  `python3.11libs/`（H21 入口壳，与真身同级随包分发）+ `python3.13libs/` +
+  `python_panels/` + `scripts/` + `docs/`（About 页面用）；
   排除 tests、LICENSE、AGENTS.md、settings/、`__pycache__`。
 - zip 顶层恰好两项：`HouTools.json`（包清单，顶层）+ `HouTools/` 文件夹
   （其余全部文件都在里面）。整个 zip 直接解压进 `Documents/houdiniXX.X/packages/`

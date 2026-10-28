@@ -12,6 +12,7 @@
 ## 数据读取（公开 API）
 
 - 枚举/元信息走公开 API：`recipeutils.recipeNames(RecipeCategory.xxx)` + `hou.nodeType(hou.dataNodeTypeCategory(), name).definition()` 直读 `data.recipe.json` section（不依赖内部包 hrecipes）。
+- **H21 兼容（2026-10 H21.0.596 真机实测）**：`RecipeCategory` 枚举无 `data` 成员（H22 新增分类；H20.5 更是整套旧枚举 tabTool/shelfTool）——分类映射写死六成员会在列表求值时 AttributeError，把整个面板炸成 `list recipes failed: data`。三处消费方（`store.list_recipes` / `store.get_recipe` / `browser._factory_recipe_names`）统一走 `store.category_mapping()`：五分类直引 + `getattr(RecipeCategory, "data", None)` 特征检测（成员存在才纳入，H22 行为不变；不用版本号判断——能力探测对未知版本免疫）。H21 跳过 data 分类无损失：该版本的 recipe 系统本就创建不了 data recipe。CATEGORY_LABELS / 类型角标表里的 "data" 键保留无害（H21 无 recipe 命中该键）。smoke test 以伪造 recipeutils（五分类/六分类双向注入 sys.modules）固化。
 - **坑：`data.recipe.json` 的 `data` 键不总是 dict**（ramp 类是 list、recipebuilder 是 str），必须 isinstance 防护——否则官方出厂 recipe 的 header 读取全线崩、告警刷屏。
 - **label/submenu 的实际存储随 recipe_category 不同**（22.0.429 实测，与 recipe_format 文档页有出入）——tab_tool/preset 类在 `properties.label/submenu`，shelf 式 tool 在 `tool.tool_labels[]`/`tool.tab_submenus[]`。
 - **节点数**：照官方 `hrecipes.utils.countContentsOfItem` 语义自实现（children/editable_nodes 递归累计、subnetindirectinput 不计，与 `hou.data.dataFromRecipe` 实测一致）。

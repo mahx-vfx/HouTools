@@ -69,7 +69,7 @@ def _check_undefined_names():
     import builtins
     import symtable
 
-    allow = {"__file__"}
+    allow = {"__file__", "__path__"}
 
     def _walk(table, out):
         for sym in table.get_symbols():
@@ -78,7 +78,8 @@ def _check_undefined_names():
         for child in table.get_children():
             _walk(child, out)
 
-    for path in sorted((ROOT / "python3.13libs").rglob("*.py")):
+    _scan_roots = (ROOT / "python3.13libs", ROOT / "python3.11libs")
+    for path in sorted(p for r in _scan_roots for p in r.rglob("*.py")):
         top = symtable.symtable(path.read_text(encoding="utf-8"),
                                 str(path), "exec")
         module_names = {s.get_name() for s in top.get_symbols()
@@ -106,8 +107,10 @@ def main():
     assert 'id="houtools.paste_hotkey_settings"' in main_xml
     nv_xml = (ROOT / "NetworkViewMenu.xml").read_text(encoding="utf-8")
     assert 'id="pane.wsheet.houtools_paste_as_object_merge"' in nv_xml
-    compile((ROOT / "python3.13libs" / "uiready.py").read_text(encoding="utf-8"),
-            "uiready.py", "exec")
+    for _hook in ("python3.13libs/uiready.py",
+                  "python3.11libs/uiready.py",
+                  "python3.11libs/houtools/__init__.py"):
+        compile((ROOT / _hook).read_text(encoding="utf-8"), _hook, "exec")
     print("paste_as_object_merge wiring: consistent")
 
     # Hdr Library:两份菜单均注册薄分发器入口
@@ -936,6 +939,39 @@ def main():
     import houtools.recipelib.codeblock as rl_cb
     import houtools.recipelib.browser as rl_browser
     import houtools.tools.recipe_library  # noqa: F401
+
+    # RecipeCategory 兼容回归：H21.0.596 的枚举无 data 成员（H22 新增），
+    # 分类映射必须 getattr 特征检测跳过缺失分类——曾在 H21 上以
+    # AttributeError 把整个面板炸成 "list recipes failed: data"。
+    # 真模块顶层 import hou，无头导不进来——伪造 recipeutils 注入
+    # sys.modules 双向验证（H21 五分类 / H22 六分类）：内部键 ≠ 枚举
+    # 成员名（node→nodePreset、parm→parmPreset），键序保持展示序
+    # （CATEGORY_LABELS），值必须是枚举成员本身（recipeNames 消费）。
+    import enum as _enum
+    import types as _types
+
+    _fake_enum = {"tool": "tool_recipe",
+                  "nodePreset": "node_preset_recipe",
+                  "parmPreset": "parm_preset_recipe",
+                  "decoration": "decoration_recipe",
+                  "parmTemplate": "parm_template_recipe",
+                  "data": "data_recipe"}
+    _key_to_enum = [("tool", "tool"), ("node", "nodePreset"),
+                    ("parm", "parmPreset"), ("decoration", "decoration"),
+                    ("parmTemplate", "parmTemplate"), ("data", "data")]
+
+    for _with_data in (False, True):   # False=H21.0.596、True=H22.0.429
+        _pairs = _key_to_enum if _with_data else _key_to_enum[:-1]
+        fake = _types.ModuleType("recipeutils")
+        fake.RecipeCategory = _enum.Enum(
+            "RecipeCategory",
+            {enum: _fake_enum[enum] for _k, enum in _pairs})
+        with patch.dict(sys.modules, {"recipeutils": fake}):
+            _cat_map = rl_store.category_mapping()
+        assert [(k, c.name) for k, c in _cat_map] == _pairs, _cat_map
+        for _k, c in _cat_map:
+            assert c.value == _fake_enum[c.name], c
+    print("RecipeCategory compat mapping OK")
 
     rl_store_ps = houtools.core.settings.JsonStore(
         "_smoke_recipelib.json", defaults=dict(rl_meta._DEFAULTS))
@@ -3007,6 +3043,35 @@ def main():
         hotkeys.clear_custom_key(_sym)
         assert hotkeys.get_custom_key(_sym) is None, "清除自定义键位失败"
     print("hotkey store round-trip OK")
+
+    # 多版本入口壳回归：python3.11libs 必须能作为 H21 (Python 3.11) 的
+    # 包入口——__path__ 扩展后子模块全部从真身解析、真身 __init__ 的
+    # 版本号经壳保留（用户拿包直装 H21/H22 即用，不依赖 junction/手动
+    # 建目录）。抽换 sys.modules 模拟"进程里第一次 import houtools"，
+    # 且 python3.11libs 排 sys.path 首位——验证双目录并存时壳优先命中。
+    _saved_ht = {k: v for k, v in sys.modules.items()
+                 if k == "houtools" or k.startswith("houtools.")}
+    _saved_version = _saved_ht["houtools"].__version__
+    for k in _saved_ht:
+        del sys.modules[k]
+    sys.path.insert(0, str(ROOT / "python3.11libs"))
+    try:
+        import houtools as _ht21
+        assert _ht21.__file__.replace("\\", "/").endswith(
+            "python3.11libs/houtools/__init__.py"), _ht21.__file__
+        assert _ht21.__version__ == _saved_version, _ht21.__version__
+        import houtools.core.constants as _const21
+        assert _const21.__file__.replace("\\", "/").endswith(
+            "python3.13libs/houtools/core/constants.py"), _const21.__file__
+        assert _const21.PROJECT_ROOT == ROOT
+        assert _const21.PYTHON_LIBS_DIR == ROOT / "python3.13libs"
+    finally:
+        sys.path.remove(str(ROOT / "python3.11libs"))
+        for k in [k for k in sys.modules
+                  if k == "houtools" or k.startswith("houtools.")]:
+            del sys.modules[k]
+        sys.modules.update(_saved_ht)
+    print("python3.11libs entry shim OK")
 
     print("SMOKE TEST OK")
 

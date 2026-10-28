@@ -1,7 +1,8 @@
 """官方 recipes 的脚本层封装：库安装 / 枚举 / 创建 / 应用 / 删除。
 
 底层是 H22 的公开 API（本仓库做过完整可行性验证，22.0.429 实测）：
-- 枚举:   recipeutils.recipeNames(RecipeCategory.xxx, ...)
+- 枚举:   recipeutils.recipeNames(RecipeCategory.xxx, ...；分类表统一
+  经 category_mapping() 取，对 H21 缺失的 data 分类做 getattr 特征检测)
 - 元信息: recipe 数据是 data 资产（HDA definition），完整结构存放在
   该 definition 的 ``data.recipe.json`` section（properties/tool/info），
   用 hou.nodeType(hou.dataNodeTypeCategory(), name).definition() 直读，
@@ -214,6 +215,30 @@ def ensure_libraries_installed(lib_dirs):
 # 枚举
 # --------------------------------------------------------------------------
 
+def category_mapping():
+    """内部键 → RecipeCategory 映射表（list_recipes / get_recipe /
+    browser._factory_recipe_names 共用，防止三处分类清单各自漂移）。
+
+    data 分类是 H22 新增（H21.0.596 实测枚举无该成员，直接引用会在
+    列表求值时 AttributeError、把整个面板炸成 "list recipes failed:
+    data"），用 getattr 特征检测而非版本号判断——成员存在才纳入。
+    H21 跳过它没有损失：那个版本的 recipe 系统本就创建不了 data recipe。
+    """
+    import recipeutils as ru
+
+    mapping = [
+        ("tool", ru.RecipeCategory.tool),
+        ("node", ru.RecipeCategory.nodePreset),
+        ("parm", ru.RecipeCategory.parmPreset),
+        ("decoration", ru.RecipeCategory.decoration),
+        ("parmTemplate", ru.RecipeCategory.parmTemplate),
+    ]
+    data_cat = getattr(ru.RecipeCategory, "data", None)
+    if data_cat is not None:
+        mapping.append(("data", data_cat))
+    return mapping
+
+
 def list_recipes(lib_dirs=None):
     """枚举用户库里的 recipe（lib_dirs 空 → 返回空列表）。"""
     if not lib_dirs:
@@ -225,14 +250,7 @@ def list_recipes(lib_dirs=None):
     if not keep:
         return []
 
-    mapping = [
-        ("tool", ru.RecipeCategory.tool),
-        ("node", ru.RecipeCategory.nodePreset),
-        ("parm", ru.RecipeCategory.parmPreset),
-        ("decoration", ru.RecipeCategory.decoration),
-        ("parmTemplate", ru.RecipeCategory.parmTemplate),
-        ("data", ru.RecipeCategory.data),
-    ]
+    mapping = category_mapping()
     hfs = hou.text.expandString("$HFS")
     seen = set()
     out = []
@@ -366,14 +384,7 @@ def get_recipe(name, lib_dirs=None):
     if not lib_path or _norm(lib_path) not in keep:
         return None
 
-    mapping = [
-        ("tool", ru.RecipeCategory.tool),
-        ("node", ru.RecipeCategory.nodePreset),
-        ("parm", ru.RecipeCategory.parmPreset),
-        ("decoration", ru.RecipeCategory.decoration),
-        ("parmTemplate", ru.RecipeCategory.parmTemplate),
-        ("data", ru.RecipeCategory.data),
-    ]
+    mapping = category_mapping()
     hfs = hou.text.expandString("$HFS")
     for cat_key, cat in mapping:
         try:

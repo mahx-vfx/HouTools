@@ -20,7 +20,8 @@ Behavior:
    side by side, so unzipping straight into Documents/houdiniXX.X/packages/
    completes the install (the manifest points at $HOUDINI_PACKAGE_PATH/HouTools).
    Inside HouTools/: README.md, MainMenuCommon.xml, NetworkViewMenu.xml,
-   OPmenu.xml, python3.13libs/, python_panels/, scripts/, docs/
+   OPmenu.xml, python3.11libs/ (H21 entry shim), python3.13libs/,
+   python_panels/, scripts/, docs/
    Excluded on purpose: tests/, LICENSE, AGENTS.md, settings/,
    __pycache__, *.pyc. (LICENSE stays out per the "necessary files only"
    decision; the About footer's ../LICENSE link won't resolve in zip installs
@@ -40,7 +41,7 @@ import zipfile
 from pathlib import Path
 
 FILES = ["README.md", "MainMenuCommon.xml", "NetworkViewMenu.xml", "OPmenu.xml"]
-DIRS = ["python3.13libs", "python_panels", "scripts", "docs"]
+DIRS = ["python3.11libs", "python3.13libs", "python_panels", "scripts", "docs"]
 MANIFEST = "HouTools.json"  # zip top level, next to PACKAGE_DIR
 PACKAGE_DIR = "HouTools"
 

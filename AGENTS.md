@@ -1,6 +1,6 @@
 # HouTools Knowledge Base
 
-**Houdini 22.0 (Python 3.13 / PySide6 6.8.3) 插件工具集** — 包机制加载 + 开发期手动热加载。
+**Houdini 22.0 (Python 3.13 / PySide6 6.8.3) 插件工具集** — 包机制加载 + 开发期手动热加载；兼容 Houdini 21.0 (Python 3.11)：`python3.11libs` 是提交进仓库的入口壳，用户拿发行包直装两版即用（见 Conventions「多版本单一源码」）。
 环境事实：Houdini 22.0.429；`requests` 内置；`hffmpeg/hffprobe` 随 Houdini 附带（`$HFS/bin`）。
 
 > **知识分工**：本文件只保留横切规则与指针；各功能的实现细节/逐条坑表在 `dev-notes/`（opmenu / capture-viewport / dragdrop / fonts / thumb-crop / thumb-snip / automation / videoseq / recipelib / codeblock / hdrlight）——表格行尾标注了对应笔记，**改该模块前必读**。
@@ -14,6 +14,7 @@ root/
 ├── OPmenu.xml                     # 节点右键菜单（HOUDINI_PATH 同名合并；自有条目分割线+[HT] 后缀，标签英文）
 ├── HouTools.json                # 包清单副本（生效的一份在 Documents/houdini22.0/packages/）
 ├── python_panels/Automation.pypanel  # Automation 的 Python Panel 界面定义
+├── python3.11libs/                # H21 (Python 3.11) 入口壳（提交进仓库、随发行包分发）：uiready.py 转发 + houtools/__init__.py 扩展 __path__——真身唯一在 python3.13libs，本目录严禁写业务代码（会漂移成第二份维护）
 ├── python3.13libs/uiready.py      # UI 启动钩子：装默认键位 + 启动即装 recipe 库。官方机制是"Houdini 执行 Houdini 路径上所有 uiready.py"（docs: Python script locations），各包同名钩子互不遮蔽、HFS 自带那份自己会跑——严禁在此补执行/链式其他 uiready.py（曾因此双执行官方钩子+扩大扫描面，已删）
 ├── python3.13libs/houtools/           # 核心 Python 包（python3.13libs 由 Houdini 自动加入 sys.path）
 │   ├── dev/                       # ★ 热加载框架：reloader / dispatcher（永不参与重载）
@@ -66,7 +67,7 @@ root/
 | 界面接入（Python Panel） | `houtools/automation/window.py` | `create_panel_widget` / `open_floating_panel`（`hou.pypanel.installFile` + `createFloatingPanel`）；运行态收尾单点归 `_on_all_completed`（closeEvent 只请求取消，**不复位 `_running`、不还原 stdout**——取消是协作式的，在途任务日志要连续到引擎收尾，pane 子部件收不到 close）；**stdout 重定向生命周期必须不依赖面板存活（destroyed 连模块级兜底恢复，连接只在 `__init__` 建一次）**；细节 → `dev-notes/automation.md` |
 | ffmpeg 查找 | `houtools/videoseq/ffmpeg.py` | 优先级：项目根 `ffmpeg.exe` → `$HFS/bin/hffmpeg` → `$HFS/bin/ffmpeg` → PATH（hffmpeg 优先）；`find_ffprobe` 从选中 ffmpeg 的**同目录**推导（含 hffmpeg→hffprobe 名字映射，通用名 ffprobe 优先于映射），同目录没有时回退 `$HFS/bin` → PATH 的 hffprobe/ffprobe——项目根只放 ffmpeg.exe 的场景探测仍走真 ffprobe（读容器元数据对构建版本不敏感），不再退回"正则解析 ffmpeg -i 输出" |
 | 视频拖放/路径框 | `houtools/videoseq/window.py` | 整窗+`_VideoSourceGroup` 双层拖放、`_load_video` 共用入口；**子进程管道必须有人读（stdout progress 无人读会挂死→隐藏窗口永不关闭）、stderr 用 DEVNULL、text=True 一律 utf-8+replace（cp936 会炸）**；取消协作式、语义对齐 Automation「停止中…」（按钮禁用到 worker 收尾信号到达，`_retired_workers` 保引用防 GC）；分辨率宽/高两框 + 预设下拉；**提取 worker 在 `_on_convert` 里也 `_retire_worker` 登记进 `_LIVE_WORKERS`，转换中 `is_close_deferred` 必须为 True（否则 Reload 的 close_all deleteLater 掉保着运行线程唯一引用的窗口 = qFatal）；输出路径（含目录）禁 `%`（image2 把整条路径当 printf 模板）；同前缀旧序列改名 `.bak` 让位——成功才删、取消/失败还原**；完成后写相机 `vm_background`+`vm_bgenable=1`（装饰性步骤失败不绑架主流程）。**相机查找/showEvent 刷新/取消细节 → `dev-notes/videoseq.md`（改前必读）** |
-| Recipe Library（recipes 资产库） | `houtools/recipelib/`（store/metadata/docs/capture/browser/transfer）+ `tools/recipe_library.py` | 基于 H22 官方 recipes 的资产面板，**只加载用户库**（`settings/recipelib.json` 的 `lib_dirs`）；元数据/缩略图/文档全在 `settings/` 与库文件解耦；**卡片右对齐+格宽恒定、卡间距 2×GAP=8px 是用户多轮拍板的最终形态（勿改回自适应/居中）**；**原 1.2 万字符机制与坑表拆至 `dev-notes/recipelib.md` 与 `dev-notes/codeblock.md`（改前必读：扫描防护/侧栏三保险/卡片绘制/预览/文档/应用闸/追加写入三态预检/transfer 防穿越/safe_name 撞名）** |
+| Recipe Library（recipes 资产库） | `houtools/recipelib/`（store/metadata/docs/capture/browser/transfer）+ `tools/recipe_library.py` | 基于 H22 官方 recipes 的资产面板，**只加载用户库**（`settings/recipelib.json` 的 `lib_dirs`）；元数据/缩略图/文档全在 `settings/` 与库文件解耦；**卡片右对齐+格宽恒定、卡间距 2×GAP=8px 是用户多轮拍板的最终形态（勿改回自适应/居中）**；**原 1.2 万字符机制与坑表拆至 `dev-notes/recipelib.md` 与 `dev-notes/codeblock.md`（改前必读：扫描防护/侧栏三保险/卡片绘制/预览/文档/应用闸/追加写入三态预检/transfer 防穿越/safe_name 撞名/H21 枚举特征检测）** |
 | HDR 库浏览器 | `houtools/hdrlight/browser.py` + `tools/hdr_library.py` | 菜单 Hdr Library；递归扫 `.hdr/.hdri/.exr`、一级子文件夹=分类；双击赋给选中灯光（envlight/RenderMan dome/LOP domelight 全家族，`addSelectionCallback` 推送驱动）；后台 QThread 线程池调 hoiiotool 出缩略图（运行线程挂 `_LIVE_THREADS`）；网格刚体不随面板宽伸缩（用户指定）。**hoiiotool 缓存/OCIO/赋灯参数名/新建分类校验 → `dev-notes/hdrlight.md`（改前必读）** |
 
 ## Conventions
@@ -81,6 +82,7 @@ root/
 - **Automation 的同步等待是有意设计，勿"修复"**：引擎对主线程调用做**无超时**阻塞等待（`execution_engine._run_deferred` 的 `ready.wait()`）。本工具本质是逐个触发 Houdini 按钮，顺序执行的唯一保证是"上一任务的主线程调用返回后再派发下一个"——主线程被解算/缓存阻塞多久就等多久（数小时是正常值），加超时会在任务实际完成前放行下一任务、破坏顺序语义；模态对话框等阻塞在本语义下同样属于"当前任务未完成，继续等"。取消是协作式，仅在任务边界生效、在途任务不可打断；因此 UI（`window._cancel_execution`）**不立即复位**：按钮保持「停止中…」并禁用，直到引擎真正发出 `all_completed` 才回空闲——否则留下"假取消"窗口，期间二次 Start 会被旧引擎迟到的 `all_completed` 打翻新引擎状态。运行中引擎由 `window._LIVE_ENGINES` 模块级留引用（引擎无 parent），防 GC 销毁运行中的 QThread。已知会弹阻塞对话框的按钮逐案消除弹框根源（`dl_Submit` 点击前强制存盘），不改等待机制。
 - **菜单结构改动**（增删菜单项）需重启 Houdini——H22 硬约束；顶栏菜单与节点右键菜单 OPmenu 实测均如此（2026-10：menurefresh 刷不出 OPmenu 改动，旧说法"menurefresh 覆盖 OPmenu/PARMmenu 等右键菜单"对 OPmenu 不成立，PARMmenu 未复验）；右键菜单条目背后的工具代码仍走 Reload 热加载。
 - **reload 语义**：`houtools/dev` 自身永不重载（改 dev 框架需重启）；重载前自动 close 所有登记窗口；状态反馈走 `hou.ui.setStatusMessage`（`houtools.dev.status`）。
+- **多版本单一源码**：`python3.13libs` 是唯一真身；`python3.11libs`（H21/py3.11 入口壳，随发行包分发）只含 uiready 转发与 `houtools/__init__.py` 的 `__path__` 扩展。Houdini 只加载/执行自己版本对应的 pythonX.Ylibs（两版互不可见对方目录，各跑一份 uiready 不双跑）；版本差异（如 H21 缺 `RecipeCategory.data`）一律在真身里用能力探测（`getattr(..., None)`）消化，**禁止往壳目录复制业务代码**（会漂移成第二份维护）。
 - **二进制不入库**：`*.exe` 已被 .gitignore 排除。
 - **提交**：git 仓库在 gitcode（`mahx-vfx/HouTools`，SSH 远程），main 分支；无构建步骤，纯 Python 即发布。
 
