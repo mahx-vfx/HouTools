@@ -34,7 +34,7 @@
 
 ## 拖拽触发 = 双通路（2026-10-21 从 feature/codeblock-drag 定案并入）
 
-- **拖入文本编辑框（VEX/Python 编辑器）**：放行原生落点（Houdini 自己的落点处理负责定位+写入，**数据始终正确**——拖入后代码正常执行，坏的只是 GL 编辑器显示层：只渲染首行、其余可框选/可删但不可见）+ `browser._refresh_dropped_editor_display` 触发参数面板整体重建（编辑器控件销毁重建后显示正常）。
+- **拖入文本编辑框（VEX/Python 编辑器）**：放行原生落点（Houdini 自己的落点处理负责定位+写入）+ `browser._refresh_dropped_editor_display` 触发参数面板整体重建（编辑器控件销毁重建后显示正常）。**坑（2026-10-28 实测，H21/H22 一致）：拖拽 MIME 严禁把代码装进官方 nodePath 格式（`application/sidefx-houdini-node.path`）**——其合法载荷是单个节点路径（hou.qt.mimeType 文档原文 "Full path to a node"），落点控件按节点路径/路径列表解析载荷时逗号是分隔符，拆分重组后**代码里的逗号全部变成空格**（同轮对照实验：拖入网络编辑器走 HouTools 自己的 parm.set 逗号完好）。载荷现由 `codeblock.build_drag_mime` 统一构造、只装 text/plain（smoke test 固化 formats 恰为 `[text/plain]`）；2026-10-18/20 探针的"数据始终正确 / MIME 格式全部无关"结论只对当时的无逗号载荷成立，勿据此重新给拖拽加官方格式。
 - **实测定律**：parm.set 值变更（同值/往返）、重绘（拖面板/切窗口）、别处新开面板（浮动/复制——新实例天生干净但救不了旧实例）、搜索过滤全部无效；**唯一有效的是面板整体重建**，且只在「模板组真的变了」时触发——同一脚本内关了又开=净零变化被判无事发生（节点首次定制那次例外），processEvents 救不了（面板重建走 Houdini 空闲队列，非 Qt 事件）。
 - **修复 = 两次真实变更各落一个事件周期**：载体参数（wrangle 家族→`autobind`，第二栏 Bindings 工作流不可见；python SOP→`maintainstate`）的隐藏旗标第一跳翻转（撤销组「HouTools 刷新编辑器」）→ `QTimer.singleShot(150)` 第二跳翻回——各触发一次重建，结束时旗标归位=面板外观零变化；参数值零触碰。识别走拖放瞬间光标所在的参数面板（`hou.ui.paneTabUnderCursor()`→`currentNode()`，ParameterEditor 继承 PathBasedPaneTab）；识别失败/无载体一律静默不做（普通文本框原生落点显示本来就是好的）；锁定 HDA 拒改→状态栏提示。
 - **拖入网络编辑器**：`find_code_node_at` 矩形命中代码节点 → `NodeCodeDialog` 并入（预填现有代码+空行追加，确认 parm.set 写回单 undo 组）；空白 → `create_node_with_code` 创建对应节点（VEX→attribwrangle、Python→python SOP，仅 SOP 网络，层级不符中文报错）并填码，失败不残留半截节点。`find_code_node_at` 的 `language` 传 None 可命中任意语言的代码节点（调用方用 `code_parm_name` 判定语言）。

@@ -2688,10 +2688,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
         探针实证（2026-10-18/20 用户会话）：内建 VEX 编辑器是 GL 虚拟
         控件，其原生落点把多行文本写进编辑器但显示层不重算（只渲染首
-        行、其余可框选不可见）——数据始终正确（代码正常执行），纯显示
-        bug；MIME 格式（text/CRLF/官方 nodePath）、拖拽来源（外部文本/
-        文件拖）、Ctrl+Enter 提交全部无关。机制——纯公开 API，无模拟/
-        无剪贴板/无注入：
+        行、其余可框选不可见）——显示 bug；拖拽来源（外部文本/文件拖）
+        与 Ctrl+Enter 提交对显示 bug 全部无关。机制——纯公开 API，无
+        模拟/无剪贴板/无注入：
         1. QDrag 正常发车、**不拦截 Drop**——Houdini 自己的落点处理
            负责定位+写入（定位与数据都对）；
         2. exec 返回非 Ignore（落点被接受）后走
@@ -2711,19 +2710,12 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         拖拽语义）。
         """
         drag = QtGui.QDrag(self)
-        mime = QtCore.QMimeData()
-        mime.setText(info.code)   # 纯文本兜底（其他控件的通用路径）
-        try:
-            # 同时携带 Houdini 官方 nodePath 拖放格式（载荷=代码文本）：
-            # 部分原生控件按 MIME 类型走不同落点行为（hou.qt.mimeType）。
-            # 实验证实多行载荷在任何格式下都触发同一显示 bug，保留该
-            # 格式只为最大化与原生拖放的兼容面，显示修复不依赖它。
-            import hou
-            fmt = getattr(hou.qt.mimeType, "nodePath",
-                          "application/sidefx-houdini-node.path")
-            mime.setData(fmt, info.code.encode("utf-8"))
-        except Exception as exc:
-            log.debug("nodePath mime unavailable: %s", exc)
+        # 载荷只装 text/plain（坑注见 codeblock.build_drag_mime）：
+        # nodePath 官方格式曾被用来装代码以"最大化兼容面"，实测落点
+        # 控件按节点路径解析载荷——代码逗号被当路径列表分隔符吞成
+        # 空格（2026-10-28 H21/H22 双版本复现），该格式必须保持节点
+        # 路径语义、不得携带任意文本
+        mime = codeblock.build_drag_mime(info.code)
         drag.setMimeData(mime)
         pm = codeblock.render_code_pixmap(
             info.code, info.language, 72, 48,

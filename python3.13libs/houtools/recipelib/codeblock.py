@@ -1053,6 +1053,23 @@ def append_to_nodes(nodes, language, code):
     return appended, skipped
 
 
+def build_drag_mime(code):
+    """代码块拖拽的 MIME 载荷：只装 text/plain。
+
+    ⚠ 严禁把代码塞进官方 nodePath 格式（application/sidefx-houdini-
+    node.path）：该格式的合法载荷是单个节点路径（hou.qt.mimeType 文档
+    原文 "Full path to a node"），落点控件按节点路径/路径列表解析载荷
+    时逗号是分隔符——拆分重组后代码里的逗号全部变成空格（2026-10-28
+    用户实测：拖入 VEX 编辑器逗号变空格、拖入网络编辑器走 HouTools
+    自己的 parm.set 完好，H21/H22 行为一致）。text/plain 的原生文本
+    插入两版均逐字保真；多行显示 bug 的修复（参数模板可见性往返）也
+    不依赖该格式。
+    """
+    mime = QtCore.QMimeData()
+    mime.setText(code)
+    return mime
+
+
 def create_node_with_code(parent, language, code, display_label="",
                           position=None):
     """在 parent 网络里创建对应节点并填入代码（拖代码块进网络编辑器）。

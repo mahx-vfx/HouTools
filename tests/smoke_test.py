@@ -2315,6 +2315,18 @@ def main():
             ndlg2.deleteLater()
             print("codeblock node merge dialog OK")
 
+            # ---- 拖拽 MIME（2026-10-28 逗号事故回归）：只允许 text/plain
+            # ——nodePath 官方格式合法载荷是单个节点路径，装代码会被落点
+            # 控件按路径列表解析（逗号=分隔符，实测全部吞成空格，
+            # H21/H22 一致；网络落点走 HouTools 自己的 parm.set 不受影响）
+            _mime = rl_cb.build_drag_mime("set(1, 2, 3);\n$F, $OS")
+            assert _mime.hasText() \
+                and _mime.text() == "set(1, 2, 3);\n$F, $OS", _mime.text()
+            assert not _mime.hasFormat(
+                "application/sidefx-houdini-node.path")
+            assert len(_mime.formats()) == 1, _mime.formats()   # 唯一=text
+            print("codeblock drag mime OK")
+
             # ---- 面板集成：侧栏段 / 过滤 / 搜索 / 预览 / 双击 / 右键 ----
             rl_meta.set_display_name("my_vex-1", "烟雾测试")
             rl_meta.set_tags("my_vex-1", ["测试"])
