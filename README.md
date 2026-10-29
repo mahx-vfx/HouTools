@@ -34,7 +34,7 @@ Houdini 21/22 插件工具集——一份代码两版通用（21.0 走 Python 3.
 |------|--------|------|
 | Automation | `HouTools → Automation`（Python Panel） | 自动化批处理：节点按钮点击 / Flipbook 拍屏 / HomeAssistant Webhook / 打开DW |
 | 粘贴为 Object Merge | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+V` | 复制节点后，按"目标上下文 × 源类别"在鼠标位置粘贴引用节点；键位在 `HouTools → Paste Hotkey Settings` 修改 |
-| 拖放导入 Alembic / FBX | 拖 `.abc`/`.fbx` 文件到网络编辑器 | 松手即在鼠标位置创建导入节点：obj 层级 = Alembic Archive（自动构建层级）/ FBX 子网（官方导入器），SOP 层级 = alembic / file 节点；支持多文件混拖（基于 Houdini 官方 externaldragdrop 钩子） |
+| 拖放导入 Alembic / FBX / USD | 拖 `.abc`/`.fbx`/`.usd` 等文件到网络编辑器 | 松手即在鼠标位置创建导入节点：obj 层级 = Alembic Archive（自动构建层级）/ FBX 子网（官方导入器），SOP 层级 = alembic / file 节点，LOP 层级（`.usd`/`.usda`/`.usdc`/`.usdz`）= sublayer 节点；支持多文件混拖（基于 Houdini 官方 externaldragdrop 钩子） |
 | 视窗截图嵌入 | 节点右键 `Capture Viewport to Node [HT]` | 截取当前 3D 视窗存为 JPG（`$HIP/HouTools_cfg/captures/`），作为网络编辑器背景图钉在节点旁，随节点移动/改名跟随；只存路径引用不进 hip；右键 `Delete Viewport Capture [HT]` 删除截图 |
 | 粘贴边界框 | 节点右键 `Paste Bounding Box [HT]` | Ctrl+C 复制源节点后，右键带三分量 `size`/`t` 参数的目标节点（如 box），把源节点包围盒尺寸/中心粘贴到其 `size`/`t`——绝对值或 `bbox()`/`centroid()` 表达式（同网络相对路径、跨层级绝对路径）两种模式 |
 | 视频转序列图 | `HouTools → Video to Sequence` | ffmpeg 提取视频为 JPG 序列（帧级进度，质量/起始帧/位数/前缀可调），相机分辨率可读取/编辑（宽/高双框 + 预设），可选自动设置相机 Background Image |
@@ -84,21 +84,22 @@ ffmpeg 说明：优先使用 Houdini 自带的 `$HFS/bin/hffmpeg`，**无需单�
 只放 `ffmpeg.exe` 一个文件也可以：视频信息探测会自动借用 Houdini 自带的
 `hffprobe`（或 PATH 上的 ffprobe），无需一并放置。
 
-### 拖放导入 Alembic / FBX
+### 拖放导入 Alembic / FBX / USD
 
-从资源管理器把 `.abc` / `.fbx` 文件拖到网络编辑器，松手即在鼠标位置创建导入节点
+从资源管理器把 `.abc` / `.fbx` / `.usd` 等文件拖到网络编辑器，松手即在鼠标位置创建导入节点
 （基于 Houdini 官方 `externaldragdrop` 钩子；obj 层级分别等价
 File > Import > Alembic Scene... / File > Import > Filmbox FBX...）：
 
-| 拖放落点 | `.abc` 创建的节点 | `.fbx` 创建的节点（名称取文件名主干） |
-|------|------|------|
-| Object 层级（`/obj`） | Alembic Archive，自动构建层级 | FBX 子网（官方导入器，自动命名/重名加后缀） |
-| SOP 层级（geo 内部） | alembic SOP 节点 | file SOP 节点 |
+| 拖放落点 | `.abc` 创建的节点 | `.fbx` 创建的节点（名称取文件名主干） | `.usd`/`.usda`/`.usdc`/`.usdz` 创建的节点 |
+|------|------|------|------|
+| Object 层级（`/obj`） | Alembic Archive，自动构建层级 | FBX 子网（官方导入器，自动命名/重名加后缀） | — |
+| SOP 层级（geo 内部） | alembic SOP 节点 | file SOP 节点 | — |
+| LOP 层级（`/stage`） | — | — | sublayer 节点，路径填入 `filepath1` |
 
-- 支持一次拖入多个文件（可 `.abc`/`.fbx` 混拖），纵向排开；`.abc` 整批一个 undo 槽
+- 支持一次拖入多个文件（`.abc`/`.fbx`/`.usd*` 可混拖），纵向排开；各类整批各占一个 undo 槽
 - 节点名取文件名主干，中文等非法字符自动替换为 `_`，同名自动加数字后缀
 - 导入的 FBX 节点不冻结：按官方导入对话框的 Unlock 选项直接导入（官方 File > Import 默认锁定 file 节点、参数只读），落网即可编辑
-- 非 `.abc`/`.fbx` 文件，以及拖到参数框、视口等其他面板的行为与原生完全一致，不受影响
+- 非 `.abc`/`.fbx`/`.usd*` 文件，以及拖到参数框、视口等其他面板的行为与原生完全一致，不受影响
 - 拖放钩子文件是 `scripts/externaldragdrop.py`（两行分发器），逻辑在
   `houtools/dragdrop.py`，改代码走 `Reload Modules (Dev)` 热加载，无需重启
 

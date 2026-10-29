@@ -3014,9 +3014,10 @@ def main():
         assert "sopoutput" in str(exc)
     print("open_cache_folder resolve OK")
 
-    # 外部拖放导入（dragdrop）：.abc/.fbx 过滤 / file:// URL 解码 / 节点名清洗
-    # （纯函数，无 hou 依赖）；无目标扩展名早退分支不触 hou；无 hou 环境（或
-    # 任何异常）也不裸抛——吞掉并接管，防拖入文件被原生当 hip 文件打开
+    # 外部拖放导入（dragdrop）：.abc/.fbx/.usd* 过滤 / file:// URL 解码 /
+    # 节点名清洗（纯函数，无 hou 依赖）；无目标扩展名早退分支不触 hou；
+    # 无 hou 环境（或任何异常）也不裸抛——吞掉并接管，防拖入文件被原生
+    # 当 hip 文件打开
     from houtools import dragdrop as dd
     assert dd._extract_ext_files([], dd._ABC_EXT) == []
     assert dd._extract_ext_files(["a.txt", "b.hip"], dd._ABC_EXT) == []
@@ -3026,6 +3027,11 @@ def main():
         == ["C:\\lib\\a b.abc"]
     assert dd._extract_ext_files(["a.fbx", "B.FBX", "c.txt"], dd._FBX_EXT) \
         == ["a.fbx", "B.FBX"]
+    # USD 家族四扩展名；.usd.nc（崩溃恢复文件，splitext 得 .nc）不入列
+    assert dd._extract_ext_files(
+        ["a.usd", "B.USDA", "c.usdc", "d.usdz", "e.txt"], dd._USD_EXTS) \
+        == ["a.usd", "B.USDA", "c.usdc", "d.usdz"]
+    assert dd._extract_ext_files(["a.usd.nc", "b.usdx"], dd._USD_EXTS) == []
     assert dd._clean_name("cam.abc") == "cam"
     assert dd._clean_name("角色A_v2.abc") == "A_v2"
     assert dd._clean_name("my big shot!.abc") == "my_big_shot"
@@ -3035,11 +3041,17 @@ def main():
     assert dd._clean_name("角色A_v2.fbx") == "A_v2"
     assert dd._clean_name("123.fbx") == "fbx_123"
     assert dd._clean_name("###.fbx") == "fbx_import"
+    assert dd._clean_name("hero_v3.usda") == "hero_v3"
+    assert dd._clean_name("角色A_v2.usdz") == "A_v2"
+    assert dd._clean_name("123.usd") == "usd_123"
+    assert dd._clean_name("###.usdc") == "usdc_import"
     assert dd.drop_accept(["a.txt"]) is False
     assert dd.drop_accept([]) is False
     assert dd.drop_accept(["x.abc"]) is True
     assert dd.drop_accept(["x.fbx"]) is True
-    print("dragdrop abc/fbx import guard OK")
+    assert dd.drop_accept(["x.usd"]) is True
+    assert dd.drop_accept(["a.usda", "b.usdz"]) is True
+    print("dragdrop abc/fbx/usd import guard OK")
 
     # 热键自定义存储 round-trip（打桩到临时 store，不触真实 settings/；
     # 此前直接删除真实 hotkeys.json，会把用户自定义键位一起删掉）

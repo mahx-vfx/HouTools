@@ -20,6 +20,9 @@ Houdini 对每一次文件拖放（落到主窗口任意面板）都会查找 HO
   - Sop 层级：
       .abc → 逐文件创建 SOP ``alembic`` 节点（等价 Tab 菜单 alembic）；
       .fbx → 逐文件创建 SOP ``file`` 节点（file SOP 原生可读 .fbx）；
+  - Lop 层级：
+      .usd/.usda/.usdc/.usdz → 逐文件创建 ``sublayer`` 节点、文件路径填
+             ``filepath1``（等价 Tab 菜单 sublayer；节点名取文件名主干）；
   - 其余层级 → False 交还原生。
   混合拖放时各类型共用一套纵向错开序；首个节点落在鼠标处。abc 整批一个
   undo 槽；importFBX 不参与 undo（与官方导入一致），该分支不加 undo 组。
@@ -52,23 +55,26 @@ logger = get_logger("dragdrop.import")
 
 _ABC_EXT = ".abc"
 _FBX_EXT = ".fbx"
+_USD_EXTS = (".usd", ".usda", ".usdc", ".usdz")
 
 # 多文件纵向错开时相邻节点的间距（网络单位）
 _STACK_GAP = 0.5
 
 _UNDO_GROUP_ABC = "Import ABC Drag"
 _UNDO_GROUP_FBX = "Import FBX Drag"
+_UNDO_GROUP_USD = "Import USD Drag"
 
 
 def drop_accept(file_list):
-    """externaldragdrop 钩子入口：接管 .abc/.fbx 拖放，其余一律交还原生。"""
+    """externaldragdrop 钩子入口：接管 .abc/.fbx/.usd* 拖放，其余交还原生。"""
     items = list(file_list or [])
     abc_files = _extract_ext_files(items, _ABC_EXT)
     fbx_files = _extract_ext_files(items, _FBX_EXT)
-    if not abc_files and not fbx_files:
+    usd_files = _extract_ext_files(items, _USD_EXTS)
+    if not abc_files and not fbx_files and not usd_files:
         return False
     try:
-        return _import_files_under_cursor(abc_files, fbx_files)
+        return _import_files_under_cursor(abc_files, fbx_files, usd_files)
     except Exception:
         # 钩子裸抛会让 Houdini 把拖入文件当 hip 打开（错误框），必须吞掉
         logger.warning("drag import failed:\n%s", traceback.format_exc())
@@ -76,14 +82,18 @@ def drop_accept(file_list):
         return True
 
 
-def _extract_ext_files(file_list, ext):
-    """过滤出指定扩展名条目（大小写不敏感），file:// URL 解码为本地路径。"""
+def _extract_ext_files(file_list, exts):
+    """过滤出指定扩展名条目（大小写不敏感），file:// URL 解码为本地路径。
+
+    ``exts`` 为单个扩展名字符串或一组扩展名（USD 家族）。
+    """
+    exts = (exts,) if isinstance(exts, str) else tuple(exts)
     files = []
     for item in file_list:
         if not isinstance(item, str) or not item:
             continue
         path = _to_local_path(item)
-        if os.path.splitext(path)[1].lower() == ext:
+        if os.path.splitext(path)[1].lower() in exts:
             files.append(path)
     return files
 
@@ -115,7 +125,7 @@ def _clean_name(path):
     return name
 
 
-def _import_files_under_cursor(abc_files, fbx_files):
+def _import_files_under_cursor(abc_files, fbx_files, usd_files):
     """在鼠标下方网络编辑器导入；非目标层级交还原生。"""
     import hou
 
@@ -152,7 +162,16 @@ def _import_files_under_cursor(abc_files, fbx_files):
                 node_type="file", parm_name="file", label="FBX",
                 undo_group=_UNDO_GROUP_FBX) or handled
         return handled
-    # 其他层级（Dop/Lop...）交还原生
+    if category == "Lop":
+        if usd_files:
+            # sublayer 文件参数默认只有一槽 filepath1；坏文件由节点错误
+            # 旗标反馈（创建本身不失败），与 SOP alembic/file 同语义
+            return _import_nodes(
+                context, position, usd_files,
+                node_type="sublayer", parm_name="filepath1", label="USD",
+                undo_group=_UNDO_GROUP_USD)
+        return False
+    # 其他层级（Dop 等）交还原生
     logger.debug("drop network %s category %s not handled",
                  context.path(), category)
     return False
