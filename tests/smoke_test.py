@@ -766,6 +766,26 @@ def main():
     assert out is sink
     print("stdout tee splice OK")
 
+    # _PanelCenterFilter：非 QWidget 的 Show 必须穿透（H21 实测原生
+    # QWindow 的 Show 会进应用级过滤器，QWindow 无 windowTitle，曾
+    # AttributeError 打崩过滤器）；标题匹配的 QWidget 走居中分支——
+    # 无头环境 hou 不可用，定位静默跳过后应自摘一次性任务
+    from PySide6.QtCore import QEvent as _QEvent
+    from PySide6.QtGui import QWindow as _QWindow
+    from PySide6.QtWidgets import QWidget as _QWidget
+    from houtools.automation.window import (
+        _PanelCenterFilter, _PANEL_FILTERS, INTERFACE_NAME)
+    _pcf = _PanelCenterFilter(object())
+    _PANEL_FILTERS.add(_pcf)
+    _show_ev = _QEvent(_QEvent.Show)
+    assert _pcf.eventFilter(_QWindow(), _show_ev) is False
+    _top = _QWidget()
+    _top.setWindowTitle("Houdini FX - " + INTERFACE_NAME)
+    assert _pcf.eventFilter(_top, _show_ev) is False
+    assert _pcf not in _PANEL_FILTERS, "一次性任务未自摘"
+    _top.deleteLater()
+    print("panel center filter QWindow guard OK")
+
     # Hdr Library:子文件夹分类扫描 + 缩略图相对路径命名
     from houtools.hdrlight import browser as hdr_browser
     with tempfile.TemporaryDirectory() as tmp:

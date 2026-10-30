@@ -541,7 +541,9 @@ class _PanelCenterFilter(QObject):
     自动 show 环节才建窗口并摆到"上次关闭的位置" —— 发生在
     open_floating_panel 返回之后,创建期的 setPosition 会被覆盖。在
     Show 事件阶段(paint 尚未发生)同步 setPosition,窗口第一次上屏
-    就在居中位置,消除"先旧位置、再跳中间"的闪烁。
+    就在居中位置,消除"先旧位置、再跳中间"的闪烁。H21 实测:应用级
+    过滤器会收到原生 QWindow 的 Show——非 QWidget 一律穿透,否则
+    AttributeError 打崩过滤器(2026-10-28 用户真机)。
     """
 
     def __init__(self, panel):
@@ -552,7 +554,10 @@ class _PanelCenterFilter(QObject):
         if event.type() != QEvent.Show:
             return False
         try:
-            if not obj.windowTitle().endswith(INTERFACE_NAME):
+            # H21 实测：应用级过滤器会收到原生 QWindow 的 Show（QtGui 层
+            # 对象，没有 windowTitle）——必须先认 QWidget 再取标题
+            if not isinstance(obj, QWidget) \
+                    or not obj.windowTitle().endswith(INTERFACE_NAME):
                 return False
         except RuntimeError:
             return False  # C++ 对象已销毁
