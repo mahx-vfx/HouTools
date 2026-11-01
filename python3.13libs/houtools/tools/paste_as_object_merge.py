@@ -54,7 +54,7 @@ def run(**kwargs):
 
     editor = _target_editor(kwargs)
     if editor is None:
-        _status("未找到网络编辑器，无法粘贴")
+        _status("未找到网络编辑器，无法粘贴", severity="warning")
         return
 
     context = editor.pwd()
@@ -64,7 +64,7 @@ def run(**kwargs):
         with hou.undos.group("pasteAsObjectMerge"):
             _paste_as_merge(context, context_type, position)
     except Exception as e:
-        _status(f"粘贴失败：{e}")
+        _status(f"粘贴失败：{e}", severity="error")
         logger.warning("paste_as_object_merge failed in %s: %s", context.path(), e)
 
 
@@ -124,7 +124,8 @@ def _paste_into_sop(context, position):
 
     src_items = _source_items(context, position)
     if not src_items:
-        _status("剪贴板中没有可粘贴的节点（先在网络编辑器 Ctrl+C 复制节点）")
+        _status("剪贴板中没有可粘贴的节点（先在网络编辑器 Ctrl+C 复制节点）",
+                severity="warning")
         return
 
     n = 0
@@ -149,7 +150,7 @@ def _paste_into_sop(context, position):
         _place(merge, position, n, src.color())
         merge.setSelected(True, clear_all_selected=(n == 0))
         n += 1
-    _report(context.path(), src_items, n)
+    _report_unmatched(n)
 
 
 def _paste_into_obj(context, position):
@@ -158,7 +159,8 @@ def _paste_into_obj(context, position):
 
     src_items = _clipboard_node_paths()
     if not src_items:
-        _status("剪贴板中没有可粘贴的节点（先在网络编辑器 Ctrl+C 复制节点）")
+        _status("剪贴板中没有可粘贴的节点（先在网络编辑器 Ctrl+C 复制节点）",
+                severity="warning")
         return
 
     n = 0
@@ -175,7 +177,7 @@ def _paste_into_obj(context, position):
         merge.setColor(color)
         geo.setSelected(True, clear_all_selected=(n == 0))
         n += 1
-    _report(context.path(), src_items, n)
+    _report_unmatched(n)
 
 
 def _paste_reference_nodes(context, position, rules):
@@ -184,7 +186,8 @@ def _paste_reference_nodes(context, position, rules):
 
     src_items = _clipboard_node_paths()
     if not src_items:
-        _status("剪贴板中没有可粘贴的节点（先在网络编辑器 Ctrl+C 复制节点）")
+        _status("剪贴板中没有可粘贴的节点（先在网络编辑器 Ctrl+C 复制节点）",
+                severity="warning")
         return
 
     context_type = context.type().childTypeCategory()
@@ -204,7 +207,7 @@ def _paste_reference_nodes(context, position, rules):
         _place(node, position, n, src.color())
         node.setSelected(True, clear_all_selected=(n == 0))
         n += 1
-    _report(context.path(), src_items, n)
+    _report_unmatched(n)
 
 
 # ── 源解析 ────────────────────────────────────────────────────
@@ -221,7 +224,10 @@ def _source_items(context, position) -> list[str]:
 
     pasted = _paste_internal_clipboard(context, position)
     if pasted:
-        _status("剪贴板文本失效，已从 Houdini 内部剪贴板粘贴副本")
+        # 保留提示：兜底路径会凭空多出副本节点，必须解释来源；成功
+        # 静默后此消息不再被"已粘贴"覆盖
+        _status("剪贴板文本失效，已从 Houdini 内部剪贴板粘贴副本",
+                severity="warning")
         return [node.path() for node in pasted]
     return []
 
@@ -312,13 +318,15 @@ def _place(node, position, n, color=None):
         node.setColor(color)
 
 
-def _report(target_path, src_items, n):
-    """统一的完成状态提示；n=0 表示没有任何源匹配当前上下文的规则。"""
+def _report_unmatched(n):
+    """n=0 = 没有任何源匹配当前上下文的规则 → 提示。
+
+    成功（n>0）静默：引用节点落网并选中、结果自明（成功不通知）。
+    """
     if n:
-        _status(f"已粘贴 → {target_path}"
-                f"（{src_items[0].rsplit('/', 1)[-1]} 等 {n} 项）")
-    else:
-        _status("剪贴板节点类型在当前上下文没有对应的粘贴规则")
+        return
+    _status("剪贴板节点类型在当前上下文没有对应的粘贴规则",
+            severity="warning")
 
 
 def _target_editor(kwargs: dict):
@@ -352,10 +360,20 @@ def _paste_position(editor):
         return ((lo.x() + hi.x()) / 2.0, (lo.y() + hi.y()) / 2.0)
 
 
-def _status(message: str):
-    """状态栏提示（不弹窗、不打控制台，保持操作流不被打断）。"""
+def _status(message: str, severity="important"):
+    """状态栏提示（不弹窗、不打控制台，保持操作流不被打断）。
+
+    severity: "important" 高亮 / "warning" 预期内拒绝降级 / "error" 意外
+    失败（内部映射 hou.severityType，调用点无须 import hou）。粘贴成功
+    静默——引用节点落网并选中、结果自明，这里只报拒绝与失败。
+    """
     try:
         import hou
-        hou.ui.setStatusMessage(message, hou.severityType.ImportantMessage)
+        level = {
+            "important": hou.severityType.ImportantMessage,
+            "warning": hou.severityType.Warning,
+            "error": hou.severityType.Error,
+        }[severity]
+        hou.ui.setStatusMessage(message, level)
     except Exception as exc:
         logger.debug("setStatusMessage failed: %s", exc)

@@ -39,7 +39,8 @@ def run(kwargs=None):
         hou.ui.setStatusMessage("HouTools: 已删除节点截图（{}）".format(
             "、".join(filter(None, (
                 "背景图条目" if removed_entry else None,
-                "磁盘文件" if removed_file else None)))))
+                "磁盘文件" if removed_file else None)))),
+            severity=hou.severityType.ImportantMessage)
     else:
         # 标记在但条目/文件都不在（如手动删过图）：只清标记与回调
         hou.ui.setStatusMessage(

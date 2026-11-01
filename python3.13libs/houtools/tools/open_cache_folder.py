@@ -102,8 +102,9 @@ def run(kwargs=None):
         folder = resolve_folder(node)
     except RuntimeError as exc:
         log.warning("%s", exc)
+        # 预检拒绝（工程未保存+相对路径），保存工程后重试可解 → Warning
         hou.ui.setStatusMessage(
-            "HouTools: {}".format(exc), severity=hou.severityType.Error
+            "HouTools: {}".format(exc), severity=hou.severityType.Warning
         )
         return
     try:

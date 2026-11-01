@@ -535,7 +535,8 @@ def run(kwargs=None):
     if persisted:
         hou.ui.setStatusMessage(
             "HouTools: 视窗截图已嵌入 {}（{}x{}，{}）".format(
-                node.path(), pix_w, pix_h, hip_capture_path(filename)))
+                node.path(), pix_w, pix_h, hip_capture_path(filename)),
+            severity=hou.severityType.ImportantMessage)
     else:
         hou.ui.setStatusMessage(
             "HouTools: 截图已落盘但背景图写入失败（网络不可写？）: {}".format(

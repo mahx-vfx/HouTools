@@ -52,16 +52,22 @@ _CARRIER_PARM_NAMES = ("autobind", "maintainstate")
 _REFRESH_TOGGLE_DELAY_MS = 150
 
 
-def _push_houdini_error(message):
-    """把错误推到 Houdini 左下角状态栏（红色 severity=Error）。
+def _push_houdini_error(message, severity="error"):
+    """把失败/拒绝推到 Houdini 左下角状态栏。
 
-    面板自身状态栏也有同款文案；这里保证用户视线留在网络编辑器时
-    也能看到失败原因。无头/旧版签名差异时静默降级。
+    severity="error"（默认）红色 = 意外失败；"warning" 黄字 = 预期内
+    拒绝/降级（层级点错、语言错配等未写入场景）。面板自身状态栏也有
+    同款文案；这里保证用户视线留在网络编辑器时也能看到。无头/旧版
+    签名差异时静默降级。
     """
     try:
         import hou
+        level = {
+            "error": hou.severityType.Error,
+            "warning": hou.severityType.Warning,
+        }[severity]
         hou.ui.setStatusMessage("Recipe Library: {}".format(message),
-                                severity=hou.severityType.Error)
+                                severity=level)
     except Exception as exc:
         log.debug("setStatusMessage failed: %s", exc)
 
@@ -2487,7 +2493,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     self._status_success(msg)   # 全部/部分成功都闪烁
                 else:
                     self._status_error(msg)   # 全失败红色闪烁
-                    _push_houdini_error(msg)
+                    _push_houdini_error(msg, severity="warning")
                     return False
                 return True
             elif info.category == "tool":
@@ -2528,9 +2534,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     "类型 {} 暂不支持面板内应用，请用官方菜单".format(info.category))
                 return False
         except store.ContextMismatch as exc:
-            # 预期内的操作反馈（层级点错）：红字提示即可，控制台保持安静
+            # 预期内的操作反馈（层级点错）：面板红闪提示即可，控制台保持
+            # 安静；Houdini 状态栏推黄字（拒绝，未写入任何东西）
             self.status.setText(str(exc))
-            _push_houdini_error(str(exc))
+            _push_houdini_error(str(exc), severity="warning")
             return False
         except Exception as exc:
             log.warning("apply %s failed: %s", info.name, exc, exc_info=True)
@@ -2633,9 +2640,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 self._status_success("已在当前网络中创建 {}".format(
                     self._display_label(info)))
         except store.ContextMismatch as exc:
-            # 预期内的操作反馈（层级点错）：红字提示即可，控制台保持安静
+            # 预期内的操作反馈（层级点错）：面板红闪提示即可，控制台保持
+            # 安静；Houdini 状态栏推黄字（拒绝，未写入任何东西）
             self.status.setText(str(exc))
-            _push_houdini_error(str(exc))
+            _push_houdini_error(str(exc), severity="warning")
         except Exception as exc:
             log.warning("drag apply %s failed: %s", info.name, exc, exc_info=True)
             self._status_error("创建失败: {}".format(exc))
@@ -2679,7 +2687,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             codeblock.LANGUAGE_LABELS[info.language],
             codeblock.LANGUAGE_LABELS[node_lang], node.path())
         self._status_error(msg)
-        _push_houdini_error(msg)
+        _push_houdini_error(msg, severity="warning")
         return False
 
     def _start_code_drag(self, info):
@@ -2765,7 +2773,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     codeblock.LANGUAGE_LABELS[info.language],
                     codeblock.LANGUAGE_LABELS[target_lang], target.path())
                 self._status_error(msg)
-                _push_houdini_error(msg)
+                _push_houdini_error(msg, severity="warning")
                 return
             parm_name = codeblock.code_parm_name(target, info.language)
             parm = target.parm(parm_name) if parm_name else None
@@ -2780,7 +2788,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 msg = "并入已跳过：{} {}".format(target.path(), reason)
                 log.warning(msg)
                 self._status_error(msg)
-                _push_houdini_error(msg)
+                _push_houdini_error(msg, severity="warning")
                 return
             try:
                 existing = parm.unexpandedString()
@@ -2868,7 +2876,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     codeblock.LANGUAGE_LABELS[language],
                     codeblock.LANGUAGE_LABELS[node_lang], node.path())
                 self._status_error(msg)
-                _push_houdini_error(msg)
+                _push_houdini_error(msg, severity="warning")
                 return
         ptg = None
         if node is not None:
@@ -2894,7 +2902,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         except Exception as exc:
             log.warning("editor display refresh failed: %s", exc, exc_info=True)
             self._status_error("刷新编辑器显示失败: {}".format(exc))
-            _push_houdini_error(str(exc))
+            # 代码已写入成功，仅显示修复降级 → Warning 而非 Error
+            _push_houdini_error(str(exc), severity="warning")
             return
 
         def _toggle_back():

@@ -94,7 +94,7 @@ class _DocPreview(QtWidgets.QTextBrowser):
         if (not allowed
                 or ext not in metadata.IMAGE_EXTS + metadata.VIDEO_EXTS):
             status("Recipe Library: 文档链接已拒绝"
-                   "（仅允许文档目录内的图片/视频）", error=True)
+                   "（仅允许文档目录内的图片/视频）", severity="warning")
             return
         if os.path.exists(path) and (ext in metadata.VIDEO_EXTS
                                      or ext == ".gif"):

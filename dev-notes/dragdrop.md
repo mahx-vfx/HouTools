@@ -19,7 +19,7 @@
 ## .fbx
 
 - 拖到 obj 层级调官方 `hou.hipFile.importFBX`（等价 File > Import > Filmbox FBX...——官方菜单条目 `h.import_fbx` 是 C++ actionItem 无脚本可抄，该 API 文档自述等价菜单）。
-- **恒定导入到 /obj 根**（无论 pwd），返回 `(subnet, messages)`，建完 `setPosition` 摆到落点；pwd 为嵌套 Object 网络时落点摆不到、留官方默认位置，状态栏如实报 /obj。
+- **恒定导入到 /obj 根**（无论 pwd），返回 `(subnet, messages)`，建完 `setPosition` 摆到落点；pwd 为嵌套 Object 网络时落点摆不到、留官方默认位置。**导入成功静默（2026-11 用户拍板：节点落网自明）**，实际落点信息只在部分失败的 Warning 与日志中出现。
 - **拖到 Sop 层级建 SOP `file` 节点**（parm 名是 `file` 非 fileName；file SOP 原生可读 .fbx，无头实测 cook 出几何）。
 - importFBX 实测（H22.0.429 无头）：坏文件不抛异常、返回 `(None, 错误串)` 且不污染场景，文件缺失才 OperationFailed；不参与 undo（与官方导入一致，该分支不加 undo 组）；`suppress_save_prompt=True` 防拖放流中途弹保存模态框；subnet 命名/重名后缀由官方 API 自理。
 - **官方导入默认给 file 节点加 `hou.nodeFlag.Lock` 冻结旗标（黄橙样式、参数只读）——对应导入对话框的 Unlock Geometry/Deformation File SOPs 两项，`importFBX(unlock_geometry=True, unlock_deformations=True)` 传参后导入即无锁（官方选项内建能力，不做事后遍历解锁；无头实测零锁节点、cook 正常）。**

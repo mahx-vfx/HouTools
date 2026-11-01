@@ -82,14 +82,14 @@ def _apply(kwargs, expression_mode):
     if target is None:
         return
     if not is_bbox_target(target):
-        _status("目标节点须同时带三分量 size 与 t 向量参数", error=True)
+        _status("目标节点须同时带三分量 size 与 t 向量参数", severity="warning")
         return
 
     src = _resolve_source()
     if src is None:
         return
     if src.path() == target.path():
-        _status("源与目标是同一节点，未粘贴")
+        _status("源与目标是同一节点，未粘贴", severity="warning")
         return
     if not _source_ok(src):
         return
@@ -104,7 +104,7 @@ def _apply(kwargs, expression_mode):
             values = _eval_source(src)
         except Exception as exc:
             logger.warning("bbox eval failed on %s: %s", src.path(), exc)
-            _status("无法求值源节点包围盒：{}".format(exc), error=True)
+            _status("无法求值源节点包围盒：{}".format(exc), severity="error")
             return
 
     skipped = []
@@ -130,7 +130,7 @@ def _apply(kwargs, expression_mode):
                     skipped.append(comp.name())
     except Exception as exc:
         logger.warning("paste_bbox failed on %s: %s", target.path(), exc)
-        _status("粘贴边界框失败：{}".format(exc), error=True)
+        _status("粘贴边界框失败：{}".format(exc), severity="error")
         return
 
     message = "已将 {} 的边界框粘贴到 {}（{}）".format(
@@ -138,7 +138,11 @@ def _apply(kwargs, expression_mode):
         "表达式" if expression_mode else "绝对值")
     if skipped:
         message += "；已跳过锁定参数 " + "、".join(skipped)
-    _status(message)
+    if len(skipped) == len(_COMPONENT_SPECS):
+        # 全部分量锁定 = 什么都没写进去：降级提示而非成功确认
+        _status(message, severity="warning")
+    else:
+        _status(message, severity="important")
 
 
 def _resolve_source():
@@ -151,11 +155,13 @@ def _resolve_source():
 
     paths = _clipboard_node_paths()
     if not paths:
-        _status("剪贴板中没有可用的源节点（先在网络编辑器 Ctrl+C 复制节点）")
+        _status("剪贴板中没有可用的源节点（先在网络编辑器 Ctrl+C 复制节点）",
+                severity="warning")
         return None
     src = hou.node(paths[0])
     if src is None:
-        _status("剪贴板源节点已不存在（{}）".format(paths[0]))
+        _status("剪贴板源节点已不存在（{}）".format(paths[0]),
+                severity="warning")
     return src
 
 
@@ -169,7 +175,7 @@ def _source_ok(src):
     if errors:
         brief = str(errors).strip().splitlines()[0][:80]
         _status("源节点 {} 存在错误，未粘贴：{}".format(src.name(), brief),
-                error=True)
+                severity="warning")
         return False
     return True
 
@@ -185,11 +191,20 @@ def _eval_source(src):
     }
 
 
-def _status(message, error=False):
+def _status(message, severity="important"):
+    """状态栏提示。
+
+    severity: "important" 高亮成功确认 / "warning" 预期内拒绝（未写入
+    任何东西，可纠正后重试）/ "error" 意外失败（内部映射
+    hou.severityType，调用点无须 import hou）。
+    """
     try:
         import hou
-        hou.ui.setStatusMessage(
-            "HouTools: " + message,
-            hou.severityType.Error if error else hou.severityType.ImportantMessage)
+        level = {
+            "important": hou.severityType.ImportantMessage,
+            "warning": hou.severityType.Warning,
+            "error": hou.severityType.Error,
+        }[severity]
+        hou.ui.setStatusMessage("HouTools: " + message, level)
     except Exception as exc:
         logger.debug("setStatusMessage failed: %s", exc)

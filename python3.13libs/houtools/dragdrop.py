@@ -78,7 +78,7 @@ def drop_accept(file_list):
     except Exception:
         # 钩子裸抛会让 Houdini 把拖入文件当 hip 打开（错误框），必须吞掉
         logger.warning("drag import failed:\n%s", traceback.format_exc())
-        _status("拖放导入出错，详见 Houdini Console 日志")
+        _status("拖放导入出错，详见 Houdini Console 日志", severity="error")
         return True
 
 
@@ -142,7 +142,7 @@ def _import_files_under_cursor(abc_files, fbx_files, usd_files):
             handled = _import_nodes(
                 context, position, abc_files,
                 node_type="alembicarchive", parm_name="fileName",
-                label="Alembic Archive", build_hierarchy=True,
+                build_hierarchy=True,
                 succeeded=lambda n: bool(n.children()),
                 undo_group=_UNDO_GROUP_ABC) or handled
         if fbx_files:
@@ -154,12 +154,12 @@ def _import_files_under_cursor(abc_files, fbx_files, usd_files):
         if abc_files:
             handled = _import_nodes(
                 context, position, abc_files,
-                node_type="alembic", parm_name="fileName", label="Alembic",
+                node_type="alembic", parm_name="fileName",
                 undo_group=_UNDO_GROUP_ABC) or handled
         if fbx_files:
             handled = _import_nodes(
                 context, position, fbx_files,
-                node_type="file", parm_name="file", label="FBX",
+                node_type="file", parm_name="file",
                 undo_group=_UNDO_GROUP_FBX) or handled
         return handled
     if category == "Lop":
@@ -168,7 +168,7 @@ def _import_files_under_cursor(abc_files, fbx_files, usd_files):
             # 旗标反馈（创建本身不失败），与 SOP alembic/file 同语义
             return _import_nodes(
                 context, position, usd_files,
-                node_type="sublayer", parm_name="filepath1", label="USD",
+                node_type="sublayer", parm_name="filepath1",
                 undo_group=_UNDO_GROUP_USD)
         return False
     # 其他层级（Dop 等）交还原生
@@ -188,10 +188,9 @@ def _import_fbx_scenes(context, position, files, stack_from=0):
     """
     import hou
 
-    created, failed = [], []
+    failed = []
     # importFBX 恒定落到 /obj 根：落点定位仅在 /obj 下生效，其余情境照官方
-    # 默认位置摆放，状态栏也如实汇报实际落点
-    landing = "/obj"
+    # 默认位置摆放（导入成功静默，实际落点只在部分失败的 Warning 与日志中出现）
     for i, path in enumerate(files):
         try:
             parent, messages = hou.hipFile.importFBX(
@@ -210,18 +209,16 @@ def _import_fbx_scenes(context, position, files, stack_from=0):
             parent.setPosition(hou.Vector2(
                 position.x(),
                 position.y() - (stack_from + i) * (height + _STACK_GAP)))
-        created.append(parent)
 
-    if created:
-        _status("已导入 %d 个 FBX → %s" % (len(created), landing))
     for path, why in failed:
         logger.warning("fbx import failed: %s\n%s", path, why)
     if failed:
-        _status("%d 个 .fbx 未能导入（文件损坏或不受支持），详见日志" % len(failed))
+        _status("%d 个 .fbx 未能导入（文件损坏或不受支持），详见日志" % len(failed),
+                severity="warning")
     return True
 
 
-def _import_nodes(context, position, files, node_type, parm_name, label,
+def _import_nodes(context, position, files, node_type, parm_name,
                   build_hierarchy=False, succeeded=None, undo_group=None,
                   stack_from=0):
     """逐文件创建导入节点：首个在鼠标处、其余按节点高度纵向错开。
@@ -231,7 +228,7 @@ def _import_nodes(context, position, files, node_type, parm_name, label,
     """
     import hou
 
-    created, failed = [], []
+    failed = []
     broken = []   # (path, 原因) createNode/set 失败的文件
     with hou.undos.group(undo_group or _UNDO_GROUP_ABC):
         for i, path in enumerate(files):
@@ -252,11 +249,10 @@ def _import_nodes(context, position, files, node_type, parm_name, label,
                 continue
             if build_hierarchy:
                 node.parm("buildHierarchy").pressButton()
-            (created if succeeded is None or succeeded(node)
-             else failed).append(node)
+            if succeeded is not None and not succeeded(node):
+                # 创建了但没产出层级（alembicarchive build 静默失败）＝失败
+                failed.append(node)
 
-    if created:
-        _status("已导入 %d 个 %s → %s" % (len(created), label, context.path()))
     for node in failed:
         logger.warning("import produced no hierarchy: %s (%s)",
                        node.path(), node.parm(parm_name).unexpandedString())
@@ -264,14 +260,24 @@ def _import_nodes(context, position, files, node_type, parm_name, label,
         logger.warning("import failed: %s\n%s", path, why)
     if failed or broken:
         _status("%d 个文件未能导入（文件损坏或为空），详见日志"
-                % (len(failed) + len(broken)))
+                % (len(failed) + len(broken)), severity="warning")
     return True
 
 
-def _status(message):
-    """状态栏提示（不弹窗，保持拖放操作流不被打断）。"""
+def _status(message, severity="important"):
+    """状态栏提示（不弹窗，保持拖放操作流不被打断）。
+
+    severity: "important" 高亮 / "warning" 预期内降级 / "error" 意外失败
+    （内部映射 hou.severityType，调用点无须 import hou）。导入成功一律
+    静默——节点落网自明，这里只报部分失败与异常。
+    """
     try:
         import hou
-        hou.ui.setStatusMessage(message, hou.severityType.ImportantMessage)
+        level = {
+            "important": hou.severityType.ImportantMessage,
+            "warning": hou.severityType.Warning,
+            "error": hou.severityType.Error,
+        }[severity]
+        hou.ui.setStatusMessage(message, level)
     except Exception as exc:
         logger.debug("setStatusMessage failed: %s", exc)
