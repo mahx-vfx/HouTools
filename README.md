@@ -76,8 +76,8 @@ Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_paste_as_object_mer
 | LOP → ROP | usdrender `XXX` |
 
 未列出的组合一律跳过；路径参数细则见 `houtools/tools/paste_as_object_merge.py` 模块 docstring。
-源路径取 OS 剪贴板文本（引用语义必须有"原件路径"），文本失效时退回内部剪贴板粘贴副本兜底
-（仅 SOP 网络）。整次操作占用单个 undo 槽。
+源路径取 OS 剪贴板文本（引用语义必须有"原件路径"），文本失效时直接拒绝并在状态栏
+按原因提示重新复制（不粘贴副本，避免目标网络多出副本节点）。整次操作占用单个 undo 槽。
 
 ffmpeg 说明：优先使用 Houdini 自带的 `$HFS/bin/hffmpeg`，**无需单独安装**；如需指定版本，
 把 `ffmpeg.exe` 放到项目根目录即可（已被 `.gitignore` 排除，不入库）。

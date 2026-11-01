@@ -21,12 +21,11 @@
 横向偏移 n*2 排开；首个新节点带 clear_all_selected 选中。整次操作包在
 ``hou.undos.group`` 里，占用单个 undo 槽。
 
-源节点解析分两层（稳定性增强）：
-  1. OS 剪贴板文本 —— Houdini Ctrl+C 时自写的节点路径（引用语义必须
-     有"原件路径"，内部节点剪贴板无法反查原件）。
-  2. Houdini 内部节点剪贴板兜底（仅 SOP 网络）—— 文本层失效时用
-     ``hou.Node.pasteItemsFromClipboard`` 真实粘贴出副本，再引用副本：
-     内部剪贴板不受其它程序复制覆盖，还能救回"原件已被删除"的场景。
+源节点解析只信 OS 剪贴板文本 —— Houdini Ctrl+C 时自写的节点路径（引用
+语义必须有"原件路径"，内部节点剪贴板无法反查原件）。文本失效一律拒绝并
+按失效原因给出可行动的提示（原件已不存在 / 剪贴板被其他复制覆盖），
+不粘贴副本兜底——副本会污染目标网络且引用的是冻结快照（2026-11 用户
+拍板移除该兜底）。
 
 入口 ``run()`` 由 NetworkViewMenu.xml 的 scriptItem（含菜单点击与热键
 触发）经 ``houtools.dev.dispatcher`` 调用；默认键位由 ``python3.13libs/uiready.py``
@@ -122,10 +121,8 @@ def _paste_into_sop(context, position):
     """SOP 网络：SOP/OBJ 源 → object_merge（规则 1/11），LOP 源 → lopimport（规则 5）。"""
     import hou
 
-    src_items = _source_items(context, position)
+    src_items = _source_items()
     if not src_items:
-        _status("剪贴板中没有可粘贴的节点（先在网络编辑器 Ctrl+C 复制节点）",
-                severity="warning")
         return
 
     n = 0
@@ -157,10 +154,8 @@ def _paste_into_obj(context, position):
     """OBJ 网络（规则 2）：SOP 源 → 每源一个 geo ``XXX``，内含 ``Merge_XXX``。"""
     import hou
 
-    src_items = _clipboard_node_paths()
+    src_items = _source_items()
     if not src_items:
-        _status("剪贴板中没有可粘贴的节点（先在网络编辑器 Ctrl+C 复制节点）",
-                severity="warning")
         return
 
     n = 0
@@ -184,10 +179,8 @@ def _paste_reference_nodes(context, position, rules):
     """通用引用粘贴（命名规则 3/4/6/7/8/9/10）：按源类别查表创建引用节点。"""
     import hou
 
-    src_items = _clipboard_node_paths()
+    src_items = _source_items()
     if not src_items:
-        _status("剪贴板中没有可粘贴的节点（先在网络编辑器 Ctrl+C 复制节点）",
-                severity="warning")
         return
 
     context_type = context.type().childTypeCategory()
@@ -212,24 +205,46 @@ def _paste_reference_nodes(context, position, rules):
 
 # ── 源解析 ────────────────────────────────────────────────────
 
-def _source_items(context, position) -> list[str]:
-    """返回剪贴板源节点路径列表（已验证存在）。
+def _source_items() -> list[str]:
+    """返回剪贴板源节点路径列表（已验证存在）；为空时给出可行动的提示。
 
-    文本层失效时，在目标网络内用 Houdini 内部节点剪贴板真实粘贴兜底，
-    引用粘贴出的副本。
+    仅信 OS 剪贴板文本——内部节点剪贴板无法反查原件路径，粘贴副本兜底
+    会让目标网络凭空多出副本节点、引用的还是冻结快照（2026-11 用户拍板
+    移除该兜底）。文本失效按原因区分文案：路径文本在但节点没了 → 原件
+    被删/改名；文本是其他内容 → 剪贴板被覆盖；文本为空 → 从未复制。
     """
+    import hou
+
     paths = _clipboard_node_paths()
     if paths:
         return paths
 
-    pasted = _paste_internal_clipboard(context, position)
-    if pasted:
-        # 保留提示：兜底路径会凭空多出副本节点，必须解释来源；成功
-        # 静默后此消息不再被"已粘贴"覆盖
-        _status("剪贴板文本失效，已从 Houdini 内部剪贴板粘贴副本",
+    try:
+        text = hou.ui.getTextFromClipboard().strip()
+    except Exception as e:
+        logger.debug("clipboard text probe failed: %s", e)
+        text = ""
+    if not text:
+        _status("剪贴板中没有可粘贴的节点（先在网络编辑器 Ctrl+C 复制节点）",
                 severity="warning")
-        return [node.path() for node in pasted]
+    elif _path_like_text(text):
+        _status("剪贴板中的源节点已不存在（被删除或重命名），请重新复制",
+                severity="warning")
+    else:
+        _status("剪贴板文本失效（已被其他复制覆盖），请重新复制节点",
+                severity="warning")
     return []
+
+
+def _path_like_text(text: str) -> bool:
+    """剪贴板文本是否"像节点路径"（hou.node('...') 或 / 开头 token）。
+
+    纯字符串判定、不碰 hou（smoke test 直测）：用于区分「复制过节点但
+    原件已不存在」与「剪贴板被其他文本复制覆盖」两种失效文案。
+    """
+    if _HOU_NODE_RE.match(text):
+        return True
+    return any(token.startswith("/") for token in text.split())
 
 
 def _clipboard_node_paths() -> list[str]:
@@ -266,21 +281,6 @@ def _clipboard_node_paths() -> list[str]:
         logger.debug("text clipboard probe failed: %s", e)
 
     return paths
-
-
-def _paste_internal_clipboard(parent, position) -> list:
-    """用 Houdini 内部节点剪贴板真实粘贴，返回粘贴出的节点列表。
-
-    ``pasteItemsFromClipboard`` 可能粘贴 network box 等非节点 item，
-    用粘贴前后的 children 差集只取节点。
-    """
-    before = set(parent.children())
-    try:
-        parent.pasteItemsFromClipboard(position)
-    except Exception as e:
-        logger.debug("internal node clipboard paste failed: %s", e)
-        return []
-    return [child for child in parent.children() if child not in before]
 
 
 # ── 通用 helper ───────────────────────────────────────────────

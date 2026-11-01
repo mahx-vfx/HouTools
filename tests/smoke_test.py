@@ -384,6 +384,12 @@ def main():
     assert pam._HOU_NODE_RE.match('hou.node("/obj/grid1")').group(1) \
         == "/obj/grid1"
     assert pam._HOU_NODE_RE.match("hou.parm('/obj/x')") is None
+    # 文本失效文案分类：路径样文本（原件已删）vs 其他文本（剪贴板被覆盖）
+    assert pam._path_like_text("/obj/geo1/box1")
+    assert pam._path_like_text("/obj/a /obj/b")
+    assert pam._path_like_text("hou.node('/obj/box1')")
+    assert not pam._path_like_text("float size = 3.0;")
+    assert not pam._path_like_text("")
     print("paste_as_object_merge parsing OK")
 
     # 视窗截图嵌入：路径→文件名编码（"-" 转义为 "~" 后 "/" 转 "-"，
