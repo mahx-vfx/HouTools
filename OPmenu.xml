@@ -31,6 +31,12 @@
     目标 size/t：绝对值（写入前清表达式/关键帧、锁定参数跳过）或
     bbox()/centroid() 表达式（同网络相对路径、跨层级绝对路径）。
 
+    Paste Center 条目（子菜单）：所有节点可用（capture_viewport 同款最小
+    判定）。Ctrl+C 复制源节点后右键目标，在目标正下方创建 transform
+    （SOP/LOP/COP 内部类型名都是 xform，其余上下文工具黄字拒绝）并接管
+    显示/渲染输出（启用）：p=目标中心、t=源中心−目标中心——目标内容平移
+    到源中心、枢轴落在目标原中心；绝对值或 centroid() 链接表达式双模式。
+
     scriptCode 只写两行分发器，逻辑一律在 houtools/tools/ 与模块。
 -->
 <menuDocument>
@@ -95,6 +101,28 @@ _houtools_dispatcher.run("paste_bbox_absolute", kwargs)
                 <label>Paste Expressions [HT]</label>
                 <scriptCode><![CDATA[import houtools.dev.dispatcher as _houtools_dispatcher
 _houtools_dispatcher.run("paste_bbox_expressions", kwargs)
+]]></scriptCode>
+            </scriptItem>
+        </subMenu>
+        <subMenu id="houtools_paste_center_menu">
+            <label>Paste Center [HT]</label>
+            <context>
+                <!-- 所有节点可用（capture_viewport 同款最小判定）：在目标
+                     节点下方创建 transform 并接管显示/渲染输出，把目标内容
+                     平移到复制源的中心。不支持创建 transform 的上下文
+                     （Object/ROP/DOP 等）由工具黄字拒绝，菜单不过滤 -->
+                <expression>kwargs.get("node") is not None</expression>
+            </context>
+            <scriptItem id="houtools_paste_center_absolute">
+                <label>Paste Absolute Values [HT]</label>
+                <scriptCode><![CDATA[import houtools.dev.dispatcher as _houtools_dispatcher
+_houtools_dispatcher.run("paste_center_absolute", kwargs)
+]]></scriptCode>
+            </scriptItem>
+            <scriptItem id="houtools_paste_center_expressions">
+                <label>Paste Expressions [HT]</label>
+                <scriptCode><![CDATA[import houtools.dev.dispatcher as _houtools_dispatcher
+_houtools_dispatcher.run("paste_center_expressions", kwargs)
 ]]></scriptCode>
             </scriptItem>
         </subMenu>

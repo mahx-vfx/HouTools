@@ -674,6 +674,7 @@
   <a href="#dragdrop-import">拖放导入 .abc/.fbx/.usd</a>
   <a href="#capture-viewport">视窗截图嵌入</a>
   <a href="#paste-bounding-box">粘贴边界框</a>
+  <a href="#paste-center">粘贴中心</a>
   <a href="#video-to-sequence">视频转序列图</a>
   <a href="#hdr-library">Hdr Library</a>
   <a href="#recipe-library">Recipe Library</a>
@@ -778,6 +779,18 @@
     <li><strong>Paste Absolute Values [HT]</strong>:求值后直接写入;B 参数已有的表达式/关键帧清除替换,锁定参数跳过并在状态栏提示。</li>
     <li><strong>Paste Expressions [HT]</strong>:写入 <code>bbox()</code> / <code>centroid()</code> 表达式,A 变动时 B 实时跟随;A 与 B 同网络用相对路径(<code>../A</code>),跨层级用绝对路径。</li>
     <li>绝对值与表达式走同一套求值函数,两种模式结果一致;整次操作单个 undo 槽;源节点有 cook 错误时不写入;源与目标是同一节点时跳过。</li>
+  </ul>
+</section>
+
+<!-- ============ 粘贴中心 ============ -->
+<section id="paste-center">
+  <h2>Paste Center<span class="zh">粘贴中心</span></h2>
+  <p class="entry">入口:右键目标节点 → <code>Paste Center [HT]</code> 子菜单(所有节点可用)</p>
+  <p>网络编辑器里 Ctrl+C 复制源节点 A,右键目标节点 B,在 B 正下方创建 transform 节点并接管显示/渲染输出(启用),把 B 的内容平移到 A 的中心位置(<code>px/y/z ← centroid(B)</code>、<code>tx/y/z ← centroid(A) − centroid(B)</code>,枢轴落在 B 原中心,后续旋转/缩放绕自身中心)。</p>
+  <ul>
+    <li><strong>Paste Absolute Values [HT]</strong>:求值后直接写入。</li>
+    <li><strong>Paste Expressions [HT]</strong>:写入 <code>centroid()</code> 链接表达式,A 或 B 变动时 transform 实时跟随;A 与 B 同网络用相对路径(<code>../A</code>),跨层级用绝对路径。</li>
+    <li>transform 按 B 所在网络类别创建(SOP/LOP/COP;其余上下文状态栏提示);整次操作单个 undo 槽;源或目标有 cook 错误时不创建;源与目标是同一节点时跳过。</li>
   </ul>
 </section>
 

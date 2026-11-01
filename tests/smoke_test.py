@@ -205,6 +205,25 @@ def main():
         assert eval(bbox_expr, {"kwargs": {"node": node}}) == _expected(comps)
     print("paste_bbox context: consistent")
 
+    # OPmenu:粘贴中心子菜单——所有节点可见（最小判定，无类型过滤），
+    # 两个模式条目各自走两行分发器
+    assert 'id="houtools_paste_center_menu"' in op_xml
+    assert '<label>Paste Center [HT]</label>' in op_xml
+    assert 'id="houtools_paste_center_absolute"' in op_xml
+    assert '_houtools_dispatcher.run("paste_center_absolute", kwargs)' in op_xml
+    assert 'id="houtools_paste_center_expressions"' in op_xml
+    assert '_houtools_dispatcher.run("paste_center_expressions", kwargs)' in op_xml
+
+    center_expr = None
+    for sub in ET.parse(ROOT / "OPmenu.xml").iter("subMenu"):
+        if sub.get("id") == "houtools_paste_center_menu":
+            center_expr = sub.find("context/expression").text
+    assert center_expr, "houtools_paste_center_menu context expression missing"
+    # 所有节点可见 = 只判 node 存在；任何假节点（含缺 size/t 的）都必须命中
+    assert eval(center_expr, {"kwargs": {"node": _FakeNode({})}})
+    assert eval(center_expr, {"kwargs": {"node": None}}) is False
+    print("paste_center context: consistent")
+
     # OPmenu 全部 context expression 保守子集约束（属性调用+比较+and/or，
     # 禁 lambda/推导式/walrus——求值器语法面无官方承诺；曾有人把
     # any(... for n in ...) 写进 Open Cache Folder 条目）

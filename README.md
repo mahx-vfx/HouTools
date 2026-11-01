@@ -37,6 +37,7 @@ Houdini 21/22 插件工具集——一份代码两版通用（21.0 走 Python 3.
 | 拖放导入 Alembic / FBX / USD | 拖 `.abc`/`.fbx`/`.usd` 等文件到网络编辑器 | 松手即在鼠标位置创建导入节点：obj 层级 = Alembic Archive（自动构建层级）/ FBX 子网（官方导入器），SOP 层级 = alembic / file 节点，LOP 层级（`.usd`/`.usda`/`.usdc`/`.usdz`）= sublayer 节点；支持多文件混拖（基于 Houdini 官方 externaldragdrop 钩子） |
 | 视窗截图嵌入 | 节点右键 `Capture Viewport to Node [HT]` | 截取当前 3D 视窗存为 JPG（`$HIP/HouTools_cfg/captures/`），作为网络编辑器背景图钉在节点旁，随节点移动/改名跟随；只存路径引用不进 hip；右键 `Delete Viewport Capture [HT]` 删除截图 |
 | 粘贴边界框 | 节点右键 `Paste Bounding Box [HT]` | Ctrl+C 复制源节点后，右键带三分量 `size`/`t` 参数的目标节点（如 box），把源节点包围盒尺寸/中心粘贴到其 `size`/`t`——绝对值或 `bbox()`/`centroid()` 表达式（同网络相对路径、跨层级绝对路径）两种模式 |
+| 粘贴中心 | 节点右键 `Paste Center [HT]` | Ctrl+C 复制源节点后右键任意目标节点，在其下方创建 transform 并启用（接管显示/渲染）：枢轴=目标中心、平移=源中心−目标中心（目标内容对齐到源中心）——绝对值或 `centroid()` 表达式两种模式 |
 | 视频转序列图 | `HouTools → Video to Sequence` | ffmpeg 提取视频为 JPG 序列（帧级进度，质量/起始帧/位数/前缀可调），相机分辨率可读取/编辑（宽/高双框 + 预设），可选自动设置相机 Background Image |
 | Hdr Library | `HouTools → Hdr Library` | HDR 环境贴图库浏览器：缩略图网格（后台生成）、子文件夹分类 + 收藏，选中灯光后双击即贴图 |
 | Recipe Library | `HouTools → Recipe Library` | recipes 资产库浏览器：官方 recipes 卡片网格浏览（缩略图/标签/主题色），树形侧栏过滤，双击/拖拽应用到网络，VEX/Python 代码块卡片（双击追加到选中节点），Markdown 文档，数据导入/导出 |
@@ -133,6 +134,21 @@ File > Import > Alembic Scene... / File > Import > Filmbox FBX...）：
   时 B 实时跟随；A 与 B 同网络用相对路径（`../A`），跨层级用绝对路径
 - 绝对值与表达式走同一套表达式函数求值，两种模式结果一致；整次操作单个
   undo 槽；源节点有 cook 错误时不写入；源与目标是同一节点时跳过
+
+### 粘贴中心
+
+网络编辑器里 Ctrl+C 复制源节点 A，右键目标节点 B（任意节点）→
+`Paste Center [HT]` 子菜单，在 B 正下方创建 transform 节点并接管显示/
+渲染输出（启用），把 B 的内容平移到 A 的中心位置（`px/y/z ← centroid(B)`、
+`tx/y/z ← centroid(A) − centroid(B)`，枢轴落在 B 原中心，后续旋转/缩放
+绕自身中心）：
+
+- **Paste Absolute Values [HT]**：求值后直接写入
+- **Paste Expressions [HT]**：写入 `centroid()` 链接表达式，A 或 B 变动时
+  transform 实时跟随；A 与 B 同网络用相对路径（`../A`），跨层级用绝对路径
+- transform 按 B 所在网络类别创建（SOP/LOP/COP；其余上下文状态栏提示）；
+  整次操作单个 undo 槽；源或目标有 cook 错误时不创建；源与目标是同一
+  节点时跳过
 
 ### Hdr Library
 
