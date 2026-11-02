@@ -26,7 +26,7 @@ import re
 import shutil
 import threading
 
-from houtools.core.constants import SETTINGS_DIR
+from houtools.core.constants import PROJECT_ROOT, SETTINGS_DIR
 from houtools.core.log import get_logger
 from houtools.core.settings import JsonStore
 
@@ -181,22 +181,45 @@ def _to_abs(stored):
 
 
 def migrate_legacy_thumb_paths():
-    """历史版本存的绝对缩略图路径迁成相对 settings 目录（幂等，低频时机调用）。
+    """历史版本存的缩略图路径迁成当前存储形式（幂等，reload 开头调用）。
 
-    只改能相对化（settings 目录内）的条目；目录外的跨盘绝对路径原样保留。
+    两种历史形态：
+    - 绝对路径 → 相对 settings 目录；跨盘等无法相对化的原样保留。
+    - 旧相对基准 ``settings/...``（settings 分离前按插件根存储）→ 剥掉
+      前缀转成 settings 目录相对形式；旧插件根位置的文件若还在而新
+      位置缺，顺手复制过去——从旧版升级、没手工搬 settings 的机器自愈。
+      重写后值不再带前缀，天然幂等。
     """
     thumbs = dict(_SETTINGS.get("thumbs") or {})
     changed = False
     for name, stored in list(thumbs.items()):
-        if not stored or not os.path.isabs(stored):
+        if not stored:
             continue
-        rel = _to_stored(stored)
-        if not os.path.isabs(rel) and rel != stored:
-            thumbs[name] = rel
-            changed = True
+        if os.path.isabs(stored):
+            rel = _to_stored(stored)
+            if not os.path.isabs(rel) and rel != stored:
+                thumbs[name] = rel
+                changed = True
+            continue
+        norm = stored.replace("\\", "/")
+        if not norm.startswith("settings/"):
+            continue  # 已是新基准（recipe_thumbs/...），不动
+        legacy_prefix = len("settings/")
+        new_rel = norm[legacy_prefix:].replace("/", os.sep)
+        old_abs = os.path.join(str(PROJECT_ROOT), stored)
+        new_abs = os.path.join(str(SETTINGS_DIR), new_rel)
+        if not os.path.exists(new_abs) and os.path.isfile(old_abs):
+            try:
+                os.makedirs(os.path.dirname(new_abs), exist_ok=True)
+                shutil.copyfile(old_abs, new_abs)
+                log.info("copied legacy thumb %s -> %s", old_abs, new_abs)
+            except OSError as exc:
+                log.warning("cannot copy legacy thumb %s: %s", old_abs, exc)
+        thumbs[name] = new_rel
+        changed = True
     if changed:
         _SETTINGS.set("thumbs", thumbs)
-        log.info("migrated %d thumb paths to relative", len(thumbs))
+        log.info("migrated %d thumb paths to current form", len(thumbs))
     return changed
 
 

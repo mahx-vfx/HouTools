@@ -2957,6 +2957,42 @@ def main():
     assert _rl_meta._to_abs(_outside) == _outside
     print("thumb stored-path base OK")
 
+    # 旧基准迁移：settings 分离前的 "settings/..." 相对值 → 剥前缀转新
+    # 基准 + 旧插件根位置的文件顺手复制（幂等）；已是新基准的值不动
+    _mig_tmp = Path(tempfile.mkdtemp(prefix="houtools_smoke_mig_"))
+    atexit.register(shutil.rmtree, _mig_tmp, ignore_errors=True)
+    _mig_store = houtools.core.settings.JsonStore(
+        "_smoke_rl_mig.json", defaults={"thumbs": {}})
+    _track_rm(_mig_store.path)
+    _old_root = _mig_tmp / "plugin_root"
+    _new_sets = _mig_tmp / "cfg"
+    _old_file = _old_root / "settings" / "recipe_thumbs" / "a.png"
+    _old_file.parent.mkdir(parents=True)
+    (_old_file.parent / "a.png").write_bytes(b"png")
+    with patch.object(_rl_meta, "PROJECT_ROOT", _old_root), \
+         patch.object(_rl_meta, "SETTINGS_DIR", _new_sets), \
+         patch.object(_rl_meta, "_SETTINGS", _mig_store), \
+         patch.object(_rl_meta, "THUMBS_DIR", _new_sets / "recipe_thumbs"):
+        _mig_store.set("thumbs", {
+            "legacy::a": "settings\\recipe_thumbs\\a.png",  # 旧基准，旧文件在
+            "legacy::b": "settings/recipe_thumbs/b.png",    # 旧基准，旧文件不在
+            "fresh::c": os.path.join("recipe_thumbs", "c.png"),  # 已是新基准
+        })
+        assert _rl_meta.migrate_legacy_thumb_paths() is True
+        _t = _mig_store.get("thumbs")
+        _expect = os.path.join("recipe_thumbs", "a.png")
+        assert _t["legacy::a"] == _expect, _t
+        assert (_new_sets / "recipe_thumbs" / "a.png").is_file(), \
+            "旧插件根位置的文件应复制进新配置目录"
+        assert _rl_meta.get_thumb("legacy::a"), _t
+        assert _t["legacy::b"] == os.path.join("recipe_thumbs", "b.png")
+        assert _rl_meta.get_thumb("legacy::b") == "", \
+            "旧文件不存在应解析为空（不报错）"
+        assert _t["fresh::c"] == os.path.join("recipe_thumbs", "c.png")
+        assert _rl_meta.migrate_legacy_thumb_paths() is False, \
+            "二次迁移应幂等"
+    print("legacy thumb path migration OK")
+
     # 版本过滤集成（QApplication 已建）：hide_higher_version 开 → 高版本
     # 卡不进网格且侧栏计数不含；关 → 全显示（应用层零干预）且角标集合
     # 供 delegate 使用；代码块 houdini_version 恒空，永不入集合
