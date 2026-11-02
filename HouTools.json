@@ -2,6 +2,7 @@
     "enable" : true,
     "env":
     [
-        {"HOUDINI_PATH" : "$HOUDINI_PACKAGE_PATH/HouTools"}
+        {"HOUDINI_PATH" : "$HOUDINI_PACKAGE_PATH/HouTools"},
+        {"HOUTOOLS_SETTINGS_DIR" : "$HOUDINI_USER_PREF_DIR/../HouTools/settings"}
     ]
 }

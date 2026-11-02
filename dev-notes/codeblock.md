@@ -4,7 +4,7 @@
 
 ## 存储 = 一卡一文件（2026-10-18 用户拍板，对照官方 `$HFS/houdini/vex/include/*.h` 的存放方式）
 
-- 文本型卡片（VEX/Python 片段）：代码存 `settings/vex_python_lib/vex/<内部名>.h` 与 `settings/vex_python_lib/python/<内部名>.py`（文件即数据源，modified=mtime；平铺不递归；写入临时文件+os.replace 原子替换），**不进 HDA、不存 json**（`recipelib.json` 只剩按内部名键控的元数据）。
+- 文本型卡片（VEX/Python 片段）：代码存配置目录 `vex_python_lib/vex/<内部名>.h` 与 `vex_python_lib/python/<内部名>.py`（文件即数据源，modified=mtime；平铺不递归；写入临时文件+os.replace 原子替换），**不进 HDA、不存 json**（`recipelib.json` 只剩按内部名键控的元数据）。
 - **内部名 = 用户命名 = 文件名 stem**：仅首次创建可设、之后弹窗只读（2026-10-18 用户拍板）；`validate_stem` 规则 `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`（中文等非 ASCII 硬拒绝——文件名即身份不静默改写），**实时查重两语言目录合并、大小写不敏感（Windows FS），重名/非法直接禁用确定键+红字提示**。
 - 中文展示名走「自定义显示名」（display_names，与内部名解耦）；换语言保存 = 文件搬目录（旧扩展名删除）。
 - `migrate_legacy_code_blocks` 把旧版 json code_blocks 段幂等迁移成文件并 `rekey_metadata_name` 改挂元数据键（旧键 htcode::X → X，含文档目录改名），reload 开头调用。

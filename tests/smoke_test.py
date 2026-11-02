@@ -19,6 +19,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python3.13libs"))
 
+# settings 目录隔离：HOUTOOLS_SETTINGS_DIR 指到临时目录，全部 JsonStore
+# （recipelib/hdrlight 等模块级 _SETTINGS 在首个 houtools import 时构造）
+# 天然落进临时目录，测试零接触真实配置（Documents/HouTools/settings 或
+# 插件根旧 settings/）。必须在首个 houtools import 之前设置——constants
+# 在 import 期定值。
+_SMOKE_SETTINGS_DIR = Path(tempfile.mkdtemp(prefix="houtools_smoke_cfg."))
+os.environ["HOUTOOLS_SETTINGS_DIR"] = str(_SMOKE_SETTINGS_DIR)
+atexit.register(lambda: shutil.rmtree(_SMOKE_SETTINGS_DIR,
+                                      ignore_errors=True))
+
 # Houdini's PySide6 lives in the "forced" site-packages and links against
 # the Qt DLLs in $HFS/bin; a plain python.exe has neither on its search
 # path, so add both (inside Houdini neither line is needed).
@@ -101,10 +111,12 @@ def main():
     print("menu XMLs: well-formed")
 
     # 粘贴为 Object Merge:入口在网络编辑器菜单(item id 用 pane.wsheet.*
-    # 前缀,热键符号随之);主菜单仅保留快捷键设置
+    # 前缀,热键符号随之);主菜单的设置窗口条目已吞并旧快捷键设置项
     main_xml = (ROOT / "MainMenuCommon.xml").read_text(encoding="utf-8")
     assert 'id="houtools.paste_as_object_merge"' not in main_xml
-    assert 'id="houtools.paste_hotkey_settings"' in main_xml
+    assert 'id="houtools.houtools_settings"' in main_xml
+    assert 'id="houtools.paste_hotkey_settings"' not in main_xml
+    assert '<label>HouTools Settings…</label>' in main_xml
     nv_xml = (ROOT / "NetworkViewMenu.xml").read_text(encoding="utf-8")
     assert 'id="pane.wsheet.houtools_paste_as_object_merge"' in nv_xml
     for _hook in ("python3.13libs/uiready.py",
@@ -267,7 +279,7 @@ def main():
     import houtools.core.hotkeys
     import houtools.dev.dispatcher  # noqa: F401
     import houtools.tools.paste_as_object_merge
-    import houtools.tools.paste_hotkey_settings  # noqa: F401
+    import houtools.tools.houtools_settings  # noqa: F401
     import houtools.tools.open_cache_folder  # noqa: F401
     import houtools.tools.capture_viewport_embed  # noqa: F401
     import houtools.tools.delete_viewport_capture  # noqa: F401
@@ -1104,9 +1116,10 @@ def main():
             rl_meta.clear_thumb(name)
             assert rl_meta.get_thumb(name) == ""
 
-            # 插件根内：存储相对路径（项目整体挪动后仍有效），get 拼回
-            # 绝对；旧版绝对路径迁移成相对且幂等；clear 删相对解析的文件
-            with patch.object(rl_meta, "PROJECT_ROOT", Path(tmp)), \
+            # settings 目录内：存储相对路径（settings 目录挪动后仍有效），
+            # get 拼回绝对；旧版绝对路径迁移成相对且幂等；clear 删相对
+            # 解析的文件
+            with patch.object(rl_meta, "SETTINGS_DIR", Path(tmp)), \
                  patch.object(rl_meta, "THUMBS_DIR",
                               Path(tmp) / "thumbs_in_root"):
                 stored = rl_meta.set_thumb_from_file(name, str(src))
@@ -1338,9 +1351,9 @@ def main():
                             assert rl_meta.get_color("mahx::delta") \
                                 == "#111111", "本地独有条目不得被动"
                             # 缩略图：文件落到（patch 过的）缩略图目录，
-                            # 记录为存储形式（相对插件根；目录被 patch 到
-                            # 插件根外时按 _to_stored 设计退回绝对路径，
-                            # 读取侧 _to_abs 两种形式都兼容）
+                            # 记录为存储形式（相对 settings 目录；目录被
+                            # patch 到 settings 目录外时按 _to_stored 设计
+                            # 退回绝对路径，读取侧 _to_abs 两种形式都兼容）
                             assert (Path(timp) / "thumbs"
                                     / "mahx__alpha.png").is_file()
                             stored = dst_store.get("thumbs")["mahx::alpha"]
@@ -1749,13 +1762,14 @@ def main():
                 win._select_category(rl_browser.KEY_ALL)
                 assert win.list.count() == 3, win.list.count()
 
-                # 设置对话框：两页（库目录/数据）——「常规」页已取消，
-                # 显示过滤走侧栏顶部开关
+                # 设置对话框：三页（库目录/显示/数据）——「常规」页已取消，
+                # 侧栏三开关不占页；「显示」页承载版本过滤
                 dlg = rl_browser._SettingsDialog(
                     win, on_lib_dirs_changed=lambda _d: None,
+                    on_version_filter_changed=lambda _v: None,
                     on_export=None, on_import=None)
-                assert [dlg.cats.item(i).text() for i in range(2)] \
-                    == ["库目录", "数据"]
+                assert [dlg.cats.item(i).text() for i in range(3)] \
+                    == ["库目录", "显示", "数据"]
                 dlg.deleteLater()
                 # 预览面板联动：选中后名称/元信息/按钮就绪；
                 # 名称走显示链，元信息第一行是内部名称
@@ -2870,7 +2884,142 @@ def main():
     print("reload_all ->", summary)
     assert "FAILED" not in summary, summary
 
-    # Settings round-trip against the real settings/ directory.
+    # ------------------------------------------------------------------
+    # settings 目录解析链 / recipe 版本比较 / 存储路径基准 / 版本过滤 /
+    # hdrlight 空目录守卫 / HouTools Settings 窗口（2026-11 settings 分离）
+    # ------------------------------------------------------------------
+
+    # 解析链：env 覆盖（须绝对、无 $）> HOUDINI_USER_PREF_DIR 上一级 >
+    # 插件根兜底；os.environ patch 后恢复现场
+    _saved_env = {k: os.environ.get(k)
+                  for k in ("HOUTOOLS_SETTINGS_DIR",
+                            "HOUDINI_USER_PREF_DIR")}
+    try:
+        os.environ.pop("HOUTOOLS_SETTINGS_DIR", None)
+        os.environ.pop("HOUDINI_USER_PREF_DIR", None)
+        _resolve = houtools.core.constants._resolve_settings_dir
+        assert _resolve() == ROOT / "settings", "无 env 应退回插件根兜底"
+        os.environ["HOUDINI_USER_PREF_DIR"] = r"C:\u\Documents\houdini22.0"
+        assert _resolve() == Path(r"C:\u\Documents\HouTools\settings"), \
+            "pref 层应折掉版本目录的 .."
+        os.environ["HOUTOOLS_SETTINGS_DIR"] = "$HOUDINI_USER_PREF_DIR/x"
+        assert _resolve() == Path(r"C:\u\Documents\HouTools\settings"), \
+            "$ 字面量（包清单展开失败）应视为未配置"
+        os.environ["HOUTOOLS_SETTINGS_DIR"] = "relative/path"
+        assert _resolve() == Path(r"C:\u\Documents\HouTools\settings"), \
+            "相对路径锚不到稳定位置，应拒绝"
+        os.environ["HOUTOOLS_SETTINGS_DIR"] = r"D:\custom\sets"
+        assert _resolve() == Path(r"D:\custom\sets"), "绝对 env 应命中 tier1"
+        assert houtools.core.constants.settings_env_override() == \
+            r"D:\custom\sets"
+        os.environ["HOUTOOLS_SETTINGS_DIR"] = "$HOUDINI_USER_PREF_DIR/x"
+        assert houtools.core.constants.settings_env_override() == ""
+        # hdrlight：默认库目录已移除，未配置不产生 os.listdir("") 警告
+        from houtools.hdrlight import browser as _hdr_browser
+        assert not hasattr(_hdr_browser, "default_lib_dir"), \
+            "默认库目录应已移除"
+        assert _hdr_browser.list_categories("") == []
+        assert _hdr_browser._iter_hdrs("") == []
+        assert _hdr_browser._suggested_lib_dir().endswith("hdri")
+        print("settings dir resolution chain OK")
+    finally:
+        for _k, _v in _saved_env.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
+
+    # 版本比较：只比 major.minor（H20.5 vs H20.0 高、同线 build 平、
+    # 空/脏数据一律兼容——不猜、不误伤）
+    from houtools.recipelib import store as _rl_store
+    assert _rl_store.parse_major_minor("22.0.429") == (22, 0)
+    assert _rl_store.parse_major_minor("") is None
+    assert _rl_store.parse_major_minor("22") is None
+    assert _rl_store.parse_major_minor("a.b") is None
+    assert _rl_store.is_higher_version("22.0.1", "21.9.9") is True
+    assert _rl_store.is_higher_version("20.5.370", "20.0.999") is True
+    assert _rl_store.is_higher_version("20.5.370", "20.5.450") is False
+    assert _rl_store.is_higher_version("20.0.5", "20.5.1") is False
+    assert _rl_store.is_higher_version("", "22.0.429") is False
+    assert _rl_store.is_higher_version("22.0.429", "") is False
+    assert _rl_store.is_higher_version("garbage", "22.0.429") is False
+    print("recipe version compare OK")
+
+    # 存储路径基准：_to_stored/_to_abs 相对 settings 目录（不再相对插件根；
+    # 分隔符跟 os.sep——存储与拼回同源，round-trip 一致）
+    from houtools.recipelib import metadata as _rl_meta
+    _thumb_in = str(_rl_meta.THUMBS_DIR / "x.png")
+    _rel_expect = os.path.join("recipe_thumbs", "x.png")
+    assert _rl_meta._to_stored(_thumb_in) == _rel_expect
+    assert _rl_meta._to_abs(_rel_expect) == _thumb_in
+    _outside = str(ROOT / "elsewhere.png")
+    assert _rl_meta._to_stored(_outside) == os.path.abspath(_outside)
+    assert _rl_meta._to_abs(_outside) == _outside
+    print("thumb stored-path base OK")
+
+    # 版本过滤集成（QApplication 已建）：hide_higher_version 开 → 高版本
+    # 卡不进网格且侧栏计数不含；关 → 全显示（应用层零干预）且角标集合
+    # 供 delegate 使用；代码块 houdini_version 恒空，永不入集合
+    from PySide6 import QtCore
+    from houtools.recipelib import browser as _rl_browser
+    from houtools.recipelib.store import RecipeInfo
+    _ver_tmp = Path(tempfile.mkdtemp(prefix="houtools_smoke_ver_"))
+    atexit.register(shutil.rmtree, _ver_tmp, ignore_errors=True)
+    _ver_ui_store = houtools.core.settings.JsonStore(
+        "_smoke_rl_ver.json",
+        defaults=dict(_rl_browser._UI_SETTINGS._defaults))
+    _track_rm(_ver_ui_store.path)
+    _ver_recipes = [
+        RecipeInfo(name="old::a", houdini_version="21.0.596"),
+        RecipeInfo(name="new::b", houdini_version="22.0.429"),
+        RecipeInfo(name="dirty::c", houdini_version=""),
+    ]
+    with patch.object(_rl_browser, "_app_version",
+                      lambda: "21.0.596"), \
+         patch.object(_rl_browser, "_UI_SETTINGS", _ver_ui_store), \
+         patch.object(_rl_browser.metadata, "get_lib_dirs",
+                      return_value=[str(_ver_tmp / "scanlib")]), \
+         patch.object(_rl_browser.store, "list_recipes",
+                      side_effect=lambda lib_dirs=None:
+                          list(_ver_recipes) if lib_dirs else []), \
+         patch.object(_rl_browser.codeblock, "CODELIB_ROOT",
+                      _ver_tmp / "codelib"):
+        _ver_win = _rl_browser._RecipeLibraryWindow()
+        _ver_win.reload()
+        assert _ver_win._current_version == "21.0.596"
+        assert _ver_win._higher_version_names == {"new::b"}, \
+            _ver_win._higher_version_names
+
+        def _grid_names():
+            return [_ver_win.list.item(i).data(QtCore.Qt.UserRole)
+                    for i in range(_ver_win.list.count())]
+
+        _names = _grid_names()
+        assert "new::b" not in _names, _names
+        assert {"old::a", "dirty::c"} <= set(_names), _names
+        # 关闭过滤：高版本卡显示（角标集合不变，delegate 据此画感叹标）
+        _ver_win._apply_version_filter(False)
+        _names = _grid_names()
+        assert {"old::a", "new::b", "dirty::c"} <= set(_names), _names
+        assert _ver_ui_store.get("hide_higher_version") is False
+        assert _ver_win._higher_version_names == {"new::b"}
+        _ver_win._apply_version_filter(True)
+        assert "new::b" not in _grid_names()
+        _ver_win.close()
+    print("recipe version filter OK")
+
+    # HouTools Settings 窗口可实例化：配置目录信息行显示生效路径
+    import houtools.tools.houtools_settings as _hts
+    _set_win = _hts._HouToolsSettingsDialog()
+    assert _set_win.windowTitle() == "HouTools Settings"
+    assert str(houtools.core.constants.SETTINGS_DIR) \
+        in _set_win._dir_label.text()
+    assert hasattr(_set_win, "_editor")
+    _set_win.close()
+    print("houtools settings window OK")
+
+    # Settings round-trip against the isolated smoke settings directory
+    # (HOUTOOLS_SETTINGS_DIR 已在文件头指到临时目录).
     store = houtools.core.settings.JsonStore("_smoke_test.json", defaults={"n": 1})
     _track_rm(store.path)
     store.set("n", 2, save=True)
@@ -3106,6 +3255,9 @@ def main():
         "_smoke_hotkeys.json", defaults={})
     _track_rm(_hotkey_store.path)
     with patch.object(hotkeys, "_STORE", _hotkey_store):
+        assert hotkeys.PASTE_MERGE_SYMBOL == _sym
+        assert hotkeys.paste_merge_current_key() == \
+            hotkeys.PASTE_MERGE_DEFAULT_KEY, "无 hou 应回退默认键位"
         hotkeys.set_custom_key(_sym, "Ctrl+Alt+P")
         assert hotkeys.get_custom_key(_sym) == "Ctrl+Alt+P"
         assert hotkeys.get_custom_key("h.houtools.nonexistent") is None

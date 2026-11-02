@@ -4,11 +4,12 @@
 ``houtools::pyro::my_setup``），它也是 hou.data.applyXxxRecipe 的调用名，
 在官方 Recipe Manager 里重命名前保持稳定。
 
-存储位置（均 gitignored，随机器各自保存）：
-- settings/recipelib.json —— 标签、收藏、缩略图路径（JsonStore）
-- settings/recipe_thumbs/  —— 缩略图文件（从用户选择的原图复制而来，
+存储位置（随机器各自保存，位于配置目录——默认 Documents/HouTools/
+settings，可经 HouTools.json 的 HOUTOOLS_SETTINGS_DIR 改）：
+- recipelib.json —— 标签、收藏、缩略图路径（JsonStore）
+- recipe_thumbs/  —— 缩略图文件（从用户选择的原图复制而来，
   支持常规图片与 GIF；GIF 网格里取首帧、预览区和文档里动起来）
-- settings/recipe_docs/<名>/ —— 每个配方一个目录：doc.md + assets/
+- recipe_docs/<名>/ —— 每个配方一个目录：doc.md + assets/
   （文档里插入的图片/视频复制进 assets，正文用相对路径引用）
 
 不把元数据写进 recipe 的 HDA section：官方出厂 recipe（OPlibRecipe.hda
@@ -25,7 +26,7 @@ import re
 import shutil
 import threading
 
-from houtools.core.constants import PROJECT_ROOT, SETTINGS_DIR
+from houtools.core.constants import SETTINGS_DIR
 from houtools.core.log import get_logger
 from houtools.core.settings import JsonStore
 
@@ -156,15 +157,15 @@ def register_names(names):
 
 
 # --------------------------------------------------------------------------
-# 路径存储形式：缩略图等持久化路径一律存"相对插件根"的相对路径，
-# 项目目录整体挪动（换盘符/换机器/换 Houdini 版本目录）后仍然有效。
+# 路径存储形式：缩略图等持久化路径一律存"相对配置目录"的相对路径，
+# settings 目录整体挪动（换机器/改 HOUTOOLS_SETTINGS_DIR）后仍然有效。
 # 读取侧 _to_abs 兼容历史绝对路径；跨盘等无法相对化的退回绝对。
 # --------------------------------------------------------------------------
 
 def _to_stored(path):
-    """绝对路径 → 存储形式：插件根内转相对，根外（跨盘等）保留绝对原样。"""
+    """绝对路径 → 存储形式：settings 目录内转相对，目录外（跨盘等）保留绝对原样。"""
     try:
-        rel = os.path.relpath(path, PROJECT_ROOT)
+        rel = os.path.relpath(path, SETTINGS_DIR)
     except (OSError, ValueError):
         return os.path.abspath(path)
     if rel.startswith(".."):
@@ -173,16 +174,16 @@ def _to_stored(path):
 
 
 def _to_abs(stored):
-    """存储路径 → 可用的绝对路径（相对的按插件根拼回）。"""
+    """存储路径 → 可用的绝对路径（相对的按 settings 目录拼回）。"""
     if os.path.isabs(stored):
         return stored
-    return os.path.join(str(PROJECT_ROOT), stored)
+    return os.path.join(str(SETTINGS_DIR), stored)
 
 
 def migrate_legacy_thumb_paths():
-    """历史版本存的绝对缩略图路径迁成相对插件根（幂等，低频时机调用）。
+    """历史版本存的绝对缩略图路径迁成相对 settings 目录（幂等，低频时机调用）。
 
-    只改能相对化（插件根内）的条目；根外的跨盘绝对路径原样保留。
+    只改能相对化（settings 目录内）的条目；目录外的跨盘绝对路径原样保留。
     """
     thumbs = dict(_SETTINGS.get("thumbs") or {})
     changed = False
@@ -246,7 +247,7 @@ def bulk_set(favorites=None, tags=None, thumbs=None, display_names=None,
              colors=None):
     """按键整体覆盖写入（导入合并的结果一次落盘），None 的键不动。
 
-    thumbs 的值须已是"存储形式"（相对插件根，同 _to_stored 的产出）。
+    thumbs 的值须已是"存储形式"（相对 settings 目录，同 _to_stored 的产出）。
     逐键 setter 一条一存，导入几百条会写盘几百次，故走这里。
     """
     if favorites is not None:
@@ -500,7 +501,7 @@ def all_tags():
 # --------------------------------------------------------------------------
 
 def get_thumb(name):
-    """返回缩略图的可用绝对路径（存储侧是相对插件根的相对路径）。"""
+    """返回缩略图的可用绝对路径（存储侧是相对 settings 目录的相对路径）。"""
     stored = (_SETTINGS.get("thumbs") or {}).get(name) or ""
     if not stored:
         return ""
@@ -544,7 +545,7 @@ def set_thumb_from_file(name, src):
     """把用户选中的图片/GIF 复制进缩略图目录并记录，返回绝对路径。
 
     保留原扩展名（GIF 靠它动起来，QImageReader 靠它选解码器）。
-    settings 里存的是相对插件根的相对路径（见 _to_stored）。
+    settings 里存的是相对 settings 目录的相对路径（见 _to_stored）。
     """
     if not os.path.exists(src):
         raise RuntimeError("文件不存在: {}".format(src))

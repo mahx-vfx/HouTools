@@ -1,8 +1,11 @@
-"""收藏角标共享组件：SVG 本体 + 柔和投影，叠加到缩略图右上角。
+"""角标共享组件：SVG 本体 + 柔和投影，叠加到缩略图角落。
 
-Recipe Library 与 Hdr Library 共用；素材为仓库
-``python3.13libs/houtools/icons/favorite_badge.svg``（__file__ 解析
-绝对路径，Houdini 启动 CWD 不固定）。
+Recipe Library 与 Hdr Library 共用；两枚素材都在仓库
+``python3.13libs/houtools/icons/``（__file__ 解析绝对路径，Houdini
+启动 CWD 不固定）：
+- favorite_badge.svg —— 收藏星（卡片右上角）
+- warning_badge.svg  —— 感叹号（高版本 recipe 警示，卡片左上角）
+渲染器同类两实例：FavoriteBadge(svg_path) 传不同 SVG 即可。
 
 - QPainter 没有内建模糊：投影经 QGraphicsDropShadowEffect 离屏场景
   渲染（高斯模糊从源 alpha 生成），画布四周留 pad 容纳溢出
@@ -26,6 +29,8 @@ log = get_logger("ui.badge")
 
 FAVORITE_BADGE_SVG = Path(__file__).resolve().parent.parent / "icons" / \
     "favorite_badge.svg"
+WARNING_BADGE_SVG = Path(__file__).resolve().parent.parent / "icons" / \
+    "warning_badge.svg"
 
 
 class FavoriteBadge:

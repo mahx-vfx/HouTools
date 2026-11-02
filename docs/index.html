@@ -723,7 +723,7 @@
   <a href="#video-to-sequence">视频转序列图</a>
   <a href="#hdr-library">Hdr Library</a>
   <a href="#recipe-library">Recipe Library</a>
-  <a href="#paste-hotkey-settings">Paste Hotkey Settings</a>
+  <a href="#houtools-settings">HouTools Settings</a>
   <a href="#open-cache-folder">Open Cache Folder</a>
   <a href="#reload-dev">Reload Modules (Dev)</a>
   <a href="#install">安装</a>
@@ -747,7 +747,7 @@
     <li>取消是协作式的,只在任务边界生效;点停止后按钮显示「停止中…」直到当前任务结束。</li>
     <li>节点可直接<strong>拖入参数路径框</strong>(原生投递)。</li>
     <li>配置 JSON 存 <code>$HIP/HouTools_cfg/Automation_json/</code>(跟工程走,多配置文件可切换),执行日志存 <code>$HIP/HouTools_cfg/Automation_logs/</code>。</li>
-    <li>「打开DW」任务的软件路径在 <code>settings/Automation_Config.json</code> 配置(缺失时自动按默认值补建,可直接编辑);该任务执行前会强制保存当前工程。</li>
+    <li>「打开DW」任务的软件路径在配置目录的 <code>Automation_Config.json</code> 配置(缺失时自动按默认值补建,可直接编辑);该任务执行前会强制保存当前工程。</li>
     <li>Flipbook 帧范围支持灵活写法,解析失败时沿用场景当前范围并告警。</li>
   </ul>
 </section>
@@ -775,7 +775,7 @@
     <li>未列出的组合一律跳过(状态栏提示)。</li>
     <li>整次操作占用单个 undo 槽,<code>Ctrl+Z</code> 一步撤回。</li>
     <li>源路径取 OS 剪贴板文本;文本失效时状态栏按原因提示重新复制(不粘贴副本)。</li>
-    <li>键位在 <code>HouTools → Paste Hotkey Settings</code> 修改,也可用 Houdini 自带 Hotkey Manager(符号 <code>h.pane.wsheet.houtools_paste_as_object_merge</code>)。</li>
+    <li>键位在 <code>HouTools → HouTools Settings…</code> 修改,也可用 Houdini 自带 Hotkey Manager(符号 <code>h.pane.wsheet.houtools_paste_as_object_merge</code>)。</li>
   </ul>
 </section>
 
@@ -863,7 +863,7 @@
   <h3>库组织</h3>
   <ul>
     <li>库按「总目录 / 一级分类子文件夹」组织,左侧栏切换 全部 / ★ 收藏 / 各分类;侧栏右键可新建、打开分类文件夹,空分类也会列出,嵌套子文件夹归入第一级。</li>
-    <li>首次使用在窗口内「更换目录」指定库目录;目录、缩略图大小、置顶、收藏都存 <code>settings/hdr_library.json</code>。</li>
+    <li>首次使用在窗口内「更换目录」指定库目录——<strong>无默认目录</strong>(HDR 库体积大),未配置时列表空置;目录、缩略图大小、置顶、收藏都存配置目录的 <code>hdr_library.json</code>。</li>
   </ul>
   <h3>缩略图与贴图</h3>
   <ul>
@@ -898,7 +898,7 @@
   </ul>
   <h3>代码块</h3>
   <ul>
-    <li>VEX / Python 代码片段卡片:一卡一文件存 <code>settings/vex_python_lib/</code>(<code>vex/*.h</code>、<code>python/*.py</code>,文件即数据源);内部名 = 文件名,创建后不可改,中文展示名走「自定义显示名」。</li>
+    <li>VEX / Python 代码片段卡片:一卡一文件存配置目录的 <code>vex_python_lib/</code>(<code>vex/*.h</code>、<code>python/*.py</code>,文件即数据源);内部名 = 文件名,创建后不可改,中文展示名走「自定义显示名」。</li>
     <li>空白网格区右键「新建代码块」创建(实时查重,重名/非法名禁用确认);卡片缩略图即代码高亮渲染(卡片第二行显示代码行数),字号只随卡片高度取档,可读性优先。</li>
     <li>代码块卡片右键菜单与 recipe 卡片同套:收藏 / 自定义显示名 / 标签设置 / 自定义颜色 / 设置缩略图等,可给代码块设标签并自定义颜色。</li>
     <li>双击卡片 = 把代码追加到全部选中节点的代码参数(VEX→snippet、Python→python,现有内容非空时空行分隔),整批一个 undo。</li>
@@ -909,8 +909,9 @@
   <h3>元数据与文档</h3>
   <ul>
     <li>库只加载「设置 ▸ 库目录」配置的用户文件夹(递归扫描 .hda),出厂库 / Labs 一律不显示;库启动时自动安装,Tab 菜单里的 session tool 从会话开始可用。</li>
-    <li>自定义显示名、标签(可自定义颜色)、颜色、收藏存 <code>settings/recipelib.json</code>,缩略图存 <code>settings/recipe_thumbs/</code>(相对路径存储,项目挪动不失效)。</li>
-    <li>每条 recipe 可配 Markdown 文档(存 <code>settings/recipe_docs/</code>),确认/取消模式编辑,渲染支持 GIF 动图与视频;主面板有文档时直接渲染文档,无文档回退官方备注;文档/备注渲染区右键「编辑文档」。</li>
+    <li>自定义显示名、标签(可自定义颜色)、颜色、收藏存配置目录的 <code>recipelib.json</code>,缩略图存配置目录 <code>recipe_thumbs/</code>(相对路径存储,配置目录挪动不失效)。</li>
+    <li>每条 recipe 可配 Markdown 文档(存配置目录 <code>recipe_docs/</code>),确认/取消模式编辑,渲染支持 GIF 动图与视频;主面板有文档时直接渲染文档,无文档回退官方备注;文档/备注渲染区右键「编辑文档」。</li>
+    <li><strong>版本过滤</strong>:「设置 ▸ 显示」开关(默认开)——不显示保存版本高于当前 Houdini 的 recipe(只比大版本段);取消勾选则全部显示,更高版本的卡片左上角带感叹号角标提醒(应用层不做拦截)。</li>
     <li>设置缩略图支持两种来源:右键「设置缩略图」选图后框选裁剪(比例与卡片锁定),或「截取缩略图」屏幕框选(所有显示器全屏遮罩,选框可跨屏拖拽,混合 DPI 按各屏取像)。</li>
   </ul>
   <h3>数据交换</h3>
@@ -920,14 +921,25 @@
   </ul>
 </section>
 
-<!-- ============ Paste Hotkey Settings ============ -->
-<section id="paste-hotkey-settings">
-  <h2>Paste Hotkey Settings<span class="zh">快捷键设置</span></h2>
-  <p class="entry">入口:<code>HouTools → Paste Hotkey Settings</code></p>
-  <p>修改「粘贴为 Object Merge」的快捷键。点开窗口后按下任意键组合即捕获,确认后<strong>会话即时生效</strong>并持久化到 <code>settings/hotkeys.json</code>,每次启动 Houdini 自动应用。</p>
+<!-- ============ HouTools Settings ============ -->
+<section id="houtools-settings">
+  <h2>HouTools Settings<span class="zh">设置</span></h2>
+  <p class="entry">入口:<code>HouTools → HouTools Settings…</code></p>
+  <p>HouTools 的统一设置窗口,当前包含两块:</p>
+  <ul>
+    <li><strong>配置目录</strong>:只读展示当前生效的配置目录(全部用户配置——快捷键、
+      Recipe Library 元数据/缩略图/文档/代码块、HDR 库设置、Automation 应用级配置——
+      的存放位置)。默认 <code>Documents\HouTools\settings</code>,Houdini 21/22 共用;
+      窗口内附修改方法:编辑 <code>HouTools.json</code> 包清单的
+      <code>HOUTOOLS_SETTINGS_DIR</code> 为目标目录绝对路径,重启 Houdini 生效。
+      团队把插件放共享盘时,配置保持各自本机默认即可,永不落共享盘。</li>
+    <li><strong>快捷键 · Paste as Object Merge</strong>:点捕获框按下键位组合,
+      点「应用」<strong>会话即时生效</strong>并持久化到配置目录的
+      <code>hotkeys.json</code>,每次启动自动应用;「恢复默认」清除自定义键位。</li>
+  </ul>
   <ul>
     <li>自定义键优先;其次尊重 Hotkey Manager 中已有的键位;最后落默认值 <code>Ctrl+Shift+V</code>。</li>
-    <li>设置保存在本机 <code>settings/</code> 目录下,换电脑或重装后重新设置一次即可。</li>
+    <li>设置保存在本机配置目录下,换电脑或重装后重新设置一次即可。</li>
   </ul>
 </section>
 

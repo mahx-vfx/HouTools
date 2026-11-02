@@ -138,9 +138,12 @@ def shot_videoseq(tmp: Path):
 # -------------------------------------------------------------------
 def _collect_user_hdrs():
     try:
-        cfg = json.loads((ROOT / "settings" / "hdr_library.json")
+        # 配置目录经 constants 解析链（默认 Documents/HouTools/settings），
+        # 不再写死插件根 settings/
+        from houtools.core.constants import SETTINGS_DIR
+        cfg = json.loads((SETTINGS_DIR / "hdr_library.json")
                          .read_text(encoding="utf-8"))
-    except OSError:
+    except (OSError, ImportError):
         return []
     lib = Path(cfg.get("lib_dir") or "")
     if not lib.is_dir():

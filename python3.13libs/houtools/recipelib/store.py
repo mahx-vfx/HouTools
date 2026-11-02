@@ -70,6 +70,37 @@ class RecipeInfo:
         return self.name.rsplit("::", 1)[-1] or self.name
 
 
+def parse_major_minor(version_str):
+    """版本字符串 → (major, minor) int 元组；空/段数不足/非数字返回 None。
+
+    官方 info 块存 hou.applicationVersionString() 全串（如 22.0.429）。
+    只取前两段参与比较：小版本段官方只做稳定性修复，不做节点增删
+    （用户拍板），build 号不比。
+    """
+    if not version_str:
+        return None
+    parts = str(version_str).strip().split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        return (int(parts[0]), int(parts[1]))
+    except ValueError:
+        return None
+
+
+def is_higher_version(recipe_ver, current_ver):
+    """recipe 版本是否比当前版本高（只比 major.minor）。
+
+    任一端解析失败（空/脏数据/代码块恒空的 houdini_version）一律视为
+    兼容返回 False——不猜、不误伤。
+    """
+    recipe_mm = parse_major_minor(recipe_ver)
+    current_mm = parse_major_minor(current_ver)
+    if recipe_mm is None or current_mm is None:
+        return False
+    return recipe_mm > current_mm
+
+
 def _count_network_items(item_data):
     """递归数一个网络条目树里的节点总数。
 

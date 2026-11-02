@@ -4,7 +4,7 @@
 
 ## 库加载与扫描（store）
 
-- 基于 H22 官方 recipes 的资产面板，**只加载用户库**：库 = 面板「设置 ▸ 库目录」配置的若干文件夹（`settings/recipelib.json` 的 `lib_dirs`，可多个，递归扫 `.hda`），出厂（$HFS）/Labs/偏好目录默认库一律不显示；`uiready.py` 启动即装库（Tab 菜单里的 session tool 从会话开始可用）。
+- 基于 H22 官方 recipes 的资产面板，**只加载用户库**：库 = 面板「设置 ▸ 库目录」配置的若干文件夹（配置目录 `recipelib.json` 的 `lib_dirs`，可多个，递归扫 `.hda`），出厂（$HFS）/Labs/偏好目录默认库一律不显示；`uiready.py` 启动即装库（Tab 菜单里的 session tool 从会话开始可用）。
 - **坑：`saveToolRecipe` 每次保存都在 `<库文件夹>/backup/` 写 `HouToolsRecipes_bakN.hda`**，扫描必须剪掉 backup 目录——装进备份会让已删 recipe"复活"并与现行定义同名冲突。创建走 Houdini 官方保存流程（面板纯展示，不做保存）。
 - **删除语义（无头实测）**：`HDADefinition.destroy()` 删掉文件里最后一个定义时 Houdini 自动卸载该库、`definitionsInFile` 对未加载文件抛 OperationFailed、磁盘留 83B 空壳——删后按"读不到定义（含 OperationFailed）= 已空"处理：卸载+删空壳；有幸存定义则文件保持加载、内容完好。
 - 扫描安装的防护（2026-10-17 用户拍板收窄）：**扫描全程不删任何磁盘文件**——装不上的文件、读不到定义的空壳一律只卸载还原会话 + warning（原 <512B 空壳自愈已撤：lib_dirs 可能指向共享盘/生产目录，未经确认的自动删除不可接受），文件保留待用户手动清理；误放进来的非 recipe .hda（无 data 类定义）装入后立即卸载还原（不删文件）。
@@ -66,8 +66,9 @@
 
 ## 元数据与缩略图管线
 
-- 元数据（标签/收藏/缩略图路径）存 `settings/recipelib.json`、缩略图文件复制进 `settings/recipe_thumbs/`（有意不写 HDA section：元数据与库文件解耦）。
-- **缩略图路径存相对插件根的相对路径**（`_to_stored`/`_to_abs` 转换，get 返回可用绝对路径；旧版绝对路径由 `migrate_legacy_thumb_paths` 在 reload 开头幂等迁移，跨盘退回绝对；项目整体挪动后仍有效——文档路径本就不持久化，每次从 `__file__` 推导，无此问题）。
+- 元数据（标签/收藏/缩略图路径）存配置目录 `recipelib.json`、缩略图文件复制进配置目录 `recipe_thumbs/`（有意不写 HDA section：元数据与库文件解耦）。
+- **缩略图路径存相对 settings 目录（配置目录）的相对路径**（`_to_stored`/`_to_abs` 转换，get 返回可用绝对路径；旧版绝对路径由 `migrate_legacy_thumb_paths` 在 reload 开头幂等迁移，跨盘退回绝对；配置目录挪动后仍有效——文档路径本就不持久化，每次从 `__file__` 推导，无此问题。**2026-11 settings 分离后基准已从插件根换成 SETTINGS_DIR**：settings 不再位于插件根内，存量相对值 `settings/recipe_thumbs/...` 解析为不存在 → 缩略图空、重选一次即可，用户拍板不做迁移）。
+- **版本过滤与高版本角标**（2026-11）：`store.is_higher_version`/`parse_major_minor` 只比 major.minor（小版本段官方只做稳定性修复，build 号不比；空/脏数据一律兼容），当前版本经模块级 `_app_version()`（无头返回空=全兼容，可打桩）；过滤收敛在 `_type_visible` 一处（侧栏计数/网格/搜索/收藏共用），`_higher_version_names` 在 reload 时算一次、代码块 houdini_version 恒空永不入集合；「显示」页开关 `_UI_SETTINGS.hide_higher_version` 默认开（隐藏高版本卡），关闭后高版本卡显示且 `_CardDelegate.paint` 在缩略图**左上角**贴 `_warn_badge`（FavoriteBadge(warning_badge.svg)，与收藏星对角、复用投影画布手法，pad 修正同收藏角标）；**应用层零干预**（高版本 recipe 未必不可用，用户拍板只提醒）。
 - **GIF 缩略图的网格底图 = QImageReader 读第 0 帧，QImage 必须先 `QPixmap.fromImage` 再进 QIcon**（2026-10 复审修复）：Houdini 自带 PySide6 6.8.3 的 `QIcon(QImage)` 签名标注收 `QPixmap | QImage`、值分发实测拒绝（ValueError）——曾让任何带 GIF 缩略图的卡片一进网格就掀翻整个 reload。与 thumb-snip.md 的 `drawPixmap(QRect, QPixmap, QRectF)` 同款"签名标注与值分发不符"坑（该家族第二例，headless 实证 `QIcon(QImage) FAILS / QIcon(QPixmap) OK`）。smoke test 用程序内生成的最小 1x1 GIF87a 字节流回归（GIF 无 Qt 编码器、也不入二进制测试件；无头环境 qgif 插件缺失时退化为"该路径不得抛异常"）。
 - `thumb_pixmap` 的 QIcon 请求尺寸跟卡片实际显示（max(w,h)×dpr），**不要固定 1024**——QIcon 按请求尺寸缓存位图，大图每 recipe 常驻近原图分辨率；`_cover_cache` 上限 512 条、滑动条拖动中不清（sliderReleased 才清，拖动中全清会让可见卡逐帧重裁剪）。
 - **收藏标识 = 卡片右上角角标**（与 HDR 面板共用 `houtools/ui/badge.py` 的 FavoriteBadge：QtSvg 本体 + QGraphicsDropShadowEffect 高斯投影，名字前缀不加星号；recipelib 的角标由 _CardDelegate 在 paint 时用 `badge_pixmap` 贴**缩略图区右上角=卡片内容区角**——**不能合成进缩略图 QIcon**（HDR 面板仍是合成模式）：缩略图 contain 留白时角标会随图片自身角落漂移、贴不到卡片角，故网格图标一律用 `_base_icon`，无缓存失效问题）。
@@ -93,7 +94,7 @@
 
 ## Markdown 文档
 
-- Markdown 文档存 `settings/recipe_docs/<safe名>/doc.md + assets/`（插入图片/视频复制进 assets 用相对引用，同名追加序号）；编辑器打开无文档的配方是**空白编辑器**（不自动建模板文件）。
+- Markdown 文档存配置目录 `recipe_docs/<safe名>/doc.md + assets/`（插入图片/视频复制进 assets 用相对引用，同名追加序号）；编辑器打开无文档的配方是**空白编辑器**（不自动建模板文件）。
 - `doc_exists` = 文件存在**且正文非空白**——空白编辑器保存落的 0 字节 doc.md 视为无文档，主面板照常回退官方备注。
 - 编辑器是**确认/取消模式**（无自动保存）：编辑不落盘、「确认」才 write_doc+发 docSaved+关窗（保存失败不关窗），「取消」/X 关闭丢弃改动（有修改先弹丢弃确认），取消时清理本次会话插入的 assets（正文已丢弃引用不存在）。
 - **文档编辑器「确认」成功后必须清 `_inserted_assets` 并 `setModified(False)`**——否则再次关闭时"丢弃修改"确认会把已保存文档引用的 assets 删掉（保存成功 ≠ 会话结束）。

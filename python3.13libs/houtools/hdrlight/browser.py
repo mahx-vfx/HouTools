@@ -81,7 +81,7 @@ MAP_PARMS = ("env_map", "rman__EnvMap", "envmap", "environment_map",
 LIGHT_HINTS = ("light", "env")
 
 _SETTINGS = JsonStore("hdr_library.json", defaults={
-    "lib_dir": "",          # 空 = 用默认库目录
+    "lib_dir": "",          # 空 = 未配置（不自动扫任何目录，见 get_lib_dir）
     "thumb_size": DEFAULT_THUMB_SIZE,
     "pin_on_top": False,    # 默认不置顶，勾选后按机器各自记住
     "favorites": [],        # 收藏的 HDR 绝对路径（normcase 后）
@@ -92,19 +92,24 @@ _SETTINGS = JsonStore("hdr_library.json", defaults={
 # 路径与外部工具
 # --------------------------------------------------------------------------
 
-def default_lib_dir():
-    """默认 HDR 库目录：环境变量 HDR_TOOL_LIB → ~/HouTools/hdri。"""
-    env = os.environ.get("HDR_TOOL_LIB")
-    if env and os.path.isdir(env):
-        return env
-    return str(Path.home() / "HouTools" / "hdri")
+def _suggested_lib_dir():
+    """「更换目录」未配置时的对话框起始位置建议：配置目录同根的 HouTools/hdri。
+
+    纯建议：只作 QFileDialog 起点，不产生任何扫描。HDR 库动辄数 GB，
+    不设自动默认——必须用户显式指定，未配置就让界面空着。
+    """
+    pref = os.environ.get("HOUDINI_USER_PREF_DIR")
+    if pref:
+        return os.path.normpath(
+            os.path.join(pref, os.pardir, "HouTools", "hdri"))
+    return str(Path.home() / "Documents" / "HouTools" / "hdri")
 
 
 def get_lib_dir():
     """配置的库目录；settings 里未配置时返回空串。
 
-    不回退默认目录：默认路径只作「更换目录」对话框的起始位置，
-    未配置就让界面空着，不显示用户从没设置过的路径。
+    不回退任何默认目录：未配置就让界面空着，不显示用户从没设置过
+    的路径；「更换目录」对话框的起始位置建议见 _suggested_lib_dir。
     """
     return _SETTINGS.get("lib_dir") or ""
 
@@ -321,6 +326,8 @@ def _iter_hdrs(lib_dir):
     根目录文件为 ""；跳过隐藏目录（含 .thumb_cache）。
     """
     out = []
+    if not lib_dir:
+        return out  # 未配置库目录：不 os.walk("")
     for root, dirs, files in os.walk(lib_dir):
         dirs[:] = sorted(d for d in dirs if not d.startswith("."))
         rel = os.path.relpath(root, lib_dir)
@@ -333,7 +340,13 @@ def _iter_hdrs(lib_dir):
 
 
 def list_categories(lib_dir):
-    """库目录下的一级子文件夹（含空分类），已排除隐藏目录，排序返回。"""
+    """库目录下的一级子文件夹（含空分类），已排除隐藏目录，排序返回。
+
+    lib_dir 为空（未配置）直接返回空——不 os.listdir("")，否则控制台
+    每次 reload/刷新都刷一条 cannot list 警告。
+    """
+    if not lib_dir:
+        return []
     try:
         names = os.listdir(lib_dir)
     except OSError as exc:
@@ -1276,7 +1289,7 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
             "已创建分类文件夹 {}，把下载的 HDR 放进去后点刷新".format(name))
 
     def _choose_dir(self):
-        start = self.lib_dir or default_lib_dir()
+        start = self.lib_dir or _suggested_lib_dir()
         # 原生目录选择器（同 Recipe 库 _add_dir 的静态便利函数调用）：
         # Explorer 风格（面包屑地址栏/侧栏/底部文件夹框），观感与系统
         # 一致。代价比非原生大——静态便利函数拿不到内部按钮，按钮文字

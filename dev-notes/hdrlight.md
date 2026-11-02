@@ -6,7 +6,7 @@
 
 - 菜单 Hdr Library；递归扫描 `.hdr/.hdri/.exr`，第一级子文件夹即分类（左侧侧栏切换 全部/收藏/各分类，侧栏右键可新建/打开分类文件夹，空分类也列出）。
 - 侧栏行样式与 Recipe Library 分类板块同款（共享 `houtools/ui/sidebar.py` 的 SidebarDelegate：行首图标 grid/star/folder + 名称 + 右对齐计数、选中蓝底圆角，计数/图标经 ItemRole 携带，行底色/视口同色 #26262b）。
-- 右键收藏 HDR（存 `settings/hdr_library.json` 的 `favorites`，normcase 路径），侧栏"★ 收藏"过滤。
+- 右键收藏 HDR（存配置目录 `hdr_library.json` 的 `favorites`，normcase 路径），侧栏"★ 收藏"过滤。
 - **收藏标识 = 缩略图右上角角标**（与 Recipe Library 共用 `ui/badge.py` 的 FavoriteBadge，名字不加前缀；过滤重建与后台批量补图两条路径都经 _item_icon 合成角标）。
 - **侧栏「新建分类」的名称校验面与 automation `_sanitize_config_name` 对齐**（分隔符之外还须拒 NUL、纯点号——".." 不含非法字符却会"建出"指向库目录上级的分类——与 Windows 保留名）。
 
@@ -37,7 +37,7 @@
 
 ## 库目录
 
-存 `settings/hdr_library.json`（未配置时顶部路径显示为空、打开不自动扫描，点「刷新」才扫描+补缩略图；默认 `~/HouTools/hdri`/`HDR_TOOL_LIB` 仅作「更换目录」对话框起始位置）。
+存配置目录 `hdr_library.json`（未配置时顶部路径显示为空、打开不自动扫描，点「刷新」才扫描+补缩略图）。**无默认库目录**（2026-11 移除 `default_lib_dir`/`HDR_TOOL_LIB`——HDR 库动辄数 GB，必须用户显式指定）；`list_categories`/`_iter_hdrs` 对空 lib_dir **早退返回空**（否则 reload 空态守卫里 `_rebuild_sidebar` 仍会 `os.listdir("")`，控制台每次刷 cannot list 警告）；「更换目录」对话框未配置时的起始位置建议 = `_suggested_lib_dir()`（配置目录同级的 `HouTools/hdri`，纯 QFileDialog 起点不产生扫描）。
 
 ## 已知代价备忘（暂不修，2026-10 审查）
 

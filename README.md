@@ -15,6 +15,17 @@ Houdini 21/22 插件工具集——一份代码两版通用（21.0 走 Python 3.
 
 若需将 HouTools 文件夹放置到其他位置，修改 `packages/HouTools.json` 里 `$HOUDINI_PACKAGE_PATH/HouTools` 的路径即可。
 
+## 配置目录
+
+全部用户配置（快捷键、Recipe Library 元数据与缩略图/文档/代码块、HDR 库设置、Automation
+应用级配置等）存放在**配置目录**，默认 `Documents\HouTools\settings`（Houdini 21/22 共用
+一份）。要改位置：编辑 `HouTools.json` 包清单，把 env 里的 `HOUTOOLS_SETTINGS_DIR` 改为
+目标目录的**绝对路径**（默认值 `$HOUDINI_USER_PREF_DIR/../HouTools/settings`），重启
+Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings…` 窗口查看。
+
+> 团队共享部署：把 `HouTools` 文件夹放到网络盘，每人自己的 `HouTools.json` 用 `path`
+> 指向它即可；配置目录保持各自本机默认——配置永不落共享盘，互不干扰。
+
 ## 开发工作流
 
 | 改动 | 生效方式 |
@@ -33,7 +44,7 @@ Houdini 21/22 插件工具集——一份代码两版通用（21.0 走 Python 3.
 | 工具 | 菜单项 / 键位 | 说明 |
 |------|--------|------|
 | Automation | `HouTools → Automation`（Python Panel） | 自动化批处理：节点按钮点击 / Flipbook 拍屏 / HomeAssistant Webhook / 打开DW |
-| 粘贴为 Object Merge | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+V` | 复制节点后，按"目标上下文 × 源类别"在鼠标位置粘贴引用节点；键位在 `HouTools → Paste Hotkey Settings` 修改 |
+| 粘贴为 Object Merge | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+V` | 复制节点后，按"目标上下文 × 源类别"在鼠标位置粘贴引用节点；键位在 `HouTools → HouTools Settings…` 修改 |
 | 拖放导入 Alembic / FBX / USD | 拖 `.abc`/`.fbx`/`.usd` 等文件到网络编辑器 | 松手即在鼠标位置创建导入节点：obj 层级 = Alembic Archive（自动构建层级）/ FBX 子网（官方导入器），SOP 层级 = alembic / file 节点，LOP 层级（`.usd`/`.usda`/`.usdc`/`.usdz`）= sublayer 节点；支持多文件混拖（基于 Houdini 官方 externaldragdrop 钩子） |
 | 视窗截图嵌入 | 节点右键 `Capture Viewport to Node [HT]` | 截取当前 3D 视窗存为 JPG（`$HIP/HouTools_cfg/captures/`），作为网络编辑器背景图钉在节点旁，随节点移动/改名跟随；只存路径引用不进 hip；右键 `Delete Viewport Capture [HT]` 删除截图 |
 | 粘贴边界框 | 节点右键 `Paste Bounding Box [HT]` | Ctrl+C 复制源节点后，右键带三分量 `size`/`t` 参数的目标节点（如 box），把源节点包围盒尺寸/中心粘贴到其 `size`/`t`——绝对值或 `bbox()`/`centroid()` 表达式（同网络相对路径、跨层级绝对路径）两种模式 |
@@ -41,6 +52,7 @@ Houdini 21/22 插件工具集——一份代码两版通用（21.0 走 Python 3.
 | 视频转序列图 | `HouTools → Video to Sequence` | ffmpeg 提取视频为 JPG 序列（帧级进度，质量/起始帧/位数/前缀可调），相机分辨率可读取/编辑（宽/高双框 + 预设），可选自动设置相机 Background Image |
 | Hdr Library | `HouTools → Hdr Library` | HDR 环境贴图库浏览器：缩略图网格（后台生成）、子文件夹分类 + 收藏，选中灯光后双击即贴图 |
 | Recipe Library | `HouTools → Recipe Library` | recipes 资产库浏览器：官方 recipes 卡片网格浏览（缩略图/标签/主题色），树形侧栏过滤，双击/拖拽应用到网络，VEX/Python 代码块卡片（双击追加到选中节点），Markdown 文档，数据导入/导出 |
+| HouTools Settings | `HouTools → HouTools Settings…` | 设置窗口：配置目录展示（含修改方法）+ 快捷键设置（原 Paste Hotkey Settings 迁入） |
 | About HouTools | `HouTools → About HouTools` | 用默认浏览器打开离线使用手册（`docs/index.html` + 本地截图，零外部网络资源）：全部工具的功能与用法 |
 
 ### Automation
@@ -49,7 +61,7 @@ Houdini 21/22 插件工具集——一份代码两版通用（21.0 走 Python 3.
 
 - QThread 后台执行；配置 JSON 存 `$HIP/HouTools_cfg/Automation_json/`，执行日志存
   `$HIP/HouTools_cfg/Automation_logs/`
-- DW 软件路径在 `settings/Automation_Config.json` 中配置（gitignored 运行时数据，缺失时打开面板自动按默认值补建，可直接编辑）
+- DW 软件路径在配置目录的 `Automation_Config.json` 中配置（随机器保存，缺失时打开面板自动按默认值补建，可直接编辑）
 - 节点可直接拖入参数路径框（原生投递、无视窗泄漏）
 - `Reload Modules (Dev)` 不会自动重建已打开的面板（避免丢弃未 Start 保存的编辑），
   需点面板工具条自带的刷新按钮重建界面
@@ -58,8 +70,8 @@ Houdini 21/22 插件工具集——一份代码两版通用（21.0 走 Python 3.
 
 网络编辑器里 Ctrl+C 复制节点后，切到目标网络按 `Ctrl+Shift+V`（或点网络
 编辑器的 `HouTools` 菜单），在鼠标位置创建引用节点，颜色随源节点。键位在
-主菜单 `HouTools → Paste Hotkey Settings` 中修改（捕获式输入，保存到
-`settings/hotkeys.json`，每次启动自动应用）；也可在 Houdini 自带
+主菜单 `HouTools → HouTools Settings…` 的快捷键区修改（捕获式输入，保存到
+配置目录的 `hotkeys.json`，每次启动自动应用）；也可在 Houdini 自带
 Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_paste_as_object_merge`。
 
 | 复制的源 → 粘贴目标 | 创建的节点（XXX = 源节点名） |
@@ -156,9 +168,9 @@ HDR 环境贴图库浏览器（独立窗口，进任务栏）。库按"总目录
 第一级子文件夹即分类，左侧栏切换 全部 / ★ 收藏 / 各分类（侧栏右键可新建/打开分类文件夹，
 空分类也列出，嵌套子文件夹归入第一级）。
 
-- **库目录**：窗口内"更换目录"指定（未配置时顶部路径显示为空、列表空置；
-  默认 `~/HouTools/hdri` 或环境变量 `HDR_TOOL_LIB` 仅作选择对话框的起始位置）；
-  目录、缩略图大小、全局置顶、收藏都存 `settings/hdr_library.json`（随机器各自保存）
+- **库目录**：窗口内"更换目录"指定——**无默认目录，必须显式设置**（HDR 库动辄数 GB；
+  未配置时顶部路径为空、列表空置，文件对话框起始位置建议配置目录同级的 `HouTools/hdri`）；
+  目录、缩略图大小、全局置顶、收藏都存配置目录的 `hdr_library.json`（随机器各自保存）
 - **缩略图**：后台线程池调 Houdini 自带 `$HFS/bin/hoiiotool` 按需生成（无需安装），
   缓存在库目录 `.thumb_cache/`；打开窗口不自动扫描，点「刷新」才比对缓存目录
   补缺失缩略图（底部有进度条，可暂停/停止），之后秒开；HDR 文件更新后旧缩略图自动失效重生成
@@ -181,7 +193,11 @@ Tab 菜单里的 session tool 从会话开始可用。recipe 的创建走 Houdin
   侧栏顶部 工具 / 代码块 / 参数 三个显示开关控制对应类型卡片的显隐
   （全局过滤所有分组视图，状态记忆、默认全开）；搜索框支持 `#` 前缀只搜标签、多词 AND
   匹配；预览缩略图右键可设置/截取/清除缩略图，点击放大查看（滚轮缩放、中键平移）
-- **代码块**：VEX / Python 代码片段卡片，一卡一文件存 `settings/vex_python_lib/`
+- **版本过滤**：「设置 ▸ 显示」开关（默认开）——不显示保存版本高于当前 Houdini 的 recipe
+  （只比大版本段，如 H22 的 recipe 在 H21 隐藏；高版本可能引用低版本不存在的节点）；
+  取消勾选则全部显示，来自更高版本的卡片左上角带感叹号角标提醒（应用层不做拦截，
+  高版本 recipe 未必不可用，取决于节点是否被动过）
+- **代码块**：VEX / Python 代码片段卡片，一卡一文件存配置目录的 `vex_python_lib/`
   （`vex/*.h`、`python/*.py`，文件即数据源），卡片缩略图即代码高亮渲染、第二行显示
   代码行数；空白网格区右键「新建代码块」创建；卡片右键可设标签（与 recipe 卡片同套
   标签/颜色体系）；双击卡片把代码追加到全部选中节点的代码参数
@@ -194,9 +210,9 @@ Tab 菜单里的 session tool 从会话开始可用。recipe 的创建走 Houdin
   底部状态栏绿色闪烁反馈、失败红色闪烁；同一配方 1.2 秒内的重复应用自动去重（防双击/拖拽连发
   重复创建，失败不占去重窗口、可立即重试）
 - **元数据**：自定义显示名（支持中文）、标签（可自定义颜色）、颜色、收藏存
-  `settings/recipelib.json`，缩略图存 `settings/recipe_thumbs/`（相对路径存储，项目挪动不失效）；
+  配置目录的 `recipelib.json`，缩略图存配置目录 `recipe_thumbs/`（相对路径存储，配置目录挪动不失效）；
   无文档时预览回退官方备注，文档/备注区右键「编辑文档」
-- **文档**：每条 recipe 可配 Markdown 文档（存 `settings/recipe_docs/`），确认/取消模式编辑，
+- **文档**：每条 recipe 可配 Markdown 文档（存配置目录 `recipe_docs/`），确认/取消模式编辑，
   渲染支持 GIF 动图与视频播放
 - **数据交换**：「设置 ▸ 数据」导出/导入 zip 交换包（元数据 + 缩略图 + 文档 + HDA + 代码块），
   打包带走、分享；导入按内部名合并，与本地同名定义的 HDA 整文件跳过
@@ -229,7 +245,8 @@ _houtools_dispatcher.run("<tool_id>")
   `houtools.ui.taskbar.apply_appwindow_flags(self)`；不要用进程级 AppUserModelID
   （会连 Houdini 主窗的任务栏分组一起改）。
 - **日志**：`from houtools.core.log import get_logger`，`get_logger("tools.xxx")`。
-- **设置**：`houtools.core.settings.JsonStore("xxx.json", defaults={...})`，存到项目 `settings/` 目录。
+- **设置**：`houtools.core.settings.JsonStore("xxx.json", defaults={...})`，存到配置目录
+  （默认 `Documents\HouTools\settings`，`core/constants.py` 解析，见「配置目录」一节）。
 - **线程**：QThread + Signal；回改 Houdini 的调用经 `hdefereval.executeDeferred` 派发主线程。
 - **`import hou` 只放函数内**（或 try/except 包裹）：保证模块在 Houdini 外可导入，
   无头冒烟测试依赖这一点。
@@ -273,14 +290,20 @@ HouTools/
 │       ├── fonts/                 # 工具统一显示字体（阿里妈妈数黑体 Bold）
 │       └── tools/                 # 工具入口（<tool_id>.py 暴露 run()）
 ├── tests/smoke_test.py
-└── settings/                      # 运行时生成（gitignored）
-    ├── Automation_Config.json     # Automation 的 DW 软件路径等配置（缺失时自动补建）
-    ├── hotkeys.json               # Paste Hotkey Settings 自定义键位
-    ├── hdr_library.json           # Hdr Library 的库目录/缩略图大小/收藏
-    ├── recipelib.json             # Recipe Library 的库目录与元数据（标签/收藏/颜色/显示名）
-    ├── recipe_thumbs/             # Recipe Library 缩略图
-    ├── recipe_docs/               # Recipe Library Markdown 文档
-    └── vex_python_lib/            # Recipe Library 代码块（vex/*.h、python/*.py，一卡一文件）
+```
+
+配置目录（默认 `Documents\HouTools\settings`，不在仓库内；开发机旧版在插件根 `settings/`，
+可自行迁移）：
+
+```
+settings/
+├── Automation_Config.json     # Automation 的 DW 软件路径等配置（缺失时自动补建）
+├── hotkeys.json               # HouTools Settings 自定义键位
+├── hdr_library.json           # Hdr Library 的库目录/缩略图大小/收藏
+├── recipelib.json             # Recipe Library 的库目录与元数据（标签/收藏/颜色/显示名）
+├── recipe_thumbs/             # Recipe Library 缩略图
+├── recipe_docs/               # Recipe Library Markdown 文档
+└── vex_python_lib/            # Recipe Library 代码块（vex/*.h、python/*.py，一卡一文件）
 ```
 
 ## 许可

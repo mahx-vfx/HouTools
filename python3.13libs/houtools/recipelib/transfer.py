@@ -575,8 +575,9 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
     - 元数据按内部名合并：包内覆盖同名，本地独有保留（最后一次性落盘，
       取消/失败不会留下改了一半的设置）
     - 缩略图：包内带图的名字，图按本地 unique_safe_name 重映射复制进
-      settings/recipe_thumbs 并改写记录（存储形式 = 相对插件根，与
-      set_thumb_from_file 一致；防导出方折名撞名覆盖本地另一配方的图）
+      settings 目录的 recipe_thumbs 并改写记录（存储形式 = 相对 settings
+      目录，与 set_thumb_from_file 一致；防导出方折名撞名覆盖本地另一
+      配方的图）
     - 文档：包内有 doc.md 的名字整目录替换本地（含 assets；目录名同样
       重映射，白名单外成员跳过）
     - .hda：只复制无同名冲突的文件到 lib_dir（不存在自动创建，重名

@@ -35,7 +35,7 @@ from houtools.ui.sidebar import (SIDEBAR_COLOR_ROLE, SIDEBAR_COUNT_ROLE,
                                  SVG_ICON_BOOST, SVG_ICON_KINDS,
                                  SidebarDelegate, readable_on_dark,
                                  sidebar_icon_pixmap)
-from houtools.ui.badge import FavoriteBadge
+from houtools.ui.badge import WARNING_BADGE_SVG, FavoriteBadge
 from houtools.ui.dialogs import info, localize_buttons, localize_color_dialog, warn
 from houtools.ui.taskbar import apply_appwindow_flags
 from houtools.ui.status_flash import StatusFlash
@@ -255,13 +255,22 @@ class _CardDelegate(QtWidgets.QStyledItemDelegate):
             if info is not None else None
         if pm is not None:
             painter.drawPixmap(card.left() + m, y, pm)
+        badge_size = max(12, min(24, int(text_w * 0.12)))
+        margin = max(3, badge_size // 8)
         if info is not None and metadata.is_favorite(info.name):
-            badge_size = max(12, min(24, int(text_w * 0.12)))
             badge = self._win._badge.badge_pixmap(badge_size)
-            margin = max(3, badge_size // 8)
             pad = (badge.width() - badge_size) // 2  # 画布含投影余量
             painter.drawPixmap(
                 int(card.left() + m + text_w - badge_size - margin - pad),
+                int(card.top() + m + margin - pad), badge)
+        if info is not None and info.name in self._win._higher_version_names:
+            # 高版本 recipe 感叹角标（缩略图左上角，收藏星的对角）：版本
+            # 过滤开着时该卡片根本不显示，角标只在关闭过滤后可见
+            # （设置面板「显示」页开关）
+            badge = self._win._warn_badge.badge_pixmap(badge_size)
+            pad = (badge.width() - badge_size) // 2
+            painter.drawPixmap(
+                int(card.left() + m + margin - pad),
                 int(card.top() + m + margin - pad), badge)
         y += thumb_h + self.TEXT_TOP_GAP
 
@@ -360,7 +369,24 @@ _UI_SETTINGS = JsonStore("recipelib_ui.json", defaults={
     "show_tools": True,       # 有 submenu 的 recipe（子菜单分组）
     "show_code": True,        # 代码块卡片
     "show_nodeparm": True,    # 无 submenu 的 recipe（节点参数分组）
+    # 版本过滤（设置面板「显示」页）：默认不显示保存版本高于当前 Houdini
+    # 的 recipe（H22 的 recipe 在 H21 可能用到不存在的节点；关闭过滤则
+    # 显示并加左上角感叹角标，2026-11 用户拍板）
+    "hide_higher_version": True,
 })
+
+
+def _app_version():
+    """当前 Houdini 版本串（hou.applicationVersionString）。
+
+    无头（smoke test）/异常返回空串——is_higher_version 对空串恒 False，
+    版本过滤自动全兼容。模块级函数便于测试打桩。
+    """
+    try:
+        import hou
+        return hou.applicationVersionString()
+    except Exception:
+        return ""
 
 # 显示开关定义（key / 按钮文字 / 图标种类）：顺序即侧栏按钮条排列序；
 # 「参数」是「节点参数」的缩写（用户指定），图标与对应侧栏行同款——
@@ -819,6 +845,39 @@ class _LibDirsPage(QtWidgets.QWidget):
         return [self.list.item(i).text() for i in range(self.list.count())]
 
 
+class _DisplayPage(QtWidgets.QWidget):
+    """设置面板「显示」页：高版本 recipe 的版本过滤开关。
+
+    recipe 记录保存时的 Houdini 版本（官方 info 块，store.is_higher_version
+    按 major.minor 比较）：高于当前版本的默认整卡隐藏（H22 recipe 在
+    H21 可能引用不存在的节点）；取消隐藏则全部显示，来自更高版本的卡片
+    左上角带感叹角标。应用层零干预——高版本 recipe 未必不可用，取决于
+    节点是否被动过（2026-11 用户拍板：只提醒，不做任何拦截）。
+    """
+
+    def __init__(self, on_changed=None):
+        super().__init__()
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setSpacing(6)
+
+        title = QtWidgets.QLabel("版本过滤")
+        title.setStyleSheet("font-weight: bold; font-size: 13px;")
+        hint = QtWidgets.QLabel(
+            "每个 recipe 记录保存时的 Houdini 版本。来自更高版本的 recipe "
+            "可能引用当前版本不存在的节点，默认不显示；取消勾选后全部"
+            "显示，更高版本的卡片左上角会带感叹号角标提醒。")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888888;")
+        box = QtWidgets.QCheckBox("不显示比当前 Houdini 版本更高的 recipe")
+        box.setChecked(bool(_UI_SETTINGS.get("hide_higher_version")))
+        box.toggled.connect(lambda on: on_changed(on) if on_changed else None)
+
+        lay.addWidget(title)
+        lay.addWidget(hint)
+        lay.addWidget(box)
+        lay.addStretch(1)
+
+
 class _DataPage(QtWidgets.QWidget):
     """设置面板「数据」页：导出 / 导入 .zip 交换包（迁移与分享）。"""
 
@@ -863,15 +922,17 @@ class _DataPage(QtWidgets.QWidget):
 class _SettingsDialog(QtWidgets.QDialog):
     """设置面板：左分类列表 + 右内容页（参考 ShareX 设置布局）。
 
-    两类：库目录（原独立对话框迁入，改动即时生效）、数据（导入/导出
-    交换包）。显示过滤走侧栏顶部三个开关（工具/代码块/参数），不占
-    设置页。后续设置项往 _PAGES 追加名称，并在 __init__ 里按同序
-    addWidget 对应页面即可。改动即时生效，底部只有「关闭」。
+    三类：库目录（原独立对话框迁入，改动即时生效）、显示（版本过滤）、
+    数据（导入/导出交换包）。侧栏顶部三个开关（工具/代码块/参数）仍
+    不占设置页；版本过滤是首个进设置页的显示类设置。后续设置项往
+    _PAGES 追加名称，并在 __init__ 里按同序 addWidget 对应页面即可。
+    改动即时生效，底部只有「关闭」。
     """
 
-    _PAGES = ("库目录", "数据")
+    _PAGES = ("库目录", "显示", "数据")
 
-    def __init__(self, parent, on_lib_dirs_changed, on_export, on_import):
+    def __init__(self, parent, on_lib_dirs_changed, on_version_filter_changed,
+                 on_export, on_import):
         super().__init__(parent)
         self.setWindowTitle("设置 - Recipe Library")
         self.resize(680, 430)
@@ -883,6 +944,7 @@ class _SettingsDialog(QtWidgets.QDialog):
             self.cats.addItem(QtWidgets.QListWidgetItem(label))
         self.stack = QtWidgets.QStackedWidget()
         self.stack.addWidget(_LibDirsPage(on_lib_dirs_changed))
+        self.stack.addWidget(_DisplayPage(on_version_filter_changed))
         self.stack.addWidget(_DataPage(on_export, on_import))
         self.cats.currentRowChanged.connect(self.stack.setCurrentIndex)
 
@@ -1153,6 +1215,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self._placeholder = self._placeholder_icon()
         self._badge = FavoriteBadge()   # 收藏角标（共享组件，见 ui.badge；
                                         # delegate 画在卡片右上角，非合成进图标）
+        self._warn_badge = FavoriteBadge(WARNING_BADGE_SVG)  # 高版本感叹角标（左上角）
+        self._hide_higher = bool(_UI_SETTINGS.get("hide_higher_version"))
+        self._current_version = ""  # reload 时经 hou 取；无头/异常为空=不过滤
+        self._higher_version_names = set()  # 高版本 recipe 内部名（角标数据源）
         self._cover_cache = {}      # (name, w, h) -> cover 裁剪后的 QPixmap
         self._need_reload = True    # 首次/每次从隐藏到显示时自动枚举
                                     # （见 showEvent/hideEvent）
@@ -1161,7 +1227,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self.refresh_btn = QtWidgets.QPushButton("刷新")
         self.settings_btn = QtWidgets.QPushButton("设置...")
         self.settings_btn.setToolTip(
-            "导入 / 导出与库目录设置（后续更多设置项在此面板增加）")
+            "库目录 / 版本过滤 / 导入导出设置（后续更多设置项在此面板增加）")
         self.search = QtWidgets.QLineEdit()
         self.search.setPlaceholderText(
             "搜索 名称 / 标签 / 备注 / 代码...（#前缀 仅搜标签）")
@@ -1508,7 +1574,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         """枚举用户库里的 recipe 并重建侧栏/网格（保留分类与搜索词）。
 
         代码块内容存 metadata、不依赖库文件——未配置库目录也照常加载。"""
-        metadata.migrate_legacy_thumb_paths()  # 旧版绝对路径 → 相对插件根
+        metadata.migrate_legacy_thumb_paths()  # 旧版绝对路径 → 相对 settings 目录
         metadata.migrate_colliding_doc_dirs()  # safe_name 撞名 → 摘要名（幂等）
         try:
             # 迁移自身已逐条容错；这里兜意外异常，别让一次性迁移把整个
@@ -1535,6 +1601,13 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 # 命中 _info_by_name 里已不存在的 recipe
                 error_text = "枚举 recipe 失败: {}".format(exc)
         self._info_by_name = {r.name: r for r in self._recipes}
+        # 当前 Houdini 版本 + 高版本 recipe 集合（版本过滤与感叹角标的
+        # 数据源，reload 时算一次；无头/异常 → 空 = 不过滤）
+        self._current_version = _app_version()
+        self._higher_version_names = {
+            r.name for r in self._recipes
+            if store.is_higher_version(r.houdini_version,
+                                       self._current_version)}
         code_by_name = {c.name: c for c in self._code_infos}
         clashes = sorted(set(self._info_by_name) & set(code_by_name))
         if clashes:
@@ -1547,7 +1620,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self._info_by_name.update(code_by_name)
         self._rebuild_sidebar()
         if self._recipes or self._code_infos:
-            note = "，共 {} 个".format(len(self._recipes) + len(self._code_infos))
+            visible = sum(1 for r in self._recipes if self._type_visible(r))
+            note = "，共 {} 个".format(visible + len(self._code_infos))
         else:
             note = "；请先在「设置 ▸ 库目录」配置库文件夹"
         self._apply_filter(note=note)
@@ -1566,9 +1640,18 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         dlg = _SettingsDialog(
             self,
             on_lib_dirs_changed=self._apply_lib_dirs,
+            on_version_filter_changed=self._apply_version_filter,
             on_export=self._export_recipes,
             on_import=self._import_recipes)
         dlg.exec_()
+
+    def _apply_version_filter(self, hide):
+        """设置面板「显示」页的版本过滤开关：落盘 + 轻量重建侧栏/网格
+        （只改显示过滤，_recipes 未变，不重扫库文件；同 _on_type_toggle）。"""
+        _UI_SETTINGS.set("hide_higher_version", bool(hide))
+        self._hide_higher = bool(hide)
+        self._rebuild_sidebar()
+        self._apply_filter()
 
     def _apply_lib_dirs(self, dirs):
         """设置面板改库目录即时生效：落盘并重载主面板（面板在模态下也照常刷）。"""
@@ -1741,12 +1824,17 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         info(parent, "导入完成", msg)
 
     def _type_visible(self, info):
-        """侧栏顶部三个显示开关（工具/代码块/参数）对该卡片是否生效。
+        """侧栏顶部三个显示开关 + 版本过滤对该卡片是否生效。
 
         全局显示过滤：关闭的类型在所有分组视图里都不显示（2026-10 用户
-        指定"开启则显示对应的卡片，关闭则不显示"）。"""
+        指定"开启则显示对应的卡片，关闭则不显示"）。版本过滤（设置面板
+        「显示」页）同样全局：hide_higher_version 开着时不显示保存版本
+        高于当前 Houdini 的 recipe——侧栏计数/网格/搜索/收藏共用本判定，
+        一处收敛。代码块 houdini_version 恒空，永远不在高版本集合里。"""
         if getattr(info, "is_code", False):
             return bool(_UI_SETTINGS.get("show_code"))
+        if self._hide_higher and info.name in self._higher_version_names:
+            return False
         if self._submenus_of(info):
             return bool(_UI_SETTINGS.get("show_tools"))
         return bool(_UI_SETTINGS.get("show_nodeparm"))
@@ -1995,7 +2083,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         entries += [c for c in self._code_infos
                     if self._type_visible(c) and self._match_category(c)
                     and self._match_search(c)]
-        total = len(self._recipes) + len(self._code_infos)
+        total = (sum(1 for r in self._recipes if self._type_visible(r))
+                 + sum(1 for c in self._code_infos if self._type_visible(c)))
         self.list.setUpdatesEnabled(False)
         self.list.blockSignals(True)
         try:

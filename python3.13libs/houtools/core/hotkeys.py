@@ -4,8 +4,8 @@
 HouTools 菜单项的键位写进 Houdini 热键系统。
 
 键位来源优先级:
-  1. `settings/hotkeys.json` 里的用户自定义（主菜单 `Paste Hotkey
-     Settings` 界面写入）—— 每次启动都会应用(addAssignment 覆盖);
+  1. `settings/hotkeys.json` 里的用户自定义（主菜单 `HouTools Settings`
+     窗口的快捷键区写入）—— 每次启动都会应用(addAssignment 覆盖);
   2. 用户在 Houdini Hotkey Manager 里的手动自定义 —— 已有键位时不覆盖;
   3. 内置默认值。
 
@@ -23,6 +23,59 @@ DEFAULT_ASSIGNMENTS = (
      "Ctrl+Shift+V"),
 )
 
+# Paste as Object Merge 键位的编辑入口数据（HouTools Settings 窗口的
+# 快捷键区；逻辑自旧 tools/paste_hotkey_settings.py 迁入）
+PASTE_MERGE_CONTEXT = "h.pane.wsheet"
+PASTE_MERGE_SYMBOL = "h.pane.wsheet.houtools_paste_as_object_merge"
+PASTE_MERGE_DEFAULT_KEY = "Ctrl+Shift+V"
+
+
+def paste_merge_current_key() -> str:
+    """当前生效的键位描述(自定义 > 会话内分配 > 默认)。
+
+    import hou 在 try 内：无头（smoke test）直接回退默认键位。
+    """
+    custom = get_custom_key(PASTE_MERGE_SYMBOL)
+    if custom:
+        return custom
+    try:
+        import hou
+
+        assigned = hou.hotkeys.assignments(PASTE_MERGE_CONTEXT,
+                                           PASTE_MERGE_SYMBOL)
+        if assigned:
+            return assigned[0]
+    except Exception as exc:
+        logger.debug("query current hotkey failed: %s", exc)
+    return PASTE_MERGE_DEFAULT_KEY
+
+
+def paste_merge_apply_key(key: str) -> bool:
+    """把键位写入 Houdini 会话并持久化;返回是否成功。"""
+    import hou
+
+    if not hou.hotkeys.addAssignment(PASTE_MERGE_CONTEXT,
+                                     PASTE_MERGE_SYMBOL, key):
+        return False
+    set_custom_key(PASTE_MERGE_SYMBOL, key)
+    return True
+
+
+def paste_merge_clear_custom() -> bool:
+    """清除自定义键位、恢复默认(会话内即时生效 + 删除持久化记录)。
+
+    返回是否成功。注意:直接应用默认值(不走 install_defaults 的
+    "已有键位不覆盖"分支)——用户明确要求恢复默认。
+    """
+    import hou
+
+    if not hou.hotkeys.addAssignment(PASTE_MERGE_CONTEXT,
+                                     PASTE_MERGE_SYMBOL,
+                                     PASTE_MERGE_DEFAULT_KEY):
+        return False
+    clear_custom_key(PASTE_MERGE_SYMBOL)
+    return True
+
 _STORE = None
 
 
@@ -37,7 +90,7 @@ def _store():
 
 
 def get_custom_key(symbol: str) -> str | None:
-    """返回用户通过 Paste Hotkey Settings 设置的自定义键位。"""
+    """返回用户通过 HouTools Settings 设置的自定义键位。"""
     value = _store().get(symbol)
     return value if isinstance(value, str) and value.strip() else None
 
