@@ -47,6 +47,26 @@ from houtools.core.log import get_logger
 logger = get_logger("automation.engine")
 
 
+def _hip_never_saved() -> bool:
+    """当前工程是否从未保存过（dl_Submit 前置保存的守卫判据）。
+
+    ``hou.hipFile.hasNeverSaved`` 在 H22.0.429 不存在（2026-11 真机
+    AttributeError）——判据按能力探测降级：hasNeverSaved（其他版本若有）
+    > isNewFile（H22 实际 API，未保存过为 True，实测）> name() 基名
+    兜底。边角：用户把工程手动存成 "untitled.hip" 会被兜底误判为未
+    保存（多提示一次"请先手动保存"，不产生破坏，接受）。
+    """
+    import hou
+
+    probe = getattr(hou.hipFile, "hasNeverSaved", None)
+    if probe is not None:
+        return bool(probe())
+    probe = getattr(hou.hipFile, "isNewFile", None)
+    if probe is not None:
+        return bool(probe())
+    return os.path.basename(hou.hipFile.name() or "").lower() == "untitled.hip"
+
+
 class ExecutionEngine(QThread):
     """自动化任务执行引擎。
 
@@ -218,7 +238,7 @@ class ExecutionEngine(QThread):
             # 从未保存过的工程连默认路径都没有,save() 必弹模态对话框问
             # 存放位置 —— 同样按"失败跳过点击"语义处理,请用户先手动保存
             if params.parm_name == "dl_Submit":
-                if hou.hipFile.hasNeverSaved():
+                if _hip_never_saved():
                     raise ValueError("工程从未保存过，已跳过 dl_Submit：请先手动保存")
                 try:
                     hou.hipFile.save()

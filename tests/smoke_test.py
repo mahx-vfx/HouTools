@@ -819,6 +819,42 @@ def main():
     assert task_results == [False], task_results
     print("ExecutionEngine SystemExit guard OK")
 
+    # dl_Submit 前置保存守卫的判据降级链（2026-11 修复回归）：
+    # hou.hipFile.hasNeverSaved 在 H22.0.429 不存在（真机 AttributeError），
+    # _hip_never_saved 按能力探测取 hasNeverSaved > isNewFile > untitled
+    # 基名。注入伪造 hou 模块逐一固化，用完恢复现场。
+    from houtools.automation import execution_engine as _ee
+
+    class _FakeHip:
+        pass
+
+    class _FakeHou:
+        hipFile = _FakeHip()
+
+    _saved_hou_mod = sys.modules.get("hou")
+    try:
+        def _install_hou(**attrs):
+            # 每场景独立 hip 实例——类级共享对象会让前一场景的属性泄漏
+            hip = _FakeHip()
+            for _k, _v in attrs.items():
+                setattr(hip, _k, _v)
+            _fake = _FakeHou()
+            _fake.hipFile = hip
+            sys.modules["hou"] = _fake
+
+        _install_hou(hasNeverSaved=lambda: False)
+        assert _ee._hip_never_saved() is False, "有 hasNeverSaved 应优先用"
+        _install_hou(isNewFile=lambda: True)
+        assert _ee._hip_never_saved() is True, "H22 实际 API 应命中 isNewFile"
+        _install_hou(name=lambda: "C:/x/untitled.hip")
+        assert _ee._hip_never_saved() is True, "无探测 API 时按基名兜底"
+    finally:
+        if _saved_hou_mod is None:
+            sys.modules.pop("hou", None)
+        else:
+            sys.modules["hou"] = _saved_hou_mod
+    print("dl_Submit hip guard OK")
+
     # _strip_owned_tees：多面板 tee 链收尾（2026-10 审查修复回归）——
     # 自己的 tee 埋在别人 tee 下面时也要能摘掉（旧实现只剥栈顶，W1 先
     # 收尾会把 tee 永久留在链里、被 W2 收尾顶回栈顶），别人的存活层不动

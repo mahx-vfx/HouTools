@@ -6,7 +6,7 @@
 
 - QThread；Houdini API 经 `hdefereval.executeDeferred` + Event 同步派发主线程。**无超时同步等待是有意设计、禁止加超时**（原因与取消语义见 AGENTS.md Conventions「Automation 的同步等待」）。
 - **任务循环包在 try/except BaseException/finally 里**（2026-10 审查修复）：按钮回调脚本抛 SystemExit 等非 Exception 的 BaseException 会穿透逐任务的 except Exception，漏了 finally 会让 `all_completed` 永不发——UI 永久停在「停止中…」、stdout 重定向挂到面板销毁。现在记账（fail+1）+ log.error 后吞掉，finally 必发 `all_completed`；在途任务按 cur_idx/cur_start **补发一条失败的 `task_completed`**（逐任务 except 接不住它，日志该任务有始有终），任务收账后 cur_idx 置 None 防重复补发。
-- `dl_Submit` 特例：工程从未保存过（hasNeverSaved）直接报错跳过（否则 hipFile.save 弹"保存工程"对话框阻塞无人值守队列），点击前强制 `hipFile.save()`，失败则跳过点击。
+- `dl_Submit` 特例：工程从未保存过直接报错跳过（否则 hipFile.save 弹"保存工程"对话框阻塞无人值守队列），点击前强制 `hipFile.save()`，失败则跳过点击。**"从未保存"判据必须走 `_hip_never_saved` 能力探测链（hasNeverSaved > isNewFile > untitled 基名）**——`hou.hipFile.hasNeverSaved` 在 H22.0.429 不存在（2026-11 真机 AttributeError，`isNull` 也没有；该版本实际 API 是 `isNewFile`，未保存过为 True），写死任何单个 API 都会在别的版本翻车。
 - Flipbook 帧范围解析失败 warning 后沿用场景原范围。
 - **flipbook 设置必须 `flipbookSettings().stash()` 复制后再改**（与 capture_viewport_embed 同一手法——直接改活对象会把用户的输出路径/帧范围永久留脏，save_to_disk=False 还会把用户输出路径抹成空串）。
 - 失败任务的 task_completed 耗时上报真实耗时（曾硬编码 0）。
