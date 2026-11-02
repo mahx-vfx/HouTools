@@ -35,7 +35,7 @@ def run():
     try:
         parent = hou.qt.mainWindow()
     except Exception as exc:
-        logger.debug("main window unavailable: %s", exc)
+        logger.debug("主窗口不可用: %s", exc)
     window_manager.open_window(TOOL_ID,
                                lambda: _HouToolsSettingsDialog(parent))
 
@@ -145,15 +145,15 @@ class _HouToolsSettingsDialog(QDialog):
             return
         if not hotkeys.paste_merge_apply_key(key):
             self._set_hint("Houdini 拒绝了该键位:{}".format(key), error=True)
-            logger.warning("hotkey assignment rejected: %s", key)
+            logger.warning("Houdini 拒绝了键位: %s", key)
             return
-        logger.info("paste_as_object_merge hotkey set to %s", key)
+        logger.info("Paste as Object Merge 快捷键已设为: %s", key)
         try:
             hou.ui.setStatusMessage(
                 "Paste as Object Merge 快捷键已设为:{}".format(key),
                 hou.severityType.ImportantMessage)
         except Exception as exc:
-            logger.debug("setStatusMessage failed: %s", exc)
+            logger.debug("状态栏提示写入失败: %s", exc)
         self._set_hint("已应用:{}".format(key))
 
     def _on_reset(self):
@@ -170,11 +170,11 @@ class _HouToolsSettingsDialog(QDialog):
             self._set_hint("Houdini 拒绝了默认键位。", error=True)
             return
         self._editor.setKeySequence(QKeySequence(default_key))
-        logger.info("paste_as_object_merge custom hotkey cleared")
+        logger.info("Paste as Object Merge 自定义键位已清除")
         try:
             hou.ui.setStatusMessage(
                 "Paste as Object Merge 快捷键已恢复默认:{}".format(default_key),
                 hou.severityType.ImportantMessage)
         except Exception as exc:
-            logger.debug("setStatusMessage failed: %s", exc)
+            logger.debug("状态栏提示写入失败: %s", exc)
         self._set_hint("已恢复默认:{}".format(default_key))

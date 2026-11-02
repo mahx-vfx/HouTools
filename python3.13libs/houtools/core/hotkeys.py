@@ -46,7 +46,7 @@ def paste_merge_current_key() -> str:
         if assigned:
             return assigned[0]
     except Exception as exc:
-        logger.debug("query current hotkey failed: %s", exc)
+        logger.debug("查询当前键位失败: %s", exc)
     return PASTE_MERGE_DEFAULT_KEY
 
 
@@ -124,7 +124,7 @@ def install_defaults() -> list[str]:
                         continue  # 已有键位(含用户自定义),不覆盖
                 except Exception as e:
                     # 查询失败不阻塞分配,由 addAssignment 的返回值兜底
-                    logger.debug("assignments query failed for %s: %s",
+                    logger.debug("查询已有键位失败 %s: %s",
                                  symbol, e)
 
             if not hou.hotkeys.addAssignment(context, symbol, key):
