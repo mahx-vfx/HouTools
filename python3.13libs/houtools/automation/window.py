@@ -927,6 +927,17 @@ class AutomationWindow(QWidget):
         self._cancel_requested = False  # 已请求停止、引擎尚未真正退出
         self._engine: ExecutionEngine | None = None
 
+        # ── 自动保存（2026-11 用户拍板：改动即存，打开/装载不写盘） ──
+        # _mark_dirty 置脏 + 600ms 防抖；_dirty_loading 计数器在程序化
+        # 填充控件期间抑制脏标记（setText/setCurrentIndex 触发的信号不算
+        # 用户改动——否则打开面板/切配置就会写盘）
+        self._dirty_pending = False
+        self._dirty_loading = 0
+        self._dirty_timer = QTimer(self)
+        self._dirty_timer.setSingleShot(True)
+        self._dirty_timer.setInterval(600)
+        self._dirty_timer.timeout.connect(self._flush_dirty_tasks)
+
         # 选中 + 拖动状态
         self._selected_index: int | None = None  # 单选,None=无选中
         self._last_selected_index: int | None = None  # 差量更新 _update_selection_style 用
@@ -1352,6 +1363,7 @@ class AutomationWindow(QWidget):
         # ── 信号：切换类型时 show/hide ──
         def _on_type_changed(idx):
             jump_btn.setVisible(idx == 0)  # 仅按钮点击任务可跳转
+            self._mark_dirty()  # 类型切换=编辑；装载期由 _dirty_loading 抑制
             if idx == 1:  # Flipbook
                 stacked.hide()
                 flipbook_widget.show()
@@ -1398,14 +1410,30 @@ class AutomationWindow(QWidget):
 
         # ── 填充数据（加载时）──
         if data is not None:
-            self._populate_slot_from_data(
-                slot, data,
-                combo, stacked, flipbook_widget,
-                parm_path_le,
-                start_frame_le, end_frame_le, output_path_le, save_to_disk_cb,
-                webhook_url_le,
-                enabled_cb,
-            )
+            self._dirty_loading += 1
+            try:
+                self._populate_slot_from_data(
+                    slot, data,
+                    combo, stacked, flipbook_widget,
+                    parm_path_le,
+                    start_frame_le, end_frame_le, output_path_le, save_to_disk_cb,
+                    webhook_url_le,
+                    enabled_cb,
+                )
+            finally:
+                self._dirty_loading -= 1
+
+        # 自动保存接线：值编辑入口汇入 _mark_dirty。接线在 populate 之后
+        # ——装载期 setText/setChecked 的信号天然不进脏标记
+        for _name in ("parmPath", "webhookUrl", "flipbookStartFrame",
+                      "flipbookEndFrame", "flipbookOutputPath"):
+            _le = slot.findChild(QLineEdit, _name)
+            if _le is not None:
+                _le.textChanged.connect(self._mark_dirty)
+        for _name in ("slotEnabled", "flipbookSaveToDisk"):
+            _cb = slot.findChild(QCheckBox, _name)
+            if _cb is not None:
+                _cb.toggled.connect(self._mark_dirty)
 
         return slot
 
@@ -1509,6 +1537,7 @@ class AutomationWindow(QWidget):
         finally:
             self._skip_count_update = False
         self._update_task_count_input()
+        self._mark_dirty()  # 数量调整=用户编辑（含增删后的净变化）
 
     def _update_task_count_input(self):
         """更新数量输入框显示当前任务槽数量。"""
@@ -1527,6 +1556,7 @@ class AutomationWindow(QWidget):
         # 批量操作时跳过，最后由调用方统一刷新
         if not getattr(self, '_skip_count_update', False):
             self._update_task_count_input()
+            self._mark_dirty()  # 单个新增=用户编辑；批量由调用方统一标记
 
     def _remove_slot(self, index: int | None = None) -> None:
         """移除指定索引的槽(默认末尾,兼容工具栏 - 按钮)。
@@ -1589,6 +1619,7 @@ class AutomationWindow(QWidget):
         # 批量操作时跳过，最后由调用方统一刷新
         if not getattr(self, '_skip_count_update', False):
             self._update_task_count_input()
+            self._mark_dirty()  # 单个删除=用户编辑；批量由调用方统一标记
 
     def _insert_slot_at(self, index: int) -> None:
         """在指定位置插入一个空任务槽（右键菜单"上方/下方插入"用）。"""
@@ -1600,6 +1631,7 @@ class AutomationWindow(QWidget):
         self._renumber_slots()
         self._select_slot(index)
         self._update_task_count_input()
+        self._mark_dirty()  # 右键插入=用户编辑
 
     def _renumber_slots(self):
         """更新所有槽的序号(序号手柄的文字)。
@@ -1731,6 +1763,7 @@ class AutomationWindow(QWidget):
         # 注:_move_slot 不再调 _renumber_slots,序号保持"过期"直到 release
         self._move_slot(self._drag_source_index, target)
         self._drag_source_index = target
+        self._mark_dirty()  # 实际换位=编辑（仅点击不换位不写盘）
 
     def _on_handle_released(self, slot: QWidget, global_pos: QPoint) -> None:
         """手柄松开:移除抬起样式 + 统一刷新序号。"""
@@ -2195,24 +2228,30 @@ class AutomationWindow(QWidget):
         """
         # 1. 先刷新下拉(列表 + 恢复当前选中),让 UI 与状态同步
         self._refresh_config_dropdown()
-        # 2. 加载当前选中的配置
-        raw_list = AutomationDataManager.load(self._current_config_name)
+        # 装载期抑制脏标记：重建槽的全部信号（含 populate 恢复类型触发的
+        # combo 信号）都不算用户改动——打开面板/切配置零写盘
+        self._dirty_loading += 1
+        try:
+            # 2. 加载当前选中的配置
+            raw_list = AutomationDataManager.load(self._current_config_name)
 
-        # 清空现有槽
-        for slot in self._slot_widgets:
-            self._slot_layout.removeWidget(slot)
-            slot.deleteLater()
-        self._slot_widgets.clear()
-        self._slot_handles.clear()  # 同步清空 handle 平行列表
-        self._selected_index = None  # 选中指针随槽一起清空(同 _remove_slot 契约)
-        self._last_selected_index = None  # 重置差量状态
+            # 清空现有槽
+            for slot in self._slot_widgets:
+                self._slot_layout.removeWidget(slot)
+                slot.deleteLater()
+            self._slot_widgets.clear()
+            self._slot_handles.clear()  # 同步清空 handle 平行列表
+            self._selected_index = None  # 选中指针随槽一起清空(同 _remove_slot 契约)
+            self._last_selected_index = None  # 重置差量状态
 
-        for item_data in raw_list:
-            self._add_slot(item_data)
+            for item_data in raw_list:
+                self._add_slot(item_data)
 
-        # 首次打开(无数据)时添加1个空任务槽
-        if not raw_list:
-            self._add_slot()
+            # 首次打开(无数据)时添加1个空任务槽
+            if not raw_list:
+                self._add_slot()
+        finally:
+            self._dirty_loading -= 1
 
     # ── 配置下拉 helper ────────────────────────────────────
 
@@ -2269,6 +2308,9 @@ class AutomationWindow(QWidget):
         name = self._config_combo.itemText(index)
         if not name:
             return
+        # 切走前把防抖窗口内未落盘的编辑写进旧配置（自动保存语义：
+        # 草稿不因切换丢失；运行中已在上方守卫拦下，不会走到这）
+        self._flush_dirty_tasks()
         self._current_config_name = name
         self._load_data()  # 重新加载,内部会再 refresh 一次(无副作用)
         self._load_settings()  # 同步加载新配置的设置项
@@ -2307,6 +2349,9 @@ class AutomationWindow(QWidget):
             )
             return
 
+        # 切走前先落盘当前配置的防抖内容（同 _on_config_changed；
+        # 运行中已在上方守卫拦下）
+        self._flush_dirty_tasks()
         path = AutomationDataManager.get_data_path(sanitized)
         if os.path.exists(path):
             dialogs.info(
@@ -2469,6 +2514,39 @@ class AutomationWindow(QWidget):
         self._refresh_config_dropdown()
         return tasks_data
 
+    # ── 自动保存（改动即存，2026-11 用户拍板） ───────────────
+
+    def _mark_dirty(self, *_args) -> None:
+        """任务编辑入口统一汇入：置脏 + 重启 600ms 防抖。
+
+        装载期（_dirty_loading 计数 > 0）为 no-op——程序化
+        setText/setCurrentIndex 触发的信号不算用户改动，否则打开面板/
+        切配置就会写盘（用户明确要求"没有改动就不保存"）。信号带值，
+        ``*_args`` 兜住各种签名。防抖 600ms：连续打字每秒至多落盘
+        1-2 次，单次几十 KB（SMB 亦毫秒级），无感。
+        """
+        if self._dirty_loading:
+            return
+        self._dirty_pending = True
+        self._dirty_timer.start()
+
+    def _flush_dirty_tasks(self) -> None:
+        """防抖到点/强制收尾：把当前任务写进当前配置。
+
+        落盘目标只认 ``_current_config_name`` —— 自动保存绝不走
+        ``_save_data``（那会按下拉当前文本创建新文件，输入到一半的
+        名字会被当文件名）。失败只记日志不弹窗：自动保存是后台动作，
+        打断编辑反而糟糕，下次改动会再试。"""
+        self._dirty_timer.stop()
+        if not self._dirty_pending:
+            return
+        self._dirty_pending = False
+        if not AutomationDataManager.save(
+                self._collect_data(),
+                filename=self._current_config_name):
+            logger.warning("Automation: 自动保存失败 filename=%s",
+                           self._current_config_name)
+
     # ── 执行集成 ───────────────────────────────────────────
 
     def _on_start(self):
@@ -2485,11 +2563,15 @@ class AutomationWindow(QWidget):
     def _start_execution(self):
         """收集任务 → 落盘 JSON → 创建 ExecutionEngine → 启动后台执行。
 
-        JSON 仅在 Start 时落盘,关窗不保存。
-        语义:JSON = 用户决定执行的任务,不是当前 UI 状态;
-        编辑后未点 Start 直接关窗 = 丢弃未执行编辑(有意为之)。
+        2026-11 起任务 JSON 改为自动保存（改动即存，600ms 防抖；Start/
+        切配置/新建配置/关窗时强制落盘），盘上是当前草稿而非"仅 Start
+        快照"——Start 时防抖窗口内的编辑也已写盘，执行的就是所见内容。
         """
-        tasks_data = self._save_data()  # 收集 + 落盘(只此一处)
+        # 取消挂起的防抖：_save_data 马上全量落盘，防止 Start 后计时器
+        # 到点再重复写一次
+        self._dirty_pending = False
+        self._dirty_timer.stop()
+        tasks_data = self._save_data()  # 收集 + 落盘（与自动保存同一写路径）
         # 未知类型/字段缺损的任务原样留在落盘数据里,但不参与本次执行
         # (TaskItem.from_dict 对它们抛 ValueError/KeyError/TypeError)
         task_items = []
@@ -2793,13 +2875,16 @@ class AutomationWindow(QWidget):
     # ── 窗口关闭 ───────────────────────────────────────────
 
     def closeEvent(self, event):
-        """关闭时取消执行中的任务并恢复 stdout 重定向（数据仅在 Start 时落盘）。
+        """关闭时先落盘防抖窗口内的编辑（自动保存收尾），再取消执行中的
+        任务并恢复 stdout 重定向。
 
         引擎线程无法被打断（有意设计，见 execution_engine）：关窗只请求取消，
         线程会继续挂在在途任务的同步等待上，等主线程空闲后在后台自然退出并
         完成收尾——期间由模块级 _LIVE_ENGINES 持有引用，防止运行中的 QThread
         被 GC 销毁。其信号随面板销毁自动断开，不会再回调本窗口。
         """
+        # 自动保存收尾：任务列表草稿与引擎状态无关，先写后取消
+        self._flush_dirty_tasks()
         if self._engine is not None:
             self._engine.cancel()
         # _running/_cancel_requested 不在此复位:状态收尾只能由

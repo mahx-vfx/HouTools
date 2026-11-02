@@ -27,3 +27,11 @@
 - 执行日志句柄在 Start 时惰性打开、`_write_log` 全程持 `threading.Lock`（tee 挂在 sys.stdout 上任意线程的 print 都会进来，无锁时两线程同首调 `_get_log_path` 会拿到不同文件、日志分裂）。**Start 在主线程先预热 `_get_log_path` 缓存再置 `_log_active`**（2026-10 复审补）：置位后到首次 `_write_log` 缓存路径前的窗口期里，任意线程的 print 会代调 `_get_log_path`——其内含 `hou.getenv`，HOM 跨线程无官方承诺（对齐引擎"预读后传入"约定）。
 - 面板居中过滤器 `_PanelCenterFilter` 由 `_PANEL_FILTERS` 持引用保活到首次 Show 自摘，**自摘时同步 `discard(self)`**（2026-10 复审补，防无 parent QObject 连同其持有的 HOM FloatingPanel 包装滞留累积）。
 - **应用级过滤器的 obj 类型守卫（2026-10-28 H21 真机实测）**：Houdini 21 会把原生 `QWindow` 的 Show 投进应用级事件过滤器（QtGui 层对象，没有 `windowTitle`；H22 未投过此类事件）——`_PanelCenterFilter` 曾直接 `obj.windowTitle()` 被 AttributeError 打崩。凡应用级过滤器的回调：先 `isinstance(obj, QWidget)` 再调部件方法，或只用 QObject/身份比对 API（Automation 的 Delete 过滤器拿 obj 比 `windowHandle()` 同一性、fonts 的 ChildAdded 走 `property()/parent()` 均属安全写法，已逐一核查）。
+
+## 自动保存（window.py，2026-11）
+
+- **语义**（2026-11 用户拍板，翻掉原"仅 Start 落盘/关窗不保存"）：任务 JSON **改动即存**。编辑入口统一汇 `_mark_dirty`（置脏 + 600ms 单发 QTimer 防抖——连续打字每秒至多 1-2 次写，几十 KB 的原子写本地/SMB 均无感，性能不是该改动的约束）。
+- **装载守卫是第一设计点**：`_dirty_loading` 计数器（可嵌套）在程序化填充期间抑制脏标记——`_load_data` 重建槽、`_create_slot_widget` 内 populate 恢复值/类型都会触发 textChanged/currentIndexChanged，不守卫就会"打开面板即写盘"甚至把空槽覆盖回配置文件。叶子控件（parmPath/webhookUrl/flipbook 三框/saveToDisk/slotEnabled）的接线放在 populate **之后**，装载期信号天然不进脏标记；combo 的 `_on_type_changed` 走守卫（populate 恢复类型会触发它）。
+- **flush 四点**：Start（取消挂起防抖后 `_save_data` 全量写）、`_on_config_changed`/`_on_new_config` 切走前、`closeEvent` 开头。**自动保存只写 `_current_config_name`，绝不走 `_save_data`**——那会按下拉当前文本决定落盘名（可能创建新文件），输入到一半的名字会被当文件名。失败只记 warning 不弹窗（后台动作不打断编辑，下次改动再试）。
+- **容器级编辑显式标记**：增/删槽（非批量分支）、右键插入、数量调整、拖动实际换位（`_on_handle_moved` 里 mark——仅点击不换位不写盘）；批量重建由调用方统一标记。槽参数值编辑走创建期接线，无需逐点调用。
+- **运行中编辑照常落盘**：引擎持有的是 Start 时的 TaskItem 列表，运行中的编辑不影响当前 run，落盘内容即下一轮草稿。运行中切配置/新建配置仍被既有守卫拒绝（与自动保存无关）。

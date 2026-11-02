@@ -690,6 +690,41 @@ def main():
     win._remove_slot(0)  # 槽管理冒烟
     print("AutomationWindow instantiation OK")
 
+    # 自动保存（2026-11 用户拍板"改动即存"）：编辑 → flush 落盘；
+    # 打开/装载零写盘；装载守卫抑制程序化信号
+    with tempfile.TemporaryDirectory() as tmp:
+        with patch.object(dm.AutomationDataManager, "_hip_base",
+                          return_value=tmp):
+            cfg_path = (Path(tmp) / "HouTools_cfg" / "Automation_json"
+                        / "Automation.json")
+            # 打开面板（__init__ 已 _load_data）零写盘：配置文件尚不存在
+            win2 = aw.create_panel_widget()
+            assert not cfg_path.exists(), "打开面板不应写盘"
+            assert win2._dirty_pending is False
+            # 装载守卫：计数 > 0 时 _mark_dirty 是 no-op
+            win2._dirty_loading = 1
+            win2._mark_dirty()
+            assert win2._dirty_pending is False, "装载期不得置脏"
+            win2._dirty_loading = 0
+            # 真实编辑：往第一个槽的参数路径框键入（走真实 textChanged
+            # 接线）→ 置脏 → flush 落盘
+            from PySide6.QtWidgets import QLineEdit as _ALE
+            pp = win2._slot_widgets[0].findChild(_ALE, "parmPath")
+            assert pp is not None
+            pp.setText("/obj/grid1/execute")
+            assert win2._dirty_pending is True, "值编辑应置脏"
+            win2._flush_dirty_tasks()
+            assert win2._dirty_pending is False
+            assert cfg_path.exists(), "flush 后应落盘"
+            saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+            assert saved["tasks"][0]["params"] == {
+                "node_path": "/obj/grid1", "parm_name": "execute"}, saved
+            # flush 幂等：无脏不写
+            win2._flush_dirty_tasks()
+            win2.deleteLater()
+            aw._PANEL_REFS.clear()
+    print("automation autosave OK")
+
     # 真实实例化 videoseq 窗口（捕获 __init__ 结构损伤；无视频、无线程）
     from houtools.videoseq.window import _VideoToSequenceWindow, parse_dimension
     assert parse_dimension("1920") == 1920

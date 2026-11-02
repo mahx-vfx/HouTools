@@ -61,6 +61,8 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings�
 
 - QThread 后台执行；配置 JSON 存 `$HIP/HouTools_cfg/Automation_json/`，执行日志存
   `$HIP/HouTools_cfg/Automation_logs/`
+- 任务列表**改动即存**（编辑后 600ms 自动落盘；切配置/关窗/Start 时强制保存），
+  崩溃不丢配置；配置切换、面板重建不会丢编辑
 - DW 软件路径在配置目录的 `Automation_Config.json` 中配置（随机器保存，缺失时打开面板自动按默认值补建，可直接编辑）
 - 节点可直接拖入参数路径框（原生投递、无视窗泄漏）
 - `Reload Modules (Dev)` 不会自动重建已打开的面板（避免丢弃未 Start 保存的编辑），
