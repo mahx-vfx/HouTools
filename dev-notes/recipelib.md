@@ -102,6 +102,7 @@
 - GIF：QImageWriter/hffmpeg 均无 GIF **编码器**（只能读），网格取首帧、预览区 QMovie、文档流动画走 **QMovie 逐帧同步文档资源**（loadResource 返回当前帧 + frameChanged 时 addResource + viewport 刷新——**坑：PySide6 的 QTextCursor 没有 insertWidget**，Qt 富文本不能内嵌控件，曾因此写崩过媒体替换方案）。
 - 视频 `![x](a.mp4)` 在渲染前预处理成普通链接、点击弹 QMediaPlayer——**必须先 setVideoOutput 再 play 否则 InvalidMedia**（实测踩过）。
 - **主面板有文档时直接渲染 markdown 文档**（与编辑器预览共用 MarkdownMediaView，媒体按视口宽缩放；无文档回退显示官方备注），编辑器保存发 docSaved 信号同步刷新面板。
+- **垂直滚动条 = 悬浮细滑杆**（`_DocPreview` 基类统一装，主面板预览与编辑器右栏两处自动一致；2026-11 用户拍板 A+B 组合）：滚动条 reparent 到**QTextBrowser 本体**（与原生滚动条同级的容器子控件 + `raise_` 压过 viewport）叠加右缘——QAbstractScrollArea 只给自挂滚动条留布局宽，policy 常关后 viewport 占满全宽，原生 14px 挤压列宽且出现/消失整段重排的问题消失；`setFixedWidth(4)` + QSS 设在**滚动条对象自身**（拼进视图样式表会整段解析失败，实测）。**★ 必须挂容器、严禁挂 viewport**：QTextBrowser 滚动内容走 `QWidget::scroll()` 位块搬移（文档明说 including its children），viewport 子控件每滚 1px 被物理搬走 1px——滑杆跟着内容反向漂移、反复滚动糊成整条残影（首版实测 value=600 → pos.y=-600）。viewport resize 经 eventFilter 重贴右缘（容器坐标 = viewport 位置 + frame 偏移）、高度随 viewport；`rangeChanged` 控显隐（可滚才显示，对齐原生 AsNeeded 语义），构造时按当前范围初始化一次——`(0,0)→(0,0)` 不发 rangeChanged，漏初始化会让空态/短文档也挂条。滚轮/拖拽/键盘滚动不受 ScrollBarAlwaysOff 影响。
 
 ## 应用流程
 

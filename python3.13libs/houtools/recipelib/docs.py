@@ -31,9 +31,25 @@ log = get_logger("recipelib.docs")
 
 PREVIEW_DEBOUNCE_MS = 300
 
+# 悬浮细滑杆配色（设在滚动条对象自身——拼进视图样式表会整段解析失败，
+# 2026-11 实测；轨道透明 + 半透明滑块悬浮在文字右缘）
+_OVERLAY_SB_QSS = (
+    "QScrollBar:vertical { width: 4px; background: transparent; }"
+    "QScrollBar::handle:vertical { background: rgba(140,140,152,0.5); "
+    "min-height: 24px; border-radius: 2px; }"
+    "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical "
+    "{ height: 0px; width: 0px; }"
+    "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical "
+    "{ background: transparent; }")
+
 
 class _DocPreview(QtWidgets.QTextBrowser):
-    """文档预览：相对路径图片按文档目录解析（markdown 里写 assets/x.png）。"""
+    """文档预览：相对路径图片按文档目录解析（markdown 里写 assets/x.png）。
+
+    垂直滚动条为悬浮细滑杆：reparent 进 viewport 右缘叠加（不占布局，
+    文字列宽恒定不被挤压），4px 宽、可滚动时才显示——主面板预览与文档
+    编辑器右栏共用本类，两处自动一致（2026-11 用户拍板 A+B 组合）。
+    """
 
     def __init__(self, doc_dir, parent=None):
         super().__init__(parent)
@@ -45,6 +61,48 @@ class _DocPreview(QtWidgets.QTextBrowser):
         # CustomContextMenu 策略只发信号、不弹默认菜单——主面板接收信号
         # 自建「编辑文档」菜单，无人接收（文档编辑器预览栏）= 右键不弹
         self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        # ---- 悬浮细滑杆 ----
+        # 策略常关 + 滚动条对象挂到本控件（与原生滚动条同级的容器子控件）：
+        # QAbstractScrollArea 只给自挂的滚动条留布局宽度，policy 常关后
+        # viewport 占满全宽（滑杆压在文字上）。滚轮/键盘滚动不受策略影响，
+        # 拖拽走这条 4px 窄条。
+        # ★ 必须挂容器而不能挂 viewport：QTextBrowser 滚动内容走
+        # QWidget::scroll() 位块搬移（文档明说 including its children），
+        # viewport 的子控件每滚一像素就被物理搬走一像素——滑杆会跟着
+        # 内容反向漂移、反复滚动糊成整条残影（2026-11 实测踩坑）。
+        sb = self.verticalScrollBar()
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        sb.setParent(self)
+        sb.setFixedWidth(4)
+        sb.setStyleSheet(_OVERLAY_SB_QSS)
+        sb.raise_()   # 与 viewport 同为容器子控件，压到 viewport 之上
+        sb.show()
+        sb.rangeChanged.connect(self._sync_overlay_sb_range)
+        # show() 已置可见，而 (0,0)→(0,0) 不发 rangeChanged——按当前范围
+        # 初始化一次显隐，否则空态/短文档也挂着一条滑杆
+        self._sync_overlay_sb_range(sb.minimum(), sb.maximum())
+        # viewport 尺寸变化（面板拖宽/横滚条出现）时重贴右缘、随高度
+        self.viewport().installEventFilter(self)
+        self._sync_overlay_sb_geometry()
+
+    def _sync_overlay_sb_geometry(self):
+        """悬浮滑杆贴 viewport 右缘（容器坐标 = viewport 位置 + frame
+        偏移）、高度随 viewport（4px 宽已定死）。"""
+        vp = self.viewport()
+        sb = self.verticalScrollBar()
+        anchor = vp.mapTo(self, QtCore.QPoint(0, 0))
+        sb.setFixedHeight(max(1, vp.height()))
+        sb.move(anchor.x() + max(0, vp.width() - sb.width()), anchor.y())
+
+    def _sync_overlay_sb_range(self, minimum, maximum):
+        """内容可滚才显示滑杆（对齐原生 AsNeeded 语义：短文档不见条）。"""
+        self.verticalScrollBar().setVisible(maximum > minimum)
+
+    def eventFilter(self, watched, event):
+        if watched is self.viewport() \
+                and event.type() == QtCore.QEvent.Resize:
+            self._sync_overlay_sb_geometry()
+        return super().eventFilter(watched, event)
 
     def set_doc_dir(self, doc_dir):
         self._doc_dir = doc_dir
