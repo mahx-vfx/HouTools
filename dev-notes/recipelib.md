@@ -7,7 +7,8 @@
 - 基于 H22 官方 recipes 的资产面板，**只加载用户库**：库 = 面板「设置 ▸ 库目录」配置的若干文件夹（配置目录 `recipelib.json` 的 `lib_dirs`，可多个，递归扫 `.hda`），出厂（$HFS）/Labs/偏好目录默认库一律不显示；`uiready.py` 启动即装库（Tab 菜单里的 session tool 从会话开始可用）。
 - **坑：`saveToolRecipe` 每次保存都在 `<库文件夹>/backup/` 写 `HouToolsRecipes_bakN.hda`**，扫描必须剪掉 backup 目录——装进备份会让已删 recipe"复活"并与现行定义同名冲突。创建走 Houdini 官方保存流程（面板纯展示，不做保存）。
 - **删除语义（无头实测）**：`HDADefinition.destroy()` 删掉文件里最后一个定义时 Houdini 自动卸载该库、`definitionsInFile` 对未加载文件抛 OperationFailed、磁盘留 83B 空壳——删后按"读不到定义（含 OperationFailed）= 已空"处理：卸载+删空壳；有幸存定义则文件保持加载、内容完好。
-- 扫描安装的防护（2026-10-17 用户拍板收窄）：**扫描全程不删任何磁盘文件**——装不上的文件、读不到定义的空壳一律只卸载还原会话 + warning（原 <512B 空壳自愈已撤：lib_dirs 可能指向共享盘/生产目录，未经确认的自动删除不可接受），文件保留待用户手动清理；误放进来的非 recipe .hda（无 data 类定义）装入后立即卸载还原（不删文件）。
+- 扫描安装的防护（2026-10-17 用户拍板收窄）：**扫描全程不删任何磁盘文件**——装不上的文件、读不到定义的空壳一律只卸载还原会话 + warning（原 <512B 空壳自愈已撤：lib_dirs 可能指向共享盘/生产目录，未经确认的自动删除不可接受），文件保留待用户手动清理。
+- **坑：类别预检必须前移到 installFile 之前（2026-11）**。原流程"装入→查 definitionsInFile→无 data 类定义立即卸载"每会话首次扫描必炸一条官方 deferred traceback：`installFile` 触发 HDA 管理器的 `LibraryInstalled` 事件，官方 hrecipes（Recipe Library 面板的存储层，hrecipes/storage.py）把路径攒进队列、等主线程空闲才 deferred 刷新（`_flushInstalledLibraries`→`addRefsFromLibraryPath` 逐定义 `defn.nodeType()`，**无 try/except**）——刷新时文件早被我们卸载，`nodeType()` 抛 `Node type is not installed`，且中断官方面板该轮引用刷新。关键事实（无头实测）：`definitionsInFile` 对**未安装**的合法 .hda 照样枚举定义、`nodeTypeCategory()` 照样可读，只有空壳/损坏文件抛 OperationFailed（该 note 第 9 行的"读不到"仅指删空后的空壳，不适用于完整文件）——所以"含不含 data 类定义"可以、也应该在安装前判断，非 recipe 文件根本不装（不存在"装了再卸"，事件链整个掐断）。未装载的非 recipe 文件**静默跳过**（2026-11 用户拍板：lib_dirs 与 OTL 目录重叠是常态，逐文件告警太吵——且 `core/log.py` 的 logger DEBUG 全放行，降级到 debug 无意义，只能不发）；已加载的非 recipe 残留（用户手装/旧流程遗留）**不动**、仍告警：可能正被场景节点引用，卸载会把引用打挂；读不到定义但仍在会话里的文件卸载还原（对齐旧空壳语义）。
 
 ## 数据读取（公开 API）
 

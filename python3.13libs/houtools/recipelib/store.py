@@ -17,8 +17,11 @@
   的 recipe——出厂（$HFS）/ Labs / 用户偏好默认库里的 recipes 一律不显示。
 - 面板只做展示与管理，创建 recipe 走 Houdini 官方保存流程；文件夹里放
   官方保存到库文件夹的 .hda 或别人分享的 recipe .hda，都会被扫描加载。
-- 误装防护：安装后检查 definitionsInFile，没有任何 data 类定义的文件
-  （误放进来的普通 OTL）立即卸载还原，不给会话留副作用。
+- 误装防护：安装**前**用 definitionsInFile 预检（对未安装的合法 .hda
+  同样可枚举定义），没有任何 data 类定义的文件（误放进来的普通 OTL）
+  根本不装，不给会话留副作用——原先"装入再卸载"会触发官方 hrecipes
+  的 LibraryInstalled 延迟刷新竞态（刷新时文件已卸载，defn.nodeType()
+  抛 "Node type is not installed"，见 ensure_libraries_installed 注释）。
 - uiready.py 每次启动也调 ensure_libraries_installed，让 Tab 菜单里的
   session tool 从会话一开始就注册。
 
@@ -164,15 +167,23 @@ def scan_library_files(lib_dirs):
 
 
 def ensure_libraries_installed(lib_dirs):
-    """安装库文件夹里的全部 .hda，返回其中确含 recipe 定义的文件集合。
+    """安装库文件夹里的全部 recipe .hda，返回其中确含 recipe 定义的文件集合。
 
-    - 已加载的文件跳过（realpath 比对，重复刷新不重装）；
-    - 新安装后检查 definitionsInFile：没有任何 data 类定义的（误放进
-      来的普通 OTL）立即卸载——安装是读 recipe 的必要手段，不该有副作用；
-    - **扫描全程不删任何磁盘文件**：装不上/读不到定义的空壳、装不上
-      的损坏大文件一律只卸载还原会话 + 告警，文件保留待用户手动清理
-      （lib_dirs 可能指向共享盘/生产目录，未经确认的自动删除不可接受；
-      原 <512B 空壳自愈已按用户要求撤除）。
+    - **预检前移（2026-11）**：definitionsInFile 对未安装的合法 .hda
+      照样枚举定义、nodeTypeCategory() 照样可读（无头实测；仅空壳/
+      损坏文件抛 OperationFailed）——"含不含 data 类定义"在 installFile
+      **之前**判断，非 recipe 文件根本不装。原流程"装入→查
+      definitionsInFile→无 data 定义立即卸载"会踩官方 hrecipes 的竞态：
+      installFile 触发 LibraryInstalled 事件，hrecipes 把路径攒进队列、
+      等主线程空闲才 deferred 刷新（其 _flushInstalledLibraries），刷新
+      时文件已被我们卸载，defn.nodeType() 抛 "Node type is not installed"
+      （其 addRefsFromLibraryPath 无 try/except），每会话首次扫描必炸
+      一条 deferred traceback，且中断官方面板该轮引用刷新。
+    - 已加载的文件跳过安装（realpath 比对，重复刷新不重装）；
+    - **扫描全程不删任何磁盘文件**：读不到定义的空壳、损坏大文件一律
+      只告警，文件保留待用户手动清理（lib_dirs 可能指向共享盘/生产目
+      录，未经确认的自动删除不可接受；原 <512B 空壳自愈已按用户要求
+      撤除）。
     """
     import hou
     loaded = {_norm(p) for p in hou.hda.loadedFiles()}
@@ -180,6 +191,42 @@ def ensure_libraries_installed(lib_dirs):
     keep = set()
     for path in scan_library_files(lib_dirs):
         key = _norm(path)
+        try:
+            defns = hou.hda.definitionsInFile(path)
+            has_recipe = any(
+                d.nodeTypeCategory() is not None
+                and d.nodeTypeCategory().name() == data_cat
+                for d in defns)
+        except Exception as exc:
+            # 读不到定义（83B 空壳、损坏、杀软/同步盘瞬时占用）：文件
+            # 保留，只在其仍占着会话时卸载还原（历史安装残留）
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = -1
+            if key in loaded:
+                try:
+                    hou.hda.uninstallFile(path)
+                    log.warning("unreadable recipe library %s (%d bytes) "
+                                "uninstalled from session; file kept, "
+                                "remove manually if unwanted", path, size)
+                except Exception as exc2:
+                    log.warning("uninstall unreadable recipe library %s "
+                                "failed: %s", path, exc2)
+            else:
+                log.warning("inspect definitions in %s failed (%d bytes);"
+                            " kept for manual cleanup: %s", path, size, exc)
+            continue
+        if not has_recipe:
+            # 误放进来的普通 OTL：不装（也就不存在"装了再卸"），文件
+            # 保留、静默跳过——lib_dirs 与 OTL 目录重叠时这是常态
+            # （2026-11 用户拍板不刷屏；本 logger DEBUG 全放行，降级
+            # 无意义）。已加载的残留（用户手装/旧流程遗留）仍告警：
+            # 可能正被场景节点引用，卸载会把引用打挂
+            if key in loaded:
+                log.warning("non-recipe library %s loaded in session; left "
+                            "untouched (no data-category definitions)", path)
+            continue
         if key not in loaded:
             try:
                 hou.hda.installFile(path)
@@ -194,51 +241,7 @@ def ensure_libraries_installed(lib_dirs):
                 log.warning("install recipe library %s failed (%d bytes);"
                             " kept for manual cleanup: %s", path, size, exc)
                 continue
-        try:
-            has_recipe = any(
-                d.nodeTypeCategory() is not None
-                and d.nodeTypeCategory().name() == data_cat
-                for d in hou.hda.definitionsInFile(path))
-        except Exception as exc:
-            log.warning("inspect definitions in %s failed: %s", path, exc)
-            has_recipe = False
-        if has_recipe:
-            keep.add(key)
-        else:
-            try:
-                defs_here = hou.hda.definitionsInFile(path)
-            except Exception as exc:
-                # 二次读取失败（多数是库已被 Houdini 自动卸载）：按空
-                # 处理，但不再静默，留下告警痕迹
-                log.warning("re-inspect definitions in %s failed: %s",
-                            path, exc)
-                defs_here = []
-            if not defs_here and os.path.isfile(path):
-                # 空壳库文件（0 个定义，历史删除残留）：卸载还原会话，
-                # 磁盘文件保留（自动删除已撤，用户拍板只告警不删）。
-                # 每次刷新会对它重试一次安装并留一条告警，直到用户手动
-                # 清理——文件名即来源，删除无歧义
-                try:
-                    hou.hda.uninstallFile(path)
-                except Exception as exc:
-                    log.debug("uninstall empty shell %s failed: %s",
-                              path, exc)
-                try:
-                    size = os.path.getsize(path)
-                    log.warning("empty recipe library shell %s (%d bytes) "
-                                "uninstalled from session; file kept, "
-                                "remove manually if unwanted", path, size)
-                except OSError as exc:
-                    log.warning("cannot inspect empty shell %s: %s",
-                                path, exc)
-            elif key not in loaded:
-                # 本次会话新装、且与 recipe 无关（误放进来的普通 OTL）：
-                # 卸载还原，不删除文件本身
-                try:
-                    hou.hda.uninstallFile(path)
-                except Exception as exc:
-                    log.warning("uninstall non-recipe library %s failed: %s",
-                                path, exc)
+        keep.add(key)
     return keep
 
 
