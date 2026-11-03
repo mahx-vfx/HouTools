@@ -952,7 +952,10 @@ def main():
             assert hdr_browser.set_favorite(target, True) is True
             assert hdr_browser.set_favorite(target, True) is True  # 幂等
             win = hdr_browser._HdrLibraryWindow(tmp)
-            # 打开不自动扫描/生成缩略图：列表为空，手动 reload（=点「刷新」）才开始
+            # 构造不扫描（自动扫描挂在首次 show 的 showEvent 经
+            # singleShot 排队，测试窗口不 show 不触发）；此处手动
+            # reload（=点「刷新」）驱动
+            assert win._need_reload is True, win._need_reload
             assert win.list.count() == 0, win.list.count()
             win.reload()
             assert win.list.count() == 6, win.list.count()

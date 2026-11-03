@@ -857,8 +857,12 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         if self._selection_cb_registered:
             self._on_selection_changed()  # 回调只在变化时触发，先初始化一次
 
+        self._need_reload = True    # 首次/每次从隐藏到显示时自动扫描
+                                    # （见 showEvent/hideEvent，同 Recipe
+                                    # Library 生命周期）
         self._update_dir_label()
-        # 打开不自动扫描/生成缩略图：点「刷新」才开始
+        # 首次显示即自动扫描（showEvent 经 singleShot 排队，会覆盖本行
+        # 占位文案）；无头/未显示环境保留提示
         self.status.setText("点击「刷新」扫描 HDR 库")
 
     # ---------------- 数据加载 ----------------
@@ -1046,6 +1050,29 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         # 不再执行，在此重注册，并刷一次显示（隐藏期间选择可能已变）
         self._register_selection_callback()
         self._on_selection_changed()
+        # 每次从隐藏到显示都自动扫描（库文件可能已被外部增删；单例窗口
+        # 关闭只是隐藏，重开面板时 showEvent 会再次触发）。hideEvent 置
+        # 标志，避免最小化/置顶切换等无谓刷新——同 Recipe Library 生命周期
+        if self._need_reload:
+            self._need_reload = False
+            self.status.setText("正在扫描 HDR 库…")
+            # singleShot 让窗口先画出来再进主线程扫描（大库/共享盘的全量
+            # os.walk 可达数秒，卡在 showEvent 里窗口迟迟不出现）；排队
+            # 期间窗口可能已被 Reload 销毁，由 _auto_reload 兜底
+            QtCore.QTimer.singleShot(0, self._auto_reload)
+
+    def _auto_reload(self):
+        """showEvent 排队的自动扫描；窗口可能已被 Reload 销毁（RuntimeError
+        在访问 C++ 成员时抛出，属预期，静默跳过）。"""
+        try:
+            self.reload()
+        except RuntimeError as exc:
+            log.debug("auto reload skipped (window deleted): %s", exc)
+
+    def hideEvent(self, event):
+        # 关闭/隐藏后重开时由 showEvent 自动重扫（库可能已被外部增删）
+        self._need_reload = True
+        super().hideEvent(event)
 
     def _fit_grid(self):
         """缩略图尺寸只由滑条决定（固定，不随面板宽伸缩）。

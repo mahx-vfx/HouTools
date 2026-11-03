@@ -17,7 +17,7 @@
 - **label/submenu 的实际存储随 recipe_category 不同**（22.0.429 实测，与 recipe_format 文档页有出入）——tab_tool/preset 类在 `properties.label/submenu`，shelf 式 tool 在 `tool.tool_labels[]`/`tool.tab_submenus[]`。
 - **节点数**：照官方 `hrecipes.utils.countContentsOfItem` 语义自实现（children/editable_nodes 递归累计、subnetindirectinput 不计，与 `hou.data.dataFromRecipe` 实测一致）。
 - **版本号**：`info.houdini_version` 官方保存时经 `hou.applicationVersionString()` 写入（官方 354 个出厂 recipe 全带、跨 20.5~22.0 实测），**显示完整版本号**（如 22.0.429，不做 H22.0 缩写）。
-- **显示链 = 用户自定义显示名（`metadata.display_names`，支持中文；双击预览名称或右键「自定义显示名」设置，清空即恢复）> 官方 label > 内部名末段**（官方保存时 label 常为空，如 mahx::my_copy_test → my_copy_test）；预览面板元信息第一行固定显示 `内部名称:` 全名。
+- **显示链 = 用户自定义显示名（`metadata.display_names`，支持中文；右键「自定义显示名」设置——卡片右键/预览名称右键统一入口，2026-11 起预览名称不再支持双击改名，清空即恢复）> 官方 label > 内部名末段**（官方保存时 label 常为空，如 mahx::my_copy_test → my_copy_test）；预览面板元信息第一行固定显示 `内部名称:` 全名。
 
 ## 侧栏（QTreeWidget + _SidebarDelegate）
 

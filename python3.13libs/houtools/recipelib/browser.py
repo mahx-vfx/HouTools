@@ -449,13 +449,14 @@ class _Grid(QtWidgets.QListWidget):
 
 
 class _PreviewNameLabel(QtWidgets.QLabel):
-    """预览面板的名称标签：双击可自定义显示名（支持中文）。
+    """预览面板的名称标签：右键「自定义显示名」（支持中文）。
 
+    编辑入口与卡片右键/其它预览区统一走右键菜单（2026-11 用户指定，
+    原左键双击改名已移除）；菜单 handler 在窗口侧 _on_name_context_menu。
     名称前画卡片行1同款颜色竖条（宽度/圆角/间距取自 _CardDelegate），
     颜色经 set_bar_color 与卡片主题同步；None 清掉竖条（空态用）。
     """
 
-    nameDoubleClicked = QtCore.Signal()
     _BAR_GAP = 6   # 竖条与名字的间距，同卡片行1
     _INDENT = 8    # 整行（竖条+名字）相对面板左缘的缩进，不贴边
 
@@ -483,10 +484,6 @@ class _PreviewNameLabel(QtWidgets.QLabel):
                                                 _CardDelegate.BAR_W,
                                                 fm.height() - 2), 1.5, 1.5)
         super().paintEvent(event)
-
-    def mouseDoubleClickEvent(self, event):
-        self.nameDoubleClicked.emit()
-        super().mouseDoubleClickEvent(event)
 
 
 class _ClickableImage(QtWidgets.QLabel):
@@ -1398,8 +1395,13 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         # 文本类 QLabel 一律钉 PlainText（富文本区集中在 _show_tags，
         # 那边已 html.escape）
         self.preview_name.setTextFormat(QtCore.Qt.PlainText)
-        self.preview_name.setToolTip("双击可自定义显示名称（支持中文）")
-        self.preview_name.nameDoubleClicked.connect(self._rename_selected)
+        self.preview_name.setToolTip("右键可自定义显示名称（支持中文）")
+        # 预览名称右键 = 自定义显示名入口（与卡片右键同一套 handler；
+        # QLabel 默认右键本就不弹菜单，无需屏蔽默认行为）
+        self.preview_name.setContextMenuPolicy(
+            QtCore.Qt.CustomContextMenu)
+        self.preview_name.customContextMenuRequested.connect(
+            self._on_name_context_menu)
         # 元信息卡片：前三行纵排 + 两列信息（左：分类/版本，右：层级/焦点，
         # 中缝竖线分隔）。不用 QGridLayout rowSpan——其 Expanding 分隔线
         # 会拉伸行距留空隙；改左右双列 VBox 紧凑堆叠
@@ -3318,6 +3320,19 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self._snip_thumb(info)
         elif act is not None and act is act_clear:
             self._clear_thumb(info, self.list.currentItem())
+
+    def _on_name_context_menu(self, pos):
+        """预览名称右键：自定义显示名入口（与卡片右键同一 handler）。
+        无预览 recipe 时不弹。QLabel 的 pos 在控件自身坐标系，
+        mapToGlobal 不经 viewport（对照 _on_doc_context_menu 分流）。"""
+        if self._preview_info is None:
+            return
+        menu = QtWidgets.QMenu(self.preview_name)
+        act_rename = menu.addAction("自定义显示名")
+        act = menu.exec_(self.preview_name.mapToGlobal(pos))
+        menu.deleteLater()   # exec_ 的模态菜单用完即释放，防积存
+        if act is act_rename:
+            self._rename_selected()
 
     def _set_color(self, info):
         """卡片颜色框取色（_pick_color，颜色/恢复默认语义见其 docstring）。"""

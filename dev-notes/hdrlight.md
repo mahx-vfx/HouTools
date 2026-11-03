@@ -37,7 +37,7 @@
 
 ## 库目录
 
-存配置目录 `hdr_library.json`（未配置时顶部路径显示为空、打开不自动扫描，点「刷新」才扫描+补缩略图）。**无默认库目录**（2026-11 移除 `default_lib_dir`/`HDR_TOOL_LIB`——HDR 库动辄数 GB，必须用户显式指定）；`list_categories`/`_iter_hdrs` 对空 lib_dir **早退返回空**（否则 reload 空态守卫里 `_rebuild_sidebar` 仍会 `os.listdir("")`，控制台每次刷 cannot list 警告）；「更换目录」对话框未配置时的起始位置建议 = `_suggested_lib_dir()`（配置目录同级的 `HouTools/hdri`，纯 QFileDialog 起点不产生扫描）。
+存配置目录 `hdr_library.json`（**打开自动扫描**：`_need_reload` 生命周期同 Recipe Library——构造置 True，showEvent 消费、hideEvent 置位，每次从隐藏到显示都重扫（库可能已被外部增删）；扫描经 `QTimer.singleShot(0)` 排队，让窗口先画出来再进主线程全量 os.walk（大库/共享盘可达数秒，卡在 showEvent 里窗口迟迟不出现），排队期间窗口被 Reload 销毁由 `_auto_reload` 捕 RuntimeError 兜底；未配置 lib_dir 时 reload 空态早退只提示，绝不扫文件系统；手动「刷新」语义不变。2026-11 前旧设计是"打开不自动扫描点刷新才开始"，随自动加载翻案）。**无默认库目录**（2026-11 移除 `default_lib_dir`/`HDR_TOOL_LIB`——HDR 库动辄数 GB，必须用户显式指定）；`list_categories`/`_iter_hdrs` 对空 lib_dir **早退返回空**（否则 reload 空态守卫里 `_rebuild_sidebar` 仍会 `os.listdir("")`，控制台每次刷 cannot list 警告）；「更换目录」对话框未配置时的起始位置建议 = `_suggested_lib_dir()`（配置目录同级的 `HouTools/hdri`，纯 QFileDialog 起点不产生扫描）。
 
 ## 已知代价备忘（暂不修，2026-10 审查）
 
