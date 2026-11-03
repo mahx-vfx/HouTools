@@ -98,7 +98,11 @@
 - `doc_exists` = 文件存在**且正文非空白**——空白编辑器保存落的 0 字节 doc.md 视为无文档，主面板照常回退官方备注。
 - 编辑器是**确认/取消模式**（无自动保存）：编辑不落盘、「确认」才 write_doc+发 docSaved+关窗（保存失败不关窗），「取消」/X 关闭丢弃改动（有修改先弹丢弃确认），取消时清理本次会话插入的 assets（正文已丢弃引用不存在）。
 - **文档编辑器「确认」成功后必须清 `_inserted_assets` 并 `setModified(False)`**——否则再次关闭时"丢弃修改"确认会把已保存文档引用的 assets 删掉（保存成功 ≠ 会话结束）。
-- 渲染 `QTextBrowser.setMarkdown`（**QtWebEngine 在 Houdini 内不可初始化**——Qt6 要求先于 QApplication，已实测；表格/图片/中文正常，代码块无高亮）。
+- **渲染 `QTextBrowser.setMarkdown` + `_restyle_document` 渲染后格式化**（**QtWebEngine 方案已评估否决**——H21/H22 的 PySide6 都带 QtWebEngine 且 Qt6.8 下 QWebEngineView 创建不再要求先于 QApplication，但无头端到端加载挂死 + 进程模型/安全面/H21 一致性代价不成比例；2026-11 用户拍板走 QTextBrowser）。**配色参考用户 vault 的 OnePage 主题暗色方案（2026-11 用户指定，变量值照搬）**：H1 皇家蓝 #4F74AF/H2 深紫 #8567BD/H3 青绿 #4E9A8A/H4 陶土 #C0765E/H5 金棕 #C99B5E/H6 灰橄榄 #8A8478，**加粗橙 #E89A60、斜体灰绿 #A6BA9D**（用户点名"加粗/斜体要有颜色变化"），链接 #5eb1ef、行内代码/围栏底色 #2d2d2d、引用块=面板底 #232327+左竖条（导入器默认链接纯蓝 #0000ff、引用 40px margin 都是脏源）。`setIndentWidth(14)`（默认 40px/级是"列表空白多"根源）、行高 130%、文档 margin 10。
+- **标题字重走 VF 变量轴**：OnePage 用 650/620/580 小数权重，`QFont.setVariableAxis(Tag("wght"), v)` 精确取（Qt 6.7+，`_HAS_VAR_AXIS` 能力探测——旧 Qt 就近枚举档，H21 消化）。
+- **标题不放任何装饰条（2026-11 用户拍板"彻底去掉"）**：三轮方案全被否——▍字形（方圆体无块元素字形，兜底字体渲染成悬空大色块）→ thin space 底色条（高度跟行框走，130% 行距下膨胀成色块）→ 行内圆角条图片（尺寸精确但用户仍觉多余）。标题只留配色/字号/字重；**将来勿再主动加竖条**。引用块左线（thin space×2 打中性灰底色，逐块续成整线）保留——它是引用面板样式的一部分，非标题装饰。
+- **`_restyle_document` 三趟结构是硬约束**：①纯读收集（块号/块格式/片段位置）→ ②按块号 `findBlockByNumber` 新鲜寻址纯写 → ③插竖条垫底（块内插入不改块号）。**★ QTextBlock 句柄在文档编辑（setBlockFormat 也算）后失效，旧句柄 `next()`/读格式在旧树上错位寻址，会把 A 块格式拷给 B 块（实测 hl 串块）**——严禁读写混趟。片段类别判定：粗体=`fontWeight()>=700`、斜体=`fontItalic()`、行内代码/围栏=`fontFamilies()==['monospace']`（围栏块另有块级标记）、链接=`isAnchor()`；优先级 链接>代码>粗体>斜体；**引用文字不上色**（OnePage 靠面板底色区分引用，灰斜是旧方案残留）。块级标记走 `property()` 真值判断（**引用=属性 4224 存 int 1、围栏=属性 4176 存 bool True，boolProperty/intProperty 各只能读对一种，类型不匹配静默返 0**——数值是 Qt 头文件未公开常量，探针实测）。末块选择钳制 `characterCount()-1`（length 含尾分隔符，`setPosition` 越界告警）。
+- **文档区字体 = 方圆体 VF**（`ui/fonts.py` doc 字族，豁免工具统一字体刷树，机制见 `dev-notes/fonts.md`）。
 - GIF：QImageWriter/hffmpeg 均无 GIF **编码器**（只能读），网格取首帧、预览区 QMovie、文档流动画走 **QMovie 逐帧同步文档资源**（loadResource 返回当前帧 + frameChanged 时 addResource + viewport 刷新——**坑：PySide6 的 QTextCursor 没有 insertWidget**，Qt 富文本不能内嵌控件，曾因此写崩过媒体替换方案）。
 - 视频 `![x](a.mp4)` 在渲染前预处理成普通链接、点击弹 QMediaPlayer——**必须先 setVideoOutput 再 play 否则 InvalidMedia**（实测踩过）。
 - **主面板有文档时直接渲染 markdown 文档**（与编辑器预览共用 MarkdownMediaView，媒体按视口宽缩放；无文档回退显示官方备注），编辑器保存发 docSaved 信号同步刷新面板。

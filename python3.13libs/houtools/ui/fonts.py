@@ -32,6 +32,14 @@ _FAMILY_PROP = "_houtools_tool_font_family"
 _ENFORCER_PROP = "_houtools_font_enforcer_installed"
 _WINDOW_PROP = "_houtools_tool_window"   # 工具窗口标记（enforcer 判定用）
 
+# 文档阅读字体（Recipe Library 文档区专用）：阿里妈妈方圆体 VF 可变字体，
+# 一条 wght 轴覆盖 Regular~Black（实测 400/700/900 三档渲染可辨）——正文
+# Regular、加粗 Bold、标题 ExtraBold，根治"数黑体只有粗字面、加粗无对比"。
+# 仅文档区使用，不进工具统一字体（正文要用有完整字重的阅读字体）。
+_DOC_FONT_FILES = ("AlimamaFangYuanTiVF-Thin.ttf",)
+_DOC_FAMILY_PROP = "_houtools_doc_font_family"
+_EXEMPT_PROP = "_houtools_font_exempt"   # 子树豁免标记（doc 区不刷工具字体）
+
 
 def _tool_family():
     """返回工具字体族名；文件缺失/加载失败返回 None（调用方静默跳过）。"""
@@ -64,11 +72,68 @@ def _tool_family():
     return family
 
 
+def doc_family():
+    """返回文档阅读字体族名（方圆体 VF）；文件缺失/加载失败返回 None。"""
+    app = QtWidgets.QApplication.instance()
+    if app is not None:
+        cached = app.property(_DOC_FAMILY_PROP)
+        if cached:
+            return cached
+    family = None
+    for name in _DOC_FONT_FILES:
+        path = _FONTS_DIR / name
+        if not path.is_file():
+            log.warning("doc font missing: %s", path)
+            continue
+        font_id = QtGui.QFontDatabase.addApplicationFont(str(path))
+        if font_id < 0:
+            log.warning("doc font load failed: %s", path)
+            continue
+        families = QtGui.QFontDatabase.applicationFontFamilies(font_id)
+        if families:
+            family = families[0]
+    if family and app is not None:
+        app.setProperty(_DOC_FAMILY_PROP, family)
+    return family
+
+
+def doc_font(widget):
+    """文档区阅读字体：沿用控件字号只换字族，字重显式钉 Normal——VF 的
+    默认命名实例是 Thin，不钉会被解析成最细的一档。不可用时返回 None
+    （调用方保持原字体）。"""
+    family = doc_family()
+    if not family:
+        return None
+    font = QtGui.QFont(widget.font())
+    font.setFamily(family)
+    font.setWeight(QtGui.QFont.Weight.Normal)
+    return font
+
+
+def mark_font_exempt(widget):
+    """标记 widget 子树豁免工具字体（doc 区用阅读字体）：_stamp 与
+    ChildAdded 过滤器双处尊重。属性在 __init__ 期设置、先于挂树，enforcer
+    的 ChildAdded 才能赶在刷字体前看到。"""
+    widget.setProperty(_EXEMPT_PROP, True)
+
+
+def _is_exempt(widget):
+    """widget 自身或任一祖先带豁免标记（沿父链查，深度有限成本可忽略）。"""
+    w = widget
+    while w is not None:
+        if w.property(_EXEMPT_PROP):
+            return True
+        w = w.parent()
+    return False
+
+
 def _stamp(widget, font):
     """widget 及其全部后代显式设字体（显式设置才能压过 Houdini 的
-    应用级类字体；靠继承会被压回 SideFX 字体）。"""
+    应用级类字体；靠继承会被压回 SideFX 字体）。豁免子树整枝跳过。"""
     widget.setFont(font)
     for child in widget.findChildren(QtWidgets.QWidget):
+        if _is_exempt(child):
+            continue
         child.setFont(font)
 
 
@@ -96,7 +161,7 @@ class _ToolFontEnforcer(QtCore.QObject):
         if not isinstance(child, QtWidgets.QWidget):
             return False
         root = _tool_root_of(obj)
-        if root is not None:
+        if root is not None and not _is_exempt(child):
             _stamp(child, root.font())
         return False
 

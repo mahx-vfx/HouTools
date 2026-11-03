@@ -22,3 +22,10 @@
 
 - **换字体后卡片度量基准必须跟窗口字体**：`_CardDelegate.text_block_height/_font` 走 `_win.font()`（曾用 QApplication.font()，换字体后 gridSize 与绘制错位）。
 - 新字重往 `_FONT_FILES` 追加同族文件（字体自带 Bold 字面，setBold 才真正可见）。
+
+## 文档阅读字体与豁免机制（2026-11）
+
+- **Recipe Library 文档区专用阿里妈妈方圆体 VF**（`AlimamaFangYuanTiVF-Thin.ttf`，可变字体，一条 wght 轴覆盖 Regular~Black——实测 400/700/900 三档渲染可辨；woff/woff2 Qt 加载不了，只取 ttf）：正文 Regular、加粗 Bold、标题 ExtraBold。`doc_family()`/`doc_font()` 与 `_tool_family` 同构，字族名缓存挂 app 动态属性（reload 不重装）；**`doc_font` 显式钉 Weight.Normal——VF 默认命名实例是 Thin，不钉会解析成最细一档**。
+- 为什么文档区不共用数黑体：数黑体只有粗字面，`**加粗**` 与正文零对比（markdown 导入器只给字重 700，同一字面看不出）；阅读正文本就该用有完整字重的字体。
+- **豁免机制**：`mark_font_exempt(widget)` 挂 `_houtools_font_exempt` 动态属性，`_stamp` 与 ChildAdded enforcer 双处尊重（沿父链 `_is_exempt` 判定）。**属性必须在挂树前设置**（`_DocPreview.__init__` 期设置，enforcer 的 ChildAdded 才能赶在刷工具字体前看到）；工具窗口 `apply()` 跑在 preview 创建之前也不怕——挂树瞬间 enforcer 会刷，豁免属性就是拦这个的。
+- PySide6 6.8 坑：`QFont.setWeight` 只收 `QFont.Weight` 枚举不收 int；`QTextCharFormat` 下划线枚举在 `QtGui.QTextCharFormat.UnderlineStyle`（不在 QFont 上）；`QTextBlockFormat.LineHeightTypes.*.value` 取 int（`int(enum)` 不支持）。

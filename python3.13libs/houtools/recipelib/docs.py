@@ -1,9 +1,12 @@
 """Recipe Library 的 Markdown 文档：编辑器、实时预览、媒体播放。
 
-渲染走 QTextBrowser.setMarkdown（QtWebEngine 在 Houdini 里无法安全
-初始化——Qt6 要求 QtWebEngineQuick.initialize() 先于 QApplication，而
-Houdini 已创建主 QApplication，本仓库已实测确认）。能力边界（目检
-验证）：标题/粗斜体/行内代码/链接/表格/列表/图片都正常；围栏代码块
+渲染走 QTextBrowser.setMarkdown + _restyle_document 渲染后格式化。
+QtWebEngine 方案 2026-11 复核后否决：H21/H22 的 PySide6 都自带模块，
+Qt6.8 下创建 QWebEngineView 也不再要求先于 QApplication（旧结论
+"必须 initialize 先于 QApplication" 已被探针证伪），但无头环境端到端
+加载页面挂死，且 Chromium 进程模型/内存/安全面重做/双版本一致的代价
+不成比例——细节见 dev-notes/recipelib.md。能力边界（目检验证）：
+标题分级配色/粗体对比/行内代码底色/链接色由 restyle 补齐，围栏代码块
 无语法高亮。
 
 媒体的处理（Houdini 22.0.429 GUI 会话实测）：
@@ -25,6 +28,7 @@ from PySide6.QtMultimediaWidgets import QVideoWidget
 from houtools.core.log import get_logger
 from houtools.dev import status
 from houtools.recipelib import metadata
+from houtools.ui import fonts as tool_fonts
 from houtools.ui.dialogs import localize_buttons, warn
 
 log = get_logger("recipelib.docs")
@@ -42,13 +46,54 @@ _OVERLAY_SB_QSS = (
     "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical "
     "{ background: transparent; }")
 
+# ---- 文档排版（setMarkdown 后格式化，2026-11 用户拍板）----
+# 配色参考用户 vault 的 OnePage 主题暗色方案（--typo-h1..h6/bold/italic
+# 变量原值照搬）；字重用 VF 变量轴精确取主题的 650/620/580 小数权重
+_HEAD_STYLES = {   # level: (pt, 颜色, wght 轴值, 上间距, 下间距)
+    1: (15.0, "#4F74AF", 650, 10, 4),
+    2: (12.5, "#8567BD", 620, 8, 3),
+    3: (11.25, "#4E9A8A", 580, 7, 2),
+    4: (10.5, "#C0765E", 500, 6, 2),
+    5: (10.0, "#C99B5E", 500, 6, 2),
+    6: (9.5, "#8A8478", 500, 6, 2),
+}
+_BOLD_COLOR = "#E89A60"        # OnePage --typo-bold（加粗橙）
+_ITALIC_COLOR = "#A6BA9D"      # OnePage --typo-italic（斜体灰绿）
+_LINK_COLOR = "#5eb1ef"        # 链接：导入器默认纯蓝 #0000ff 太扎眼
+_CODE_BG = "#2d2d2d"           # 行内代码/围栏块底色
+_QUOTE_BG = "#232327"          # OnePage blockquote 面板底（primary-alt 近似）
+_QUOTE_BAR = "#5a5a66"         # OnePage blockquote 左竖条（color-base-50 近似）
+_LINE_HEIGHT_PCT = 130         # 正文行高（比例式）
+_LIST_INDENT_PX = 14           # 列表缩进（Qt 默认 40px/级，空白过大）
+_DOC_MARGIN_PX = 10            # 文档页边距（默认 4px 太贴边）
+_BAR_CHARS = "\u2009\u2009"    # 引用左线体：thin space×2 打底色（逐块续成整线）
+# markdown 导入器打的块属性（Qt 头文件未公开常量名，PySide6 无属性名，
+# 数值经 detect 探针实测）：引用块 int 1 / 围栏代码块 bool True
+_MD_PROP_BLOCKQUOTE = 4224
+_MD_PROP_CODE_FENCE = 4176
+_INLINE_CODE_FAMILY = "monospace"   # 导入器给行内代码/围栏打的字族标记
+# VF 变量轴精确字重（Qt 6.7+）；旧 Qt 就近取枚举档（H21 能力探测消化）
+_HAS_VAR_AXIS = hasattr(QtGui.QFont, "setVariableAxis")
+
+
+def _apply_heading_weight(f, wght):
+    """标题字重：变量轴精确取 650/620/580 等小数权重，旧 Qt 降级枚举档。"""
+    if _HAS_VAR_AXIS:
+        f.setVariableAxis(QtGui.QFont.Tag("wght"), float(wght))
+    else:
+        f.setWeight(QtGui.QFont.Weight(
+            500 if wght < 540 else 600 if wght < 660 else 700))
+
 
 class _DocPreview(QtWidgets.QTextBrowser):
     """文档预览：相对路径图片按文档目录解析（markdown 里写 assets/x.png）。
 
-    垂直滚动条为悬浮细滑杆：reparent 进 viewport 右缘叠加（不占布局，
-    文字列宽恒定不被挤压），4px 宽、可滚动时才显示——主面板预览与文档
-    编辑器右栏共用本类，两处自动一致（2026-11 用户拍板 A+B 组合）。
+    垂直滚动条为悬浮细滑杆：reparent 到 QTextBrowser 本体（与原生滚动
+    条同级的容器子控件，不占布局，文字列宽恒定），4px 宽、可滚动时才
+    显示——主面板预览与文档编辑器右栏共用本类，两处自动一致。
+    字体为文档阅读字体（方圆体 VF，有完整字重轴），豁免工具统一字体
+    刷树（fonts.py 豁免机制）；setMarkdown 后由 _restyle_document 重排
+    层级（标题分级配色/粗体变色/列表缩进等）。
     """
 
     def __init__(self, doc_dir, parent=None):
@@ -61,6 +106,13 @@ class _DocPreview(QtWidgets.QTextBrowser):
         # CustomContextMenu 策略只发信号、不弹默认菜单——主面板接收信号
         # 自建「编辑文档」菜单，无人接收（文档编辑器预览栏）= 右键不弹
         self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        # ---- 文档阅读字体 ----
+        # 豁免标记必须在挂树前设置（enforcer 的 ChildAdded 才能赶在刷
+        # 工具字体前看到）；方圆体缺失则保持原字体（graceful 降级）
+        tool_fonts.mark_font_exempt(self)
+        doc_font = tool_fonts.doc_font(self)
+        if doc_font is not None:
+            self.setFont(doc_font)
         # ---- 悬浮细滑杆 ----
         # 策略常关 + 滚动条对象挂到本控件（与原生滚动条同级的容器子控件）：
         # QAbstractScrollArea 只给自挂的滚动条留布局宽度，policy 常关后
@@ -106,6 +158,133 @@ class _DocPreview(QtWidgets.QTextBrowser):
 
     def set_doc_dir(self, doc_dir):
         self._doc_dir = doc_dir
+
+    def _restyle_document(self):
+        """setMarkdown 后重排层级（2026-11 用户拍板）：标题分级配色字重、
+        加粗/斜体变色、行内代码底色、链接强调色、引用块面板化、列表缩进、
+        行高。标题不放任何装饰条（字形/底色条/图片条三轮方案全部被否）。
+
+        导入器只打格式标记（headingLevel/字重 700/monospace 字族/anchor），
+        这里读标记回填观感。两趟走，趟间不允许复用块句柄——
+        ★ QTextBlock 句柄在文档编辑（setBlockFormat 也算）后失效，
+        拿旧句柄 next()/读格式会在旧树上错位寻址，把 A 块的格式拷给 B 块
+        （实测 hl 串块）；所以第一趟纯读、第二趟按块号 findBlockByNumber
+        新鲜寻址纯写（格式编辑不挪字符位置，第一趟记的片段位置全程有效）。
+        引用左线（thin space 底色）是文本插入，放最后垫底。"""
+        doc = self.document()
+        doc.setIndentWidth(_LIST_INDENT_PX)
+        doc.setDocumentMargin(_DOC_MARGIN_PX)
+        family = tool_fonts.doc_family()   # 标题沿用阅读字族的重字重
+        lh_type = QtGui.QTextBlockFormat.LineHeightTypes.\
+            ProportionalHeight.value
+        # ---- 第一趟：纯读 ----
+        blocks = []   # (block_number, blockFormat, [(pos, len, charFormat)])
+        block = doc.firstBlock()
+        while block.isValid():
+            frags = []
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid():
+                    frags.append((frag.position(), frag.length(),
+                                  frag.charFormat()))
+                it += 1
+            blocks.append((block.blockNumber(), block.blockFormat(), frags))
+            block = block.next()
+        # ---- 第二趟：纯写（新鲜寻址）----
+        for number, bf, frags in blocks:
+            level = bf.headingLevel()
+            # 引用标记存 int 1、围栏标记存 bool True——boolProperty/
+            # intProperty 各只能读对一种（类型不匹配静默返 0），统一
+            # property() 真值判断
+            is_quote = bool(bf.property(_MD_PROP_BLOCKQUOTE))
+            is_fence = bool(bf.property(_MD_PROP_CODE_FENCE))
+            # 全量拷属性（heading 级别/列表 objectIndex/既有 margin 都在
+            # 里面，丢哪样塌哪样），再叠加行高与分类修饰
+            nbf = QtGui.QTextBlockFormat()
+            for key, value in bf.properties().items():
+                nbf.setProperty(key, value)
+            nbf.setLineHeight(_LINE_HEIGHT_PCT, lh_type)
+            if level:
+                _pt, _color, _wght, top_m, bottom_m = _HEAD_STYLES[level]
+                nbf.setTopMargin(top_m)
+                nbf.setBottomMargin(bottom_m)
+            elif is_quote:
+                # 导入器给引用块 40px 左右 margin（"空白太多"的来源之一）
+                nbf.setLeftMargin(8)
+                nbf.setRightMargin(0)
+            elif is_fence:
+                nbf.setBackground(QtGui.QColor(_CODE_BG))
+            if is_quote:
+                # OnePage：引用块 = 微亮面板底（引用内的标题也垫底色）
+                nbf.setBackground(QtGui.QColor(_QUOTE_BG))
+            blk = doc.findBlockByNumber(number)
+            sel = QtGui.QTextCursor(blk)
+            sel.setPosition(blk.position())
+            # 末块 length 含文档尾分隔符，position+length == characterCount
+            # 而 setPosition 有效上界是 characterCount-1——钳制防告警
+            sel.setPosition(
+                min(blk.position() + blk.length(),
+                    doc.characterCount() - 1),
+                QtGui.QTextCursor.KeepAnchor)
+            sel.setBlockFormat(nbf)
+            if level:
+                pt, color, wght, _tm, _bm = _HEAD_STYLES[level]
+                cf = QtGui.QTextCharFormat()
+                f = QtGui.QFont(self.font())
+                if family:
+                    f.setFamily(family)
+                f.setPointSizeF(pt)
+                _apply_heading_weight(f, wght)
+                cf.setFont(f)
+                cf.setForeground(QtGui.QColor(color))
+                sel.setCharFormat(cf)
+            else:
+                for pos, length, old_cf in frags:
+                    fmt = self._restyle_fragment_format(old_cf, is_fence)
+                    if fmt is None:
+                        continue
+                    cur = QtGui.QTextCursor(doc)
+                    cur.setPosition(pos)
+                    cur.setPosition(pos + length,
+                                    QtGui.QTextCursor.KeepAnchor)
+                    cur.setCharFormat(fmt)
+        # ---- 第三趟：引用左线垫底（块内插入不改块号）----
+        # 条体 = thin space×2 打底色 + 普通空格做间隔，无字形依赖。
+        # 标题竖条三轮方案（▍字形/thin space 底色条/图片条）全部被否，
+        # 2026-11 用户拍板：标题不放任何装饰条，只留配色/字阶/字重。
+        for number, bf, _frags in blocks:
+            if not bool(bf.property(_MD_PROP_BLOCKQUOTE)):
+                continue
+            bar_cf = QtGui.QTextCharFormat()
+            bar_cf.setForeground(QtGui.QColor(_QUOTE_BAR))
+            bar_cf.setBackground(QtGui.QColor(_QUOTE_BAR))
+            cur = QtGui.QTextCursor(doc.findBlockByNumber(number))
+            cur.insertText(_BAR_CHARS, bar_cf)
+            cur.insertText(" ", QtGui.QTextCharFormat())
+
+    def _restyle_fragment_format(self, cf, is_fence):
+        """片段级配色（优先级：链接 > 行内代码 > 粗体 > 斜体；引用文字
+        用正常色——OnePage 引用块靠面板底色区分，不做灰斜）；无需改动
+        返回 None。只读不写，供第二趟按位置套用。"""
+        fmt = None
+        fams = cf.fontFamilies()
+        is_code = (fams is not None
+                   and list(fams) == [_INLINE_CODE_FAMILY]
+                   and not is_fence)
+        if cf.isAnchor():
+            fmt = QtGui.QTextCharFormat(cf)
+            fmt.setForeground(QtGui.QColor(_LINK_COLOR))
+        elif is_code:
+            fmt = QtGui.QTextCharFormat(cf)
+            fmt.setBackground(QtGui.QColor(_CODE_BG))
+        elif cf.fontWeight() >= int(QtGui.QFont.Weight.Bold):
+            fmt = QtGui.QTextCharFormat(cf)
+            fmt.setForeground(QtGui.QColor(_BOLD_COLOR))
+        elif cf.fontItalic():
+            fmt = QtGui.QTextCharFormat(cf)
+            fmt.setForeground(QtGui.QColor(_ITALIC_COLOR))
+        return fmt
 
     def _resolve(self, url):
         """链接/资源 URL → (绝对路径, 是否允许)。
@@ -201,6 +380,7 @@ class MarkdownMediaView(_DocPreview):
         self.stop_media()
         text = self._VIDEO_IMAGE_RE.sub(r"[▶ \1](\2)", text)
         self.setMarkdown(text)
+        self._restyle_document()
         # QMovie 在布局首次查询图片资源时经 loadResource 惰性创建并启动
 
     def stop_media(self):
