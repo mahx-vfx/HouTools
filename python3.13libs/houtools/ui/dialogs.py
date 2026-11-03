@@ -7,11 +7,28 @@ UI 一律中文，按 QDialogButtonBox 的 role 改写。无 hou 依赖（smoke 
 注意：QColorDialog / QFileDialog 在 Windows 上默认用原生对话框，按钮
 不受此控制——需要改按钮文字的对话框须实例化调用并加
 DontUseNativeDialog 选项（静态便利函数拿不到内部按钮对象）。
+
+⚠ 包装类型粘连（2026-11 H21 会话实测）：工具字体 enforcer（ui/fonts，
+QApplication 级 ChildAdded 过滤器）会在对话框构造期触碰新控件，PySide6
+6.5（H21）由此把标准按钮先包成 QWidget——此后 QDialogButtonBox.button()
+一直返回该旧包装、没有 setText（PySide6 6.8/H22 正确解析派生类型，
+不触发， H21 复现见 _clear_thumb 清缩略图确认框 AttributeError）。
+所以 button() 返回值不能信 Python 类型：一律先按 C++ 指针重包成
+QAbstractButton（_rewrap）再改文字。
 """
 
+import shiboken6
 from PySide6 import QtWidgets
 
 _LABELS = None
+
+
+def _rewrap(obj, py_type):
+    """obj 的 Python 包装被粘连成别的类型（如 QWidget）时按 C++ 指针
+    重包成 py_type；已是目标类型则原样返回。"""
+    if isinstance(obj, py_type):
+        return obj
+    return shiboken6.wrapInstance(shiboken6.getCppPointer(obj)[0], py_type)
 
 
 def localize_buttons(dialog):
@@ -31,7 +48,7 @@ def localize_buttons(dialog):
         for role, text in _LABELS.items():
             btn = bbox.button(role)
             if btn is not None:
-                btn.setText(text)
+                _rewrap(btn, QtWidgets.QAbstractButton).setText(text)
 
 
 def warn(parent, title, text):

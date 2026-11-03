@@ -219,13 +219,11 @@ def ensure_libraries_installed(lib_dirs):
             continue
         if not has_recipe:
             # 误放进来的普通 OTL：不装（也就不存在"装了再卸"），文件
-            # 保留、静默跳过——lib_dirs 与 OTL 目录重叠时这是常态
-            # （2026-11 用户拍板不刷屏；本 logger DEBUG 全放行，降级
-            # 无意义）。已加载的残留（用户手装/旧流程遗留）仍告警：
-            # 可能正被场景节点引用，卸载会把引用打挂
-            if key in loaded:
-                log.warning("non-recipe library %s loaded in session; left "
-                            "untouched (no data-category definitions)", path)
+            # 保留、静默跳过。lib_dirs 与 OTL 目录重叠是常态——在扫描
+            # 路径上的文件会话里本来就装载着，未装载的是真不相关文件
+            # （2026-11 用户拍板：两类一律不刷屏；本 logger DEBUG 全放
+            # 行，降级无意义，只能不发）。已装载的也不卸载——可能正被
+            # 场景节点引用，卸载会把引用打挂
             continue
         if key not in loaded:
             try:
