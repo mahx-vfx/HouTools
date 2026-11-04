@@ -99,6 +99,8 @@ class _DocPreview(QtWidgets.QTextBrowser):
     层级（标题分级配色/粗体变色/列表缩进等）。
     """
 
+    middleClick = QtCore.Signal(QtCore.QPoint)   # 全局坐标（鼠标按下点）
+
     def __init__(self, doc_dir, parent=None):
         super().__init__(parent)
         self._doc_dir = doc_dir
@@ -154,9 +156,16 @@ class _DocPreview(QtWidgets.QTextBrowser):
         self.verticalScrollBar().setVisible(maximum > minimum)
 
     def eventFilter(self, watched, event):
-        if watched is self.viewport() \
-                and event.type() == QtCore.QEvent.Resize:
-            self._sync_overlay_sb_geometry()
+        if watched is self.viewport():
+            if event.type() == QtCore.QEvent.Resize:
+                self._sync_overlay_sb_geometry()
+            elif (event.type() == QtCore.QEvent.MouseButtonPress
+                    and event.button() == QtCore.Qt.MiddleButton):
+                # 中键必须挂在 viewport 的过滤器上：QTextEdit 系控件的
+                # viewport 鼠标事件被 QWidgetTextControl 直接 processEvent
+                # 吞掉，不会进子类 mousePressEvent（offscreen 直调探针
+                # 绕过真实路由时发现不了）。不吞事件，交回原处理无害
+                self.middleClick.emit(event.globalPosition().toPoint())
         return super().eventFilter(watched, event)
 
     def set_doc_dir(self, doc_dir):
@@ -431,6 +440,341 @@ class MarkdownMediaView(_DocPreview):
                 if movie is not None:
                     return self._movie_frame_pixmap(movie)
         return super().loadResource(rtype, url)
+
+
+# 文档详情面板单例登记：同时刻只存在一个面板，open_at 先关旧的——
+# 模块级字典 + NameError 守卫活过 Reload（同 MediaDialog 手法）
+try:
+    _DOC_INFO_STATE
+except NameError:
+    _DOC_INFO_STATE = {"current": None}
+
+
+class DocInfoPopup(QtWidgets.QFrame):
+    """文档详情面板（Node Info 风格）：中键点击预览区弹出完整渲染文档。
+
+    无边框工具窗口 + 自绘标题条：拖拽移动、最大化/还原、钉住、✕ 关闭。
+    未钉住时点击面板外或应用失焦即自动关闭（应用级事件过滤 MouseButtonPress
+    落在面板外 + ApplicationDeactivate；不用 Qt.Popup——它无法钉住，
+    失焦关闭是写死在窗口标志里的语义）；钉住后常驻，仍可拖动/最大化/关闭。
+    内嵌 MarkdownMediaView 用与主面板完全相同的渲染管线（标题分级配色/
+    GIF 动图/视频按钮）。WA_DeleteOnClose 用完即毁（临时浮层不进
+    window_manager）；面板在豁免字体子树内，不经 enforcer 刷工具字体。
+    """
+
+    _QSS = (
+        "QFrame#docInfoPopup { background: #1D1D20; "
+        "border: 1px solid #3d3d3d; }"
+        "QFrame#docInfoHeader { background: #ffffff; }")
+    _BTN_QSS = (
+        "QToolButton { background: transparent; border: none; "
+        "color: #555555; font-size: 13px; padding: 2px 4px; }"
+        "QToolButton:hover { background: #dcdcdc; color: #1a1a1e; "
+        "border-radius: 3px; }")
+    _BTN_QSS_PINNED = (
+        "QToolButton { background: transparent; border: none; "
+        "color: #0d6399; font-size: 13px; padding: 2px 4px; }"
+        "QToolButton:hover { background: #dcdcdc; "
+        "border-radius: 3px; }")
+    _MAX_BTN_QSS = (
+        "QToolButton { background: transparent; border: none; "
+        "color: #555555; font-size: 17px; padding: 1px 5px; }"
+        "QToolButton:hover { background: #dcdcdc; color: #1a1a1e; "
+        "border-radius: 3px; }")
+    _RESIZE_MARGIN = 6          # 边缘缩放热区（px）
+    _MIN_SIZE = (360, 240)      # 缩放下限
+    _RESIZE_CURSORS = {
+        "n": QtCore.Qt.SizeVerCursor, "s": QtCore.Qt.SizeVerCursor,
+        "e": QtCore.Qt.SizeHorCursor, "w": QtCore.Qt.SizeHorCursor,
+        "nw": QtCore.Qt.SizeFDiagCursor, "se": QtCore.Qt.SizeFDiagCursor,
+        "ne": QtCore.Qt.SizeBDiagCursor, "sw": QtCore.Qt.SizeBDiagCursor}
+
+    @classmethod
+    def open_at(cls, parent, info, global_pos):
+        """在 global_pos（全局坐标）附近弹出；先关旧面板（同时刻一个）。"""
+        prev = _DOC_INFO_STATE["current"]
+        if prev is not None:
+            try:
+                prev.close()
+            except RuntimeError as exc:
+                log.debug("close prev doc info popup failed: %s", exc)
+        popup = cls(parent, info)
+        screen = parent.screen() if parent is not None \
+            else QtGui.QGuiApplication.primaryScreen()
+        geo = screen.availableGeometry()
+        x = min(max(global_pos.x() + 8, geo.left()),
+                geo.right() - popup.width() + 1)
+        y = global_pos.y() + 8
+        if y + popup.height() > geo.bottom():   # 下方放不下 → 弹在上方
+            y = global_pos.y() - popup.height() - 8
+        y = min(max(y, geo.top()), geo.bottom() - popup.height() + 1)
+        popup.move(x, y)
+        popup.show()
+        popup.raise_()
+        # show 后窗口框 margin 才确定（实测 offscreen 弹层 +2px 偏移），
+        # 用 frameGeometry 复钳一次，把整框收回屏幕
+        fg = popup.frameGeometry()
+        if not geo.contains(fg):
+            dx = dy = 0
+            if fg.right() > geo.right():
+                dx = geo.right() - fg.right()
+            if fg.bottom() > geo.bottom():
+                dy = geo.bottom() - fg.bottom()
+            if fg.left() < geo.left():
+                dx = geo.left() - fg.left()
+            if fg.top() < geo.top():
+                dy = geo.top() - fg.top()
+            popup.move(popup.pos() + QtCore.QPoint(dx, dy))
+        _DOC_INFO_STATE["current"] = popup
+        return popup
+
+    def __init__(self, parent, info):
+        super().__init__(parent)
+        self.setObjectName("docInfoPopup")
+        self.setWindowFlags(QtCore.Qt.Tool | QtCore.Qt.FramelessWindowHint)
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        self.setStyleSheet(self._QSS)
+        self.resize(460, 540)
+        self._pinned = False
+        self._maximized = False
+        self._normal_geo = None
+        self._drag_pos = None
+        self._resizing = None   # 活动缩放方向（"n"/"se"/...），None=非缩放
+        self._resize_start = None
+        self._resize_start_geo = None
+        # 边缘缩放的光标/按下事件走 frame 自己的 mouse 事件——头部与
+        # 身体容器需开 mouseTracking 才能把悬停 move 传上来（QLabel 等
+        # 子件不开 tracking，悬停不经过它们）
+        self.setMouseTracking(True)
+
+        header = QtWidgets.QFrame()
+        header.setObjectName("docInfoHeader")
+        header.setFixedHeight(26)
+        header.setMouseTracking(True)   # 顶边缩放热区在标题条范围内
+        name_lbl = QtWidgets.QLabel(info.display_label)
+        name_lbl.setStyleSheet(
+            "color: #1a1a1e; font-weight: bold; font-size: 13px; "
+            "background: transparent; border: none;")
+        file_lbl = QtWidgets.QLabel("doc.md")
+        file_lbl.setStyleSheet(
+            "color: #8a8a8a; font-size: 11px; "
+            "background: transparent; border: none;")
+        self._pin_btn = QtWidgets.QToolButton()
+        self._pin_btn.setText("📌")
+        self._pin_btn.setCheckable(True)
+        self._pin_btn.setToolTip("钉住：不再随失焦关闭")
+        self._pin_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self._max_btn = QtWidgets.QToolButton()
+        self._max_btn.setText("□")
+        self._max_btn.setToolTip("最大化 / 还原")
+        self._max_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self._close_btn = QtWidgets.QToolButton()
+        self._close_btn.setText("✕")
+        self._close_btn.setToolTip("关闭")
+        self._close_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self._pin_btn.setStyleSheet(self._BTN_QSS)
+        self._max_btn.setStyleSheet(self._MAX_BTN_QSS)
+        self._close_btn.setStyleSheet(self._BTN_QSS)
+        self._pin_btn.toggled.connect(self._on_pin)
+        self._max_btn.clicked.connect(self._toggle_max)
+        self._close_btn.clicked.connect(self.close)
+
+        head_lay = QtWidgets.QHBoxLayout(header)
+        head_lay.setContentsMargins(8, 2, 4, 2)
+        head_lay.setSpacing(6)
+        head_lay.addWidget(name_lbl)
+        head_lay.addWidget(file_lbl)
+        head_lay.addStretch(1)
+        head_lay.addWidget(self._pin_btn)
+        head_lay.addWidget(self._max_btn)
+        head_lay.addWidget(self._close_btn)
+
+        self._view = MarkdownMediaView(metadata.doc_dir(info.name))
+        self._view.setStyleSheet(
+            "color: #cccccc; background: transparent; border: none;")
+        hint = None
+        if metadata.doc_exists(info.name):
+            self._view.set_markdown_with_media(metadata.read_doc(info.name))
+        else:
+            self._view.hide()
+            hint = QtWidgets.QLabel("未创建文档（右键 → 编辑文档）")
+            hint.setStyleSheet(
+                "color: #9a9aa2; background: transparent; border: none;")
+
+        body = QtWidgets.QWidget()
+        body.setStyleSheet("background: transparent; border: none;")
+        body.setMouseTracking(True)   # 底/左/右缩放热区悬停经它传上来
+        body_lay = QtWidgets.QVBoxLayout(body)
+        body_lay.setContentsMargins(10, 8, 12, 10)
+        if hint is not None:
+            body_lay.addWidget(hint)
+        else:
+            body_lay.addWidget(self._view, 1)
+
+        lay = QtWidgets.QVBoxLayout(self)
+        # 零边距：白色标题条直接贴住边框——留 1px 内距会露一圈 #1D1D20
+        # 底色，看起来像标题栏外包了道黑边（2026-11 用户反馈）
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(header)
+        lay.addWidget(body, 1)
+
+        # 未钉住时的失焦关闭：应用级过滤抓"面板外鼠标按下"，事件级抓
+        # 应用失焦（Alt-Tab）。**必须延迟安装（singleShot 0）**：面板是在
+        # 中键按下事件的投递中被 spawn 的，若立即安装，同一次在途 press
+        # 会被应用过滤器当成"面板外按下"把面板当场关掉——开了又瞬间自
+        # 关，用户看起来就是"中键无法触发"（真实会话实测踩坑）。filter
+        # 对象随 WA_DeleteOnClose 析构自动摘除
+        self._filter_installed = False
+        QtCore.QTimer.singleShot(0, self._install_close_filter)
+
+    # ---------------- 失焦关闭 / 钉住 ----------------
+
+    def _install_close_filter(self):
+        if self._filter_installed:
+            return
+        QtWidgets.QApplication.instance().installEventFilter(self)
+        self._filter_installed = True
+
+    def eventFilter(self, obj, event):   # noqa: A003
+        if (event.type() == QtCore.QEvent.MouseButtonPress
+                and not self._pinned
+                and isinstance(obj, QtWidgets.QWidget)
+                and obj is not self
+                and not self.isAncestorOf(obj)):
+            self.close()
+        return False
+
+    def event(self, e):
+        if e.type() == QtCore.QEvent.ApplicationDeactivate \
+                and not self._pinned:
+            self.close()
+        return super().event(e)
+
+    def _on_pin(self, checked):
+        self._pinned = checked
+        self._pin_btn.setStyleSheet(
+            self._BTN_QSS_PINNED if checked else self._BTN_QSS)
+
+    # ---------------- 移动 / 边缘缩放 / 最大化 ----------------
+
+    def _resize_dir(self, pos):
+        """光标所在的边缘缩放方向（8 向）；不在热区返回 None。最大化时
+        禁缩放。热区沿 rect 边缘 6px；顶部热区覆盖标题条上缘，覆盖不到
+        的标题条区域（y>6）是拖拽移动区。"""
+        if self._maximized:
+            return None
+        r = self.rect()
+        m = self._RESIZE_MARGIN
+        left = pos.x() < m
+        right = pos.x() >= r.width() - m
+        top = pos.y() < m
+        bottom = pos.y() >= r.height() - m
+        if not (left or right or top or bottom):
+            return None
+        d = ""
+        if top:
+            d += "n"
+        if bottom:
+            d += "s"
+        if left:
+            d += "w"
+        if right:
+            d += "e"
+        return d
+
+    def _sync_resize_cursor(self, pos):
+        d = self._resize_dir(pos)
+        cursor = self._RESIZE_CURSORS.get(d, QtCore.Qt.ArrowCursor)
+        if self.cursor().shape() != cursor:
+            self.setCursor(cursor)
+
+    def _apply_resize(self, global_pos):
+        dx = global_pos.x() - self._resize_start.x()
+        dy = global_pos.y() - self._resize_start.y()
+        geo = QtCore.QRect(self._resize_start_geo)
+        min_w, min_h = self._MIN_SIZE
+        d = self._resizing
+        if "e" in d:
+            geo.setWidth(max(min_w,
+                             self._resize_start_geo.width() + dx))
+        if "w" in d:
+            geo.setLeft(min(self._resize_start_geo.left() + dx,
+                            self._resize_start_geo.right() - min_w + 1))
+        if "s" in d:
+            geo.setHeight(max(min_h,
+                              self._resize_start_geo.height() + dy))
+        if "n" in d:
+            geo.setTop(min(self._resize_start_geo.top() + dy,
+                           self._resize_start_geo.bottom() - min_h + 1))
+        self.setGeometry(geo)
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            pos = event.position().toPoint()
+            d = self._resize_dir(pos)
+            if d is not None:
+                self._resizing = d
+                self._resize_start = event.globalPosition().toPoint()
+                self._resize_start_geo = self.geometry()
+                return
+            if (not self._maximized
+                    and pos.y() <= self._header_height()):
+                self._drag_pos = (event.globalPosition().toPoint()
+                                  - self.frameGeometry().topLeft())
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        buttons = event.buttons()
+        if self._resizing is not None \
+                and buttons & QtCore.Qt.LeftButton:
+            self._apply_resize(event.globalPosition().toPoint())
+            return
+        if self._drag_pos is not None \
+                and buttons & QtCore.Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            return
+        if buttons == QtCore.Qt.NoButton:
+            # 悬停：边缘热区切缩放光标，标题条/内部保持默认箭头
+            self._sync_resize_cursor(event.position().toPoint())
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._resizing is not None:
+            self._resizing = None
+            self._resize_start = None
+            self._resize_start_geo = None
+            self.unsetCursor()
+        self._drag_pos = None
+        super().mouseReleaseEvent(event)
+
+    def _header_height(self):
+        # 标题条高（含边框内 1px 偏移）；QFrame 直系子件在标题条外不起拖
+        return 27
+
+    def _toggle_max(self):
+        geo = self.screen().availableGeometry().adjusted(8, 8, -8, -8)
+        if not self._maximized:
+            self._normal_geo = self.geometry()
+            self.setGeometry(geo)
+            self._maximized = True
+            self._max_btn.setText("❐")
+        else:
+            self.setGeometry(self._normal_geo)
+            self._maximized = False
+            self._max_btn.setText("□")
+
+    def closeEvent(self, event):
+        if _DOC_INFO_STATE["current"] is self:
+            _DOC_INFO_STATE["current"] = None
+        try:
+            self._view.stop_media()
+        except RuntimeError as exc:
+            log.debug("stop doc info movies failed: %s", exc)
+        if self._filter_installed:
+            QtWidgets.QApplication.instance().removeEventFilter(self)
+        super().closeEvent(event)
 
 
 # MediaDialog 的单例状态：模块级字典 + NameError 守卫活过 Reload（见

@@ -28,7 +28,8 @@ from houtools.core.log import get_logger
 from houtools.recipelib import codeblock, metadata, store, transfer
 from houtools.recipelib.crop import ThumbCropDialog
 from houtools.recipelib.capture import HIDE_DELAY_MS, SnipOverlay
-from houtools.recipelib.docs import DocEditorDialog, MarkdownMediaView, MediaDialog
+from houtools.recipelib.docs import (
+    DocEditorDialog, DocInfoPopup, MarkdownMediaView, MediaDialog)
 from houtools.ui import fonts as tool_fonts
 from houtools.ui.sidebar import (SIDEBAR_COLOR_ROLE, SIDEBAR_COUNT_ROLE,
                                  SIDEBAR_HEADER_ROLE, SIDEBAR_ICON_ROLE,
@@ -1480,6 +1481,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         # 文档区右键弹自建「编辑文档」菜单（默认菜单已在 _DocPreview 禁用）
         self.preview_doc.customContextMenuRequested.connect(
             self._on_doc_context_menu)
+        # 中键弹文档详情浮层（Node Info 风格，失焦自动关）
+        self.preview_doc.middleClick.connect(self._show_doc_info_popup)
 
         # 标签展示：卡片式主题背景（与卡片颜色一致），文字居中、加大
         # 加粗加亮；只读，修改走旁边的「标签设置」弹窗
@@ -3292,6 +3295,13 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self._open_doc_for(info)
         elif act is not None and act is act_open_dir:
             self._open_doc_dir(info)
+
+    def _show_doc_info_popup(self, global_pos):
+        """中键：在点击处弹文档详情浮层（无选中 recipe 不弹）。"""
+        info = self._preview_info
+        if info is None:
+            return
+        DocInfoPopup.open_at(self, info, global_pos)
 
     def _open_doc_dir(self, info):
         """资源管理器打开该配方的文档文件夹（doc.md + assets/）。

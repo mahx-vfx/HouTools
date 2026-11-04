@@ -2740,6 +2740,142 @@ def main():
             dlg._confirm_save()
             assert rl_meta.read_doc(info.name) == "# 标题\n\n正文 **粗体**\n"
             dlg.deleteLater()
+            # 中键文档详情面板（Node Info 风格无边框工具窗口）：内容渲染/
+            # 无文档提示/越屏钳制/拖拽移动/钉住不随外点关闭/外部点击关闭
+            popup = rl_docs.DocInfoPopup(None, info)
+            assert popup.windowFlags() & QtCore.Qt.Tool
+            assert popup.windowFlags() & QtCore.Qt.FramelessWindowHint
+            assert popup.testAttribute(QtCore.Qt.WA_DeleteOnClose)
+            assert "标题" in popup._view.toPlainText()
+            assert popup.findChildren(QtWidgets.QLabel)[0].text() \
+                == "Doc Test"
+            popup2 = rl_docs.DocInfoPopup.open_at(
+                None, info, QtCore.QPoint(99999, 99999))
+            assert QtGui.QGuiApplication.primaryScreen() \
+                .availableGeometry().contains(popup2.geometry())
+            # 标题条拖拽移动（标题条 y<=27 内按下 + 全局移动）
+            origin = QtCore.QPoint(popup2.pos())
+            _press = lambda ev_type, local, glob, btn, btns=(
+                QtCore.Qt.NoButton): QtWidgets.QApplication.sendEvent(
+                popup2, QtGui.QMouseEvent(
+                    ev_type, local, glob, btn, btns, QtCore.Qt.NoModifier))
+            _start = QtCore.QPointF(origin) + QtCore.QPointF(100, 10)
+            _press(QtCore.QEvent.Type.MouseButtonPress,
+                   QtCore.QPointF(100, 10), _start,
+                   QtCore.Qt.MouseButton.LeftButton,
+                   QtCore.Qt.MouseButton.LeftButton)
+            _press(QtCore.QEvent.Type.MouseMove,
+                   QtCore.QPointF(130, 30), _start + QtCore.QPointF(30, 20),
+                   QtCore.Qt.NoButton, QtCore.Qt.MouseButton.LeftButton)
+            _press(QtCore.QEvent.Type.MouseButtonRelease,
+                   QtCore.QPointF(130, 30), _start + QtCore.QPointF(30, 20),
+                   QtCore.Qt.MouseButton.LeftButton)
+            assert abs(popup2.pos().x() - origin.x() - 30) <= 2 \
+                and abs(popup2.pos().y() - origin.y() - 20) <= 2
+            # 未钉住：面板外按下即关（deferred filter 需先 processEvents
+            # 触发 singleShot(0) 安装）；钉住后存活
+            dummy = QtWidgets.QWidget()
+            QtWidgets.QApplication.processEvents()
+            _outside = QtGui.QMouseEvent(
+                QtCore.QEvent.Type.MouseButtonPress,
+                QtCore.QPointF(5, 5), QtCore.QPointF(500, 500),
+                QtCore.Qt.MouseButton.LeftButton,
+                QtCore.Qt.MouseButton.LeftButton, QtCore.Qt.NoModifier)
+            assert popup2._pinned is False
+            assert popup2._filter_installed
+            QtWidgets.QApplication.sendEvent(dummy, _outside)
+            popup2.close()
+            QtWidgets.QApplication.processEvents()   # C++ 对象已毁
+            pinned = rl_docs.DocInfoPopup(None, info)
+            pinned.show()
+            QtWidgets.QApplication.processEvents()
+            pinned._pin_btn.setChecked(True)
+            QtWidgets.QApplication.sendEvent(dummy, _outside)
+            assert pinned.isVisible(), "钉住后面板必须在外部点击时存活"
+            pinned._max_btn.click()   # 最大化
+            assert pinned.geometry() == pinned.screen() \
+                .availableGeometry().adjusted(8, 8, -8, -8)
+            pinned._max_btn.click()   # 还原
+            # 边缘缩放：8 向热区判定 + 标题条不改变光标 + 东缘拖拽变宽
+            # （最大化时禁缩放）
+            assert "#ffffff" in pinned.styleSheet()   # 标题栏白底
+            assert pinned._resize_dir(QtCore.QPoint(2, 300)) == "w"
+            assert pinned._resize_dir(
+                QtCore.QPoint(pinned.width() - 2, 300)) == "e"
+            assert pinned._resize_dir(QtCore.QPoint(230, 2)) == "n"
+            assert pinned._resize_dir(
+                QtCore.QPoint(230, pinned.height() - 2)) == "s"
+            assert pinned._resize_dir(QtCore.QPoint(2, 2)) == "nw"
+            assert pinned._resize_dir(
+                QtCore.QPoint(pinned.width() - 2,
+                              pinned.height() - 2)) == "se"
+            assert pinned._resize_dir(QtCore.QPoint(100, 10)) is None
+            pinned._max_btn.click()
+            assert pinned._resize_dir(QtCore.QPoint(2, 2)) is None
+            pinned._max_btn.click()
+            QtWidgets.QApplication.sendEvent(pinned, QtGui.QMouseEvent(
+                QtCore.QEvent.Type.MouseMove, QtCore.QPointF(100, 10),
+                QtCore.QPointF(pinned.pos() + QtCore.QPoint(100, 10)),
+                QtCore.Qt.NoButton, QtCore.Qt.NoButton,
+                QtCore.Qt.NoModifier))
+            assert pinned.cursor().shape() == QtCore.Qt.ArrowCursor, \
+                "标题栏悬停不得改变鼠标样式"
+            _geo0 = QtCore.QRect(pinned.geometry())
+            _tr = QtCore.QPointF(_geo0.topRight())
+            for _t, _loc, _glo in (
+                    (QtCore.QEvent.Type.MouseButtonPress,
+                     QtCore.QPointF(pinned.width() - 2, 300), _tr),
+                    (QtCore.QEvent.Type.MouseMove,
+                     QtCore.QPointF(pinned.width() + 58, 300),
+                     _tr + QtCore.QPointF(60, 0)),
+                    (QtCore.QEvent.Type.MouseButtonRelease,
+                     QtCore.QPointF(pinned.width() + 58, 300),
+                     _tr + QtCore.QPointF(60, 0))):
+                _is_move = _t == QtCore.QEvent.Type.MouseMove
+                QtWidgets.QApplication.sendEvent(pinned, QtGui.QMouseEvent(
+                    _t, _loc, _glo,
+                    QtCore.Qt.NoButton if _is_move
+                    else QtCore.Qt.MouseButton.LeftButton,
+                    QtCore.Qt.MouseButton.LeftButton if _is_move
+                    else QtCore.Qt.MouseButton.NoButton,
+                    QtCore.Qt.NoModifier))
+            assert pinned.geometry().width() == _geo0.width() + 60
+            assert pinned._resizing is None
+            pinned._close_btn.click()
+            QtWidgets.QApplication.processEvents()
+            info2 = rl_store.RecipeInfo(name="houtools::x::popup_empty",
+                                        label="Popup Empty", category="tool")
+            hint_popup = rl_docs.DocInfoPopup(None, info2)
+            assert hint_popup._view.isHidden()
+            assert any("未创建文档" in w.text()
+                       for w in hint_popup.findChildren(QtWidgets.QLabel))
+            hint_popup.deleteLater()
+            # 中键信号必须走 viewport 过滤器（真实事件路由）：QTextEdit 系
+            # 的 viewport 鼠标事件被 QWidgetTextControl 吞掉、不进子类
+            # mousePressEvent——用 sendEvent(viewport) 固化，防回退到直调
+            mv = rl_docs.MarkdownMediaView("")
+            _got = []
+            mv.middleClick.connect(_got.append)
+            # 模拟 browser 槽接线：面板在信号投递（= 在途 press）中 spawn
+            mv.middleClick.connect(lambda gp: rl_docs.DocInfoPopup.open_at(
+                None, info, gp))
+            QtWidgets.QApplication.sendEvent(mv.viewport(),
+                                             QtGui.QMouseEvent(
+                QtCore.QEvent.Type.MouseButtonPress,
+                QtCore.QPointF(10, 10), QtCore.QPointF(100, 100),
+                QtCore.Qt.MouseButton.MiddleButton,
+                QtCore.Qt.MouseButton.MiddleButton, QtCore.Qt.NoModifier))
+            assert _got == [QtCore.QPoint(100, 100)], _got
+            # ★ 面板必须扛过 spawn 它的在途 press——曾因立即装应用级
+            # close 过滤器把在途 press 当"面板外按下"瞬间自关（用户实测
+            # "中键无法触发"），fix = singleShot(0) 延迟安装
+            _spawned = rl_docs._DOC_INFO_STATE["current"]
+            assert _spawned is not None and _spawned.isVisible()
+            QtWidgets.QApplication.processEvents()
+            assert _spawned.isVisible()
+            _spawned.close()
+            QtWidgets.QApplication.processEvents()
+            mv.deleteLater()
     print("RecipeLibrary doc editor OK")
 
     # 裁剪框四角拖动方向（模拟鼠标事件）：往外拉变宽、往里推变窄，
