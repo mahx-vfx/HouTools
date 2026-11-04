@@ -49,7 +49,7 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings�
 | 视窗截图嵌入 | 节点右键 `Capture Viewport to Node [HT]` | 截取当前 3D 视窗存为 JPG（`$HIP/HouTools_cfg/captures/`），作为网络编辑器背景图钉在节点旁，随节点移动/改名跟随；只存路径引用不进 hip；右键 `Delete Viewport Capture [HT]` 删除截图 |
 | 粘贴边界框 | 节点右键 `Paste Bounding Box [HT]` | Ctrl+C 复制源节点后，右键带三分量 `size`/`t` 参数的目标节点（如 box），把源节点包围盒尺寸/中心粘贴到其 `size`/`t`——绝对值或 `bbox()`/`centroid()` 表达式（同网络相对路径、跨层级绝对路径）两种模式 |
 | 粘贴中心 | 节点右键 `Paste Center [HT]` | Ctrl+C 复制源节点后右键任意目标节点，在其下方创建 transform 并启用（接管显示/渲染）：枢轴=目标中心、平移=源中心−目标中心（目标内容对齐到源中心）——绝对值或 `centroid()` 表达式两种模式 |
-| 视频转序列图 | `HouTools → Video to Sequence` | ffmpeg 提取视频为 JPG 序列（帧级进度，质量/起始帧/位数/前缀可调），相机分辨率可读取/编辑（宽/高双框 + 预设），可选自动设置相机 Background Image |
+| 视频转序列图 | `HouTools → Video to Sequence` | ffmpeg 提取视频为 JPG 序列（帧级进度，质量/起始帧/位数/前缀可调），EXR/PNG/TIF 静帧序列同样支持（浏览时同一序列折叠为一个选项，EXR 自动转 sRGB），相机分辨率可读取/编辑（宽/高双框 + 预设），可选自动设置相机 Background Image |
 | Hdr Library | `HouTools → Hdr Library` | HDR 环境贴图库浏览器：缩略图网格（后台生成）、子文件夹分类 + 收藏，选中灯光后双击即贴图 |
 | Recipe Library | `HouTools → Recipe Library` | recipes 资产库浏览器：官方 recipes 卡片网格浏览（缩略图/标签/主题色），树形侧栏过滤，双击/拖拽应用到网络，VEX/Python 代码块卡片（双击追加到选中节点），Markdown 文档，数据导入/导出 |
 | HouTools Settings | `HouTools → HouTools Settings…` | 设置窗口：配置目录展示（含修改方法）+ 快捷键设置（原 Paste Hotkey Settings 迁入） |

@@ -3359,6 +3359,70 @@ def main():
     assert "printf" in prefix_error("cam%")
     print("videoseq prefix guard OK")
 
+    # 静帧序列解析：具体单帧（不向兄弟帧扩张）与 $F 模式（扫盘枚举）
+    from houtools.videoseq.window import (
+        SEQUENCE_EXTENSIONS, parse_sequence_pattern, parse_still_frame)
+    assert ".exr" in SEQUENCE_EXTENSIONS and ".tif" in SEQUENCE_EXTENSIONS
+    with tempfile.TemporaryDirectory() as seqtd:
+        def _mk(name):
+            p = os.path.join(seqtd, name)
+            open(p, "wb").close()
+            return p
+
+        # 具体帧：单帧序列，位数取该文件数字宽度；贪心 stem 保留
+        # 数字主干（shot_010.1001.exr 的 stem 是 shot_010）
+        spec = parse_still_frame(_mk("render.1001.exr"))
+        assert spec is not None and spec.stem == "render"
+        assert spec.padding == 4 and spec.first_frame == 1001
+        assert spec.frame_numbers == (1001,)
+        assert spec.pattern.endswith("render.%04d.exr")
+        spec = parse_still_frame(_mk("shot_010.1001.exr"))
+        assert spec is not None and spec.stem == "shot_010"
+        # 无编号静帧 / 不存在的文件 / 非白名单扩展 → None
+        assert parse_still_frame(_mk("still.exr")) is None
+        assert parse_still_frame(
+            os.path.join(seqtd, "ghost.1001.exr")) is None
+        assert parse_still_frame(_mk("f.1001.jpg")) is None
+
+        # $F4 模式：扫盘枚举整条序列，位数取 $F 声明
+        for n in (1001, 1002, 1003):
+            _mk(f"seq.{n}.exr")
+        spec = parse_sequence_pattern(os.path.join(seqtd, "seq.$F4.exr"))
+        assert spec is not None and spec.frame_numbers == (1001, 1002, 1003)
+        assert spec.padding == 4 and spec.first_frame == 1001
+        assert spec.pattern.endswith("seq.%04d.exr")
+        # 缺口：删帧后枚举仍返回盘上帧（缺口预检在 _on_convert，
+        # 这里验证枚举不丢真实存在的帧）
+        os.remove(os.path.join(seqtd, "seq.1002.exr"))
+        spec = parse_sequence_pattern(os.path.join(seqtd, "seq.$F4.exr"))
+        assert spec.frame_numbers == (1001, 1003), spec.frame_numbers
+        # 裸 $F：位数未声明且磁盘宽度唯一 → 取磁盘宽度
+        _mk("bare.0007.tif")
+        spec = parse_sequence_pattern(os.path.join(seqtd, "bare.$F.tif"))
+        assert spec is not None and spec.padding == 4, spec.padding
+        # 枚举不到帧 / 不含 $F → None
+        assert parse_sequence_pattern(
+            os.path.join(seqtd, "nope.$F4.exr")) is None
+        assert parse_still_frame(
+            os.path.join(seqtd, "seq.$F4.exr")) is None
+        # 大写扩展名照常匹配（Windows 不分大小写）
+        _mk("up.0042.EXR")
+        spec = parse_still_frame(os.path.join(seqtd, "up.0042.EXR"))
+        assert spec is not None and spec.pattern.endswith("%04d.EXR")
+
+    # $HIP 等变量路径展开：目录部分过环境变量、$F 折叠标记必须保留
+    # （expandString/expandvars 把 $F4 展开成当前帧号会让序列退化成单帧）
+    from houtools.videoseq.window import expand_houdini_path
+    assert expand_houdini_path("render.$F4.exr") == "render.$F4.exr"
+    with patch.dict(os.environ, {"HT_SMOKE_HIP": "C:/smoke_hip"}):
+        expanded = expand_houdini_path("$HT_SMOKE_HIP/sub/render.$F4.exr")
+        assert "C:/smoke_hip" in expanded.replace("\\", "/"), expanded
+        assert "$F4" in expanded, "序列折叠标记不得被展开"
+        # 未知变量原样保留（expandvars 语义），交给后续 isfile 拒绝
+        kept = expand_houdini_path("$NO_SUCH_VAR_9x/render.1001.exr")
+        assert "$NO_SUCH_VAR_9x" in kept and "render.1001.exr" in kept, kept
+    print("videoseq sequence parse OK")
+
     # 打开缓存文件夹：输出路径参数求值取父目录 + 目录缺失上溯最近存在祖先
     # （fake 节点鸭子类型，无 hou 依赖；含 $ 变量路径的展开分支、相对路径的
     # $HIP 分支均需 hou，无头不覆盖——由无头 hython 场景验证）

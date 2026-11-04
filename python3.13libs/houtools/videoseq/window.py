@@ -2,6 +2,13 @@
 
 将 mov/mp4/avi 等视频格式转换为 JPG 序列图。
 使用 ffmpeg 进行视频解码和 JPEG 编码。
+
+静帧序列（EXR/PNG/TIF）同样支持：浏览按钮走 Houdini 文件选择器
+（collapse_sequences 把同一序列折叠成一个 $F 模式选项，2026-11 用户
+拍板，不做"拖任意一帧识别整条序列"），拖入/手输单个具体帧只转换
+该帧。EXR 是线性编码，转换时经解码器 -apply_trc 转 sRGB——实测
+SideFX hffmpeg 7.1 默认直通（0.502 线性灰转出 YAVG≈128 全片偏暗），
+apply_trc iec61966_2_1 后 ≈188 与 hoiiotool --colorconvert 一致。
 """
 
 import os
@@ -10,6 +17,7 @@ import json
 import subprocess
 import time
 from dataclasses import dataclass
+from typing import Optional
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -32,12 +40,137 @@ VIDEO_EXTENSIONS = [
     ".webm", ".m4v", ".mpg", ".mpeg", ".3gp", ".ts",
 ]
 
+# 支持的静帧序列格式（浏览/拖放/路径框三处共用）。.png/.tif 本身是
+# 显示色域编码，不走 EXR 的 apply_trc（那是 exr 解码器专属选项，
+# 重复套伽马会洗白）——色彩分支只认 .exr
+SEQUENCE_EXTENSIONS = [".exr", ".png", ".tif", ".tiff"]
+
+_SEQ_EXT_ALT = "|".join(
+    re.escape(e.lstrip(".")) for e in SEQUENCE_EXTENSIONS)
+# 具体帧文件名 stem.数字.ext（贪心 stem：shot_010.1001.exr → stem=shot_010）
+_FRAME_NUM_RE = re.compile(
+    r"^(?P<stem>.+)\.(?P<num>\d+)\.(?P<ext>%s)$" % _SEQ_EXT_ALT,
+    re.IGNORECASE)
+# Houdini 文件选择器 collapse_sequences 折叠返回的模式：name.$F4.exr /
+# name.$F.exr（$F 尾数字=帧号位数，裸 $F 无位数声明）
+_SEQ_PATTERN_RE = re.compile(
+    r"^(?P<stem>.+)\.\$F(?P<pad>\d)?\.(?P<ext>%s)$" % _SEQ_EXT_ALT,
+    re.IGNORECASE)
+
+
+@dataclass
+class SequenceSpec:
+    """静帧序列解析结果（$F 模式或具体单帧），供探测与转换命令复用"""
+    directory: str
+    stem: str
+    ext: str              # 带点，保留磁盘实际大小写（Linux 下区分）
+    padding: int          # %0Nd 帧号位数
+    first_frame: int
+    frame_numbers: tuple  # 升序帧号（缺口预检用）
+    pattern: str          # ffmpeg image2 输入用绝对模式（%0Nd）
+
+
+def parse_still_frame(path: str) -> Optional[SequenceSpec]:
+    """具体静帧文件 → 单帧序列（不向兄弟帧扩张，2026-11 用户拍板）。
+
+    文件不存在、扩展名不在白名单或无数字后缀返回 None
+    （无编号静帧走"具体文件直转"路径，不依赖 %0Nd 模式）。
+    """
+    directory, basename = os.path.split(path)
+    m = _FRAME_NUM_RE.match(basename)
+    if not m or not os.path.isfile(path):
+        return None
+    num_str = m.group("num")
+    pad = len(num_str)
+    return SequenceSpec(
+        directory=directory,
+        stem=m.group("stem"),
+        ext=m.group("ext"),
+        padding=pad,
+        first_frame=int(num_str),
+        frame_numbers=(int(num_str),),
+        pattern=os.path.join(
+            directory, f"{m.group('stem')}.%0{pad}d.{m.group('ext')}"),
+    )
+
+
+def parse_sequence_pattern(path: str) -> Optional[SequenceSpec]:
+    """$F 模式路径（Houdini 选择器折叠返回）→ 扫磁盘枚举整条序列。
+
+    帧号=磁盘上 stem.<数字>.ext 的数字集合；位数优先取 $F 声明，未声明
+    且磁盘宽度唯一时取该宽度（同一帧号两种宽度混盘按先见者定——病态
+    布局，ffmpeg 侧同样只能按单一宽度生成文件名）。枚举不到任何帧返回
+    None。注意 ffmpeg image2 不做 glob：按 start_number 逐帧 zfill 生成
+    文件名，缺帧即静默断流（缺口预检在 _on_convert）。
+    """
+    directory, basename = os.path.split(path)
+    m = _SEQ_PATTERN_RE.match(basename)
+    if not m:
+        return None
+    stem, ext, declared_pad = m.group("stem"), m.group("ext"), m.group("pad")
+    num_re = re.compile(
+        r"^%s\.(\d+)\.%s$" % (re.escape(stem), re.escape(ext)),
+        re.IGNORECASE)
+    try:
+        names = os.listdir(directory)
+    except OSError as e:
+        logger.warning("扫描序列目录失败 %s: %s", directory, e)
+        return None
+
+    widths = {}   # 帧号 -> 数字字符串宽度（先见者优先）
+    for name in names:
+        nm = num_re.match(name)
+        if nm:
+            widths.setdefault(int(nm.group(1)), len(nm.group(1)))
+    if not widths:
+        return None
+
+    if declared_pad:
+        pad = int(declared_pad)
+    else:
+        distinct = set(widths.values())
+        pad = distinct.pop() if len(distinct) == 1 else 4
+
+    nums = sorted(widths)
+    return SequenceSpec(
+        directory=directory,
+        stem=stem,
+        ext=ext,
+        padding=pad,
+        first_frame=nums[0],
+        frame_numbers=tuple(nums),
+        pattern=os.path.join(directory, f"{stem}.%0{pad}d.{ext}"),
+    )
+
+
 # 输出前缀禁止的字符：Windows 文件名非法字符（含路径分隔符与盘符冒号），
 # 外加 %——ffmpeg image2 把整个输出路径当 printf 模板，前缀里的 % 会与
 # 工具自拼的 ".%0Nd.jpg" 模式互相干扰，产出文件名全错且不匹配清理正则。
 # 前缀始终拼接 ".%0Nd.jpg" 后缀，单独的 ".." 无害，能把序列写出输出
 # 目录的只有分隔符/盘符这类字符
 _PREFIX_INVALID_RE = re.compile(r'[<>:"/\\|?*%\x00-\x1f]')
+
+
+def expand_houdini_path(path: str) -> str:
+    """展开路径中的 Houdini 变量（$HIP 等）为真实文件系统路径。
+
+    Houdini 文件选择器与手输都可能返回 $HIP 前缀形态，文件系统操作
+    （listdir/isfile/ffprobe）前必须展开。只展开目录部分：文件名里的
+    $F/$F4 是序列折叠标记，expandString 会把它展开成当前帧号、把整条
+    序列退化成单帧——basename 原样保留。无 hou（无头）回退环境变量
+    展开（未知变量原样保留）。
+    """
+    dirname, basename = os.path.split(path)
+    if dirname:
+        try:
+            import hou
+            dirname = hou.text.expandString(dirname)
+        except ImportError:
+            dirname = os.path.expandvars(dirname)
+        except Exception as e:
+            logger.debug("expandString 失败，保留原目录 %r: %s", dirname, e)
+        return os.path.join(dirname, basename)
+    return path
 
 
 def prefix_error(prefix: str) -> str:
@@ -272,15 +405,25 @@ class VideoInfo:
     total_frames: int = 0
     duration: float = 0.0
     codec: str = ""
+    # 静帧序列（EXR/PNG/TIF）专用：in_pattern 非空走 image2 模式输入
+    # （in_start_number 为输入侧 -start_number）；单帧无编号静帧
+    # in_pattern 为空、直接 -i 具体文件。fps/duration 恒为 0（静帧无
+    # 时长元数据，信息面板显示 "-"）
+    is_sequence: bool = False
+    in_pattern: str = ""
+    in_start_number: int = 0
+    frame_numbers: tuple = ()   # 升序帧号（缺口预检用）
 
 
 # ─── Helper Functions（实现在 houtools/videoseq/ffmpeg.py）───────────────
 
-def _video_path_from_mime(mime) -> str:
-    """从拖放数据提取第一个有效的视频文件路径，无则返回空串。
+def _media_path_from_mime(mime) -> str:
+    """从拖放数据提取第一个有效的媒体文件路径，无则返回空串。
 
-    兼容资源管理器（URL）与纯文本路径（含引号包裹）；
-    非视频扩展名或文件不存在返回空串。
+    视频文件整段转换；静帧（EXR/PNG/TIF）只接收单个具体帧——不向
+    兄弟帧扩张（整条序列的入口是浏览按钮的 Houdini 选择器折叠序列，
+    2026-11 用户拍板）。兼容资源管理器（URL）与纯文本路径（含引号
+    包裹）；扩展名不在白名单或文件不存在返回空串。
     """
     candidates = []
     if mime.hasUrls():
@@ -290,27 +433,30 @@ def _video_path_from_mime(mime) -> str:
         if text:
             candidates.append(text)
     for path in candidates:
-        if path.lower().endswith(tuple(VIDEO_EXTENSIONS)) and os.path.isfile(path):
+        ext = os.path.splitext(path)[1].lower()
+        if os.path.isfile(path) and (ext in VIDEO_EXTENSIONS
+                                     or ext in SEQUENCE_EXTENSIONS):
             return path
     return ""
 
 
 class _VideoSourceGroup(QGroupBox):
-    """视频源分组框 —— 支持把视频文件直接拖入。
+    """媒体源分组框 —— 支持把视频/静帧文件直接拖入。
 
-    识别逻辑见模块级 ``_video_path_from_mime``；子控件忽略的拖放事件
-    会沿父链传播到这里，拖到组内任意位置都生效。
-    窗口级（``_VideoToSequenceWindow``）也接收拖放作为兜底。
+    识别逻辑见模块级 ``_media_path_from_mime``（视频整段转换、静帧只
+    收单个具体帧）；子控件忽略的拖放事件会沿父链传播到这里，拖到组内
+    任意位置都生效。窗口级（``_VideoToSequenceWindow``）也接收拖放作为
+    兜底。
     """
 
-    videoDropped = Signal(str)
+    mediaDropped = Signal(str)
 
     def __init__(self, title, parent=None):
         super().__init__(title, parent)
         self.setAcceptDrops(True)
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 — Qt 命名约定
-        if _video_path_from_mime(event.mimeData()):
+        if _media_path_from_mime(event.mimeData()):
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -320,24 +466,28 @@ class _VideoSourceGroup(QGroupBox):
         event.acceptProposedAction()
 
     def dropEvent(self, event) -> None:  # noqa: N802 — Qt 命名约定
-        path = _video_path_from_mime(event.mimeData())
+        path = _media_path_from_mime(event.mimeData())
         if path:
-            self.videoDropped.emit(path)
+            self.mediaDropped.emit(path)
             event.acceptProposedAction()
 
 
 # ─── Worker Threads ──────────────────────────────────────────────────
 
 class _ProbeWorker(QThread):
-    """后台线程：获取视频信息"""
+    """后台线程：获取视频信息（序列模式只补首帧分辨率）"""
 
     info_ready = Signal(object)   # VideoInfo
     error = Signal(str)
 
-    def __init__(self, video_path: str, ffmpeg_path: str):
+    def __init__(self, video_path: str, ffmpeg_path: str,
+                 sequence_info: Optional[VideoInfo] = None):
         super().__init__()
         self.video_path = video_path
         self.ffmpeg_path = ffmpeg_path
+        # 静帧序列：窗口主线程已解析的 VideoInfo（模式/帧号列表），探测
+        # 只补首帧分辨率，不走视频时长/fps 链；None = 普通视频
+        self._sequence_info = sequence_info
         self._cancelled = False
 
     def cancel(self):
@@ -353,11 +503,19 @@ class _ProbeWorker(QThread):
                 self.error.emit(str(e))
 
     def _probe(self) -> VideoInfo:
+        startup = _get_startup_kwargs()
+        # 序列模式：窗口主线程已解析好模式/帧列表（纯磁盘枚举，零子进程），
+        # 这里只补首帧分辨率——EXR/PNG/TIF 无时长/fps/帧数元数据，
+        # 不走视频探测链（ffprobe 全量 → ffmpeg 回退 → 逐帧计数）
+        if self._sequence_info is not None:
+            info = self._sequence_info
+            self._probe_first_frame(info, startup)
+            return info
+
         info = VideoInfo(
             filepath=self.video_path,
             filename=os.path.basename(self.video_path),
         )
-        startup = _get_startup_kwargs()
         ffprobe = _get_ffprobe_path(self.ffmpeg_path)
 
         if ffprobe:
@@ -366,6 +524,45 @@ class _ProbeWorker(QThread):
             self._probe_ffmpeg(info, startup)
 
         return info
+
+    def _probe_first_frame(self, info: VideoInfo, startup: dict):
+        """序列首帧 ffprobe：只取分辨率与编码名。
+
+        分辨率不是转换必要条件，失败静默（信息面板显示 "-"，转换照常）。
+        """
+        if info.in_pattern:
+            try:
+                first_file = info.in_pattern % info.in_start_number
+            except (TypeError, ValueError) as e:
+                logger.debug("序列首帧文件名展开失败 %r: %s",
+                             info.in_pattern, e)
+                return
+        else:
+            first_file = info.filepath
+
+        ffprobe = _get_ffprobe_path(self.ffmpeg_path)
+        if not ffprobe:
+            return
+        try:
+            result = subprocess.run(
+                [ffprobe, "-v", "quiet", "-print_format", "json",
+                 "-show_streams", first_file],
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, **startup
+            )
+            if result.returncode != 0:
+                return
+            data = json.loads(result.stdout)
+            for stream in data.get("streams", []):
+                if stream.get("codec_type") != "video":
+                    continue
+                info.width = int(stream.get("width", 0))
+                info.height = int(stream.get("height", 0))
+                if stream.get("codec_name"):
+                    info.codec = stream["codec_name"]
+                break
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            logger.debug("序列首帧探测失败 %s: %s", first_file, e)
 
     def _probe_ffprobe(self, info: VideoInfo, ffprobe: str, startup: dict):
         """使用 ffprobe 获取视频元数据（JSON 格式）"""
@@ -538,7 +735,7 @@ class _ExtractWorker(QThread):
         self.start_frame = start_frame
         self.padding = padding
         self.prefix = prefix
-        # 窗口在 _load_video 时已探测过视频信息：直接传入复用，转换前
+        # 窗口在 _load_media 时已探测过媒体信息：直接传入复用，转换前
         # 不再重探一遍（重探最坏多等一次全片解码，且两次结果可能不一
         # 致、进度条 max 对不上）；None 时回退自探（兼容直接构造）
         self._video_info = video_info
@@ -601,14 +798,33 @@ class _ExtractWorker(QThread):
         )
 
         # ffmpeg 直接输出 JPEG 序列（单进程，最高性能）
-        # -progress pipe:1 将帧级进度信息输出到 stdout
+        # -progress pipe:1 将帧级进度信息输出到 stdout。
+        # 序列模式（EXR/PNG/TIF）：image2 输入模式 + 输入侧 -start_number
+        # 与输出侧 UI 起始帧号解耦。EXR 是线性编码，经解码器 -apply_trc
+        # 转 sRGB——默认直通全片偏暗（实测 0.502 线性灰 YAVG 128→188）；
+        # png/tif 本身是显示色域编码，不套 TRC（那是 exr 解码器专属选项，
+        # 重复套伽马会洗白）。image2 不做 glob：按 start_number 逐帧生成
+        # 文件名，缺帧静默断流（缺口已在 _on_convert 预检过）
         cmd = [
             self.ffmpeg_path,
             "-hide_banner",
             "-loglevel", "error",
             "-progress", "pipe:1",
             "-nostats",
-            "-i", self.video_path,
+        ]
+        if info.is_sequence:
+            ext = os.path.splitext(
+                info.in_pattern or self.video_path)[1].lower()
+            if ext == ".exr":
+                cmd += ["-apply_trc", "iec61966_2_1"]
+            if info.in_pattern:
+                cmd += ["-start_number", str(info.in_start_number)]
+                cmd += ["-i", info.in_pattern]
+            else:
+                cmd += ["-i", self.video_path]
+        else:
+            cmd += ["-i", self.video_path]
+        cmd += [
             "-q:v", str(qscale),
             "-start_number", str(self.start_frame),
             "-an",             # 忽略音频
@@ -869,7 +1085,7 @@ class _VideoToSequenceWindow(QDialog):
     def _build_source_section(self, parent_layout):
         group = _VideoSourceGroup("视频源")
         group.setStyleSheet(_GROUPBOX_INLINE_STYLE)
-        group.videoDropped.connect(self._load_video)
+        group.mediaDropped.connect(self._load_media)
         layout = QVBoxLayout(group)
         layout.setContentsMargins(8, 10, 8, 6)
         layout.setSpacing(6)
@@ -879,9 +1095,11 @@ class _VideoToSequenceWindow(QDialog):
         self._browse_btn.setObjectName("browseBtn")
         self._browse_btn.clicked.connect(self._on_browse)
         self._path_edit = QLineEdit()
-        self._path_edit.setPlaceholderText("请选择、拖入或粘贴视频路径...")
+        self._path_edit.setPlaceholderText("请选择、拖入或粘贴视频/序列路径...")
         self._path_edit.setToolTip(
-            "支持把视频文件直接拖进本区域；\n"
+            "支持把视频或静帧（EXR/PNG/TIF）文件直接拖进本区域；\n"
+            "静帧序列请点「浏览...」在 Houdini 文件选择器中按折叠序列选择；\n"
+            "拖入单个静帧只转换该帧。\n"
             "也可手动编辑路径，按 Enter 或移开焦点后加载，清空则重置"
         )
         # 可编辑后必须关闭自身拖放接收：否则拖文件到框上会被 Qt 当作
@@ -1048,7 +1266,7 @@ class _VideoToSequenceWindow(QDialog):
         dir_lbl.setStyleSheet("color: #888888; min-width: 80px;")
         self._output_dir_edit = QLineEdit()
         self._output_dir_edit.setPlaceholderText(
-            "$HIP/images/{视频文件名}/"
+            "$HIP/images/{视频或序列名}/"
         )
         self._output_dir_btn = QPushButton("浏览...")
         self._output_dir_btn.setObjectName("browseBtn")
@@ -1060,7 +1278,7 @@ class _VideoToSequenceWindow(QDialog):
 
         # 输出路径预览
         self._output_path_label = QLabel(
-            "输出路径: $HIP/images/{视频文件名}/cam.$F4.jpg"
+            "输出路径示例: $HIP/images/{视频或序列名}/cam.1001.jpg"
         )
         self._output_path_label.setStyleSheet(
             "color: #888888; font-size: 11px; padding: 2px 0;"
@@ -1117,18 +1335,51 @@ class _VideoToSequenceWindow(QDialog):
     # ── Event Handlers ───────────────────────────────────────────────
 
     def _on_browse(self):
-        ext_filter = "视频文件 ({})".format(
-            " ".join(f"*{e}" for e in VIDEO_EXTENSIONS)
-        )
+        """浏览按钮：优先 Houdini 文件选择器——collapse_sequences 把同一
+        静帧序列折叠成一个 $F 模式选项（2026-11 用户拍板）；环境不可用
+        （无头/会话异常）时回退 Qt 对话框。"""
+        path = self._select_media_via_houdini()
+        if path:
+            self._load_media(path)
+            return
+        if not getattr(self, "_houdini_dialog_failed", False):
+            return   # 用户取消，不弹 Qt 对话框
+        ext_filter = "视频与静帧 ({})".format(" ".join(
+            f"*{e}" for e in VIDEO_EXTENSIONS + SEQUENCE_EXTENSIONS))
         filepath, _ = QFileDialog.getOpenFileName(
-            self, "选择视频文件", "", ext_filter
+            self, "选择视频或序列帧", "", ext_filter
         )
         if not filepath:
             return
-        self._load_video(filepath)
+        self._load_media(filepath)
 
-    def _load_video(self, filepath: str):
-        """加载视频：重置状态、按文件名填充输出目录并启动后台探测。
+    def _select_media_via_houdini(self):
+        """Houdini 文件选择器选媒体（视频或静帧序列）。
+
+        返回路径或 None；``_houdini_dialog_failed`` 标记环境不可用
+        （ImportError/会话异常），与用户取消区分——取消不应再弹 Qt
+        对话框。pattern 必须显式传 "*"：文档明确 pattern=None 会复用
+        该文件类型上次使用的记忆值。
+        """
+        self._houdini_dialog_failed = False
+        try:
+            import hou
+            path = hou.ui.selectFile(
+                title="选择视频或序列帧",
+                collapse_sequences=True,
+                pattern="*",
+            )
+        except ImportError:
+            self._houdini_dialog_failed = True
+            return None
+        except Exception as e:   # hou.Error 等：会话异常也走 Qt 回退
+            logger.debug("hou.ui.selectFile failed: %s", e)
+            self._houdini_dialog_failed = True
+            return None
+        return (path or "").strip() or None
+
+    def _load_media(self, media_path: str):
+        """加载视频或静帧序列：重置状态、按文件名填充输出目录并启动后台探测。
 
         浏览按钮、拖放（窗口级与 _VideoSourceGroup）和路径框手动加载
         共用此入口。转换进行中一律拒绝：重置状态会让面板与仍在写盘的
@@ -1139,30 +1390,83 @@ class _VideoToSequenceWindow(QDialog):
                 and self._extract_worker.isRunning():
             self._status_label.setVisible(True)
             self._status_label.setText(
-                "转换进行中，请先完成或取消当前转换再更换视频")
+                "转换进行中，请先完成或取消当前转换再更换媒体")
             self._status_label.setStyleSheet(
                 "color: #d29a55; font-size: 12px;")
             self._path_edit.setText(self._current_video_path)
             return
         self._reset_video_state()
-        self._current_video_path = filepath
+        # Houdini 选择器/手输可能返回 $HIP 前缀形态：文件系统操作与探测/
+        # 转换一律用展开后的真实路径，界面显示保留用户原文（$HIP 在
+        # 换机/分享场景更有意义）
+        expanded = expand_houdini_path(media_path)
+        if os.path.splitext(expanded)[1].lower() not in VIDEO_EXTENSIONS:
+            self._load_still_sequence(expanded, display_path=media_path)
+            return
+        self._current_video_path = expanded
         self._video_info = None
-        self._path_edit.setText(filepath)  # textChanged: text==loaded → no-op
-        video_name = os.path.splitext(os.path.basename(filepath))[0]
+        self._path_edit.setText(media_path)  # textChanged: text==loaded → no-op
+        self._set_default_output_dir(
+            os.path.splitext(os.path.basename(expanded))[0])
+        self._probe_video(expanded)
+
+    def _load_still_sequence(self, path: str, display_path: str = None):
+        """解析静帧（$F 模式或具体帧）并装载后台探测。
+
+        ``path`` 是已展开的真实路径（_load_media 统一展开）；``display_path``
+        是带 $HIP 等变量的原文，仅用于路径框显示。$F 模式枚举不到磁盘帧
+        时状态栏红字反馈，面板保持未装载状态；无编号静帧（无数字后缀）
+        走"具体文件直转"（in_pattern 空，单帧）。具体帧不做兄弟帧扩张
+        ——整条序列的入口是浏览按钮的 Houdini 选择器折叠序列（2026-11
+        用户拍板）。
+        """
+        basename = os.path.basename(path)
+        spec = None
+        if "$F" in basename:
+            spec = parse_sequence_pattern(path)
+            if spec is None:
+                self._status_label.setVisible(True)
+                self._status_label.setText(
+                    "序列模式未匹配到磁盘帧文件（检查前缀与目录后重试）")
+                self._status_label.setStyleSheet(
+                    "color: #d1283e; font-size: 12px;")
+                return
+        info = VideoInfo(
+            filepath=path,
+            filename=basename,
+            is_sequence=True,
+            codec=os.path.splitext(path)[1].lstrip(".").lower(),
+        )
+        if spec is not None:
+            info.in_pattern = spec.pattern
+            info.in_start_number = spec.first_frame
+            info.frame_numbers = spec.frame_numbers
+            info.total_frames = len(spec.frame_numbers)
+            stem = spec.stem
+        else:
+            info.total_frames = 1
+            stem = os.path.splitext(basename)[0]
+        self._current_video_path = path
+        self._video_info = info
+        self._path_edit.setText(display_path or path)  # 显示保留 $HIP 原文
+        self._set_default_output_dir(stem)
+        self._probe_video(path, sequence_info=info)
+
+    def _set_default_output_dir(self, media_name: str):
+        """按媒体名填充输出目录默认值并刷新预览。"""
         # 文件名主干滤掉 $ 与 %：目录名随后会被 hou.text.expandString 二次
-        # 展开（$F4 → 当前帧号），% 会与输出文件名的 printf 模式互相干扰
+        # 展开（$F4 → 当前帧号），% 会与输出文件名的 printf 模板互相干扰
         # ——两者都合法于 Windows 文件名，用户视角完全无感知，但落盘目录
         # 与 vm_background 快照路径会永久失配
-        video_name = re.sub(r"[$%]", "_", video_name)
-        self._output_dir_edit.setText(f"$HIP/images/{video_name}/")
+        media_name = re.sub(r"[$%]", "_", media_name)
+        self._output_dir_edit.setText(f"$HIP/images/{media_name}/")
         self._update_output_preview()
-        self._probe_video(filepath)
 
     def _reset_video_state(self):
         """清空已加载的视频状态（路径框被手动清空时也走这里）。"""
         if self._extract_worker is not None \
                 and self._extract_worker.isRunning():
-            # 转换中拒绝重置（与 _load_video 的换片拒绝同语义）：ffmpeg
+            # 转换中拒绝重置（与 _load_media 的换片拒绝同语义）：ffmpeg
             # 仍在写盘，清掉 _current_video_path/_video_info、进度归零会
             # 让面板短暂显示与写盘进程互不相认的状态。恢复路径框文本，
             # 等 0.5s 内的下一次进度信号把进度条拉回
@@ -1191,29 +1495,44 @@ class _VideoToSequenceWindow(QDialog):
     def _on_path_text_changed(self, text: str):
         """路径框即时编辑响应：手动清空 → 重置已加载状态。
 
-        程序化 setText 在 _load_video 中先设好 _current_video_path，
+        程序化 setText 在 _load_media 中先设好 _current_video_path，
         因此触发本槽时 text 总等于已加载路径，不会误清。
         """
         if not text.strip():
             self._reset_video_state()
 
     def _on_path_editing_finished(self):
-        """路径框按 Enter / 失焦：有效视频路径则加载，无效则恢复原值。"""
+        """路径框按 Enter / 失焦：有效媒体路径则加载，无效则恢复原值。
+
+        静帧序列接受 $F 模式（如 $HIP/render/render.$F4.exr）或具体帧
+        文件；视频仍要求扩展名与文件都真实存在。$HIP 等变量先展开再
+        校验（文件系统判断只认真实路径），与已装载路径的相等守卫同样
+        用展开后比对——否则 $HIP 形态每次失焦都会重新探测一遍。
+        """
         text = self._path_edit.text().strip()
-        if not text or text == self._current_video_path:
+        if not text:
             return
-        if text.lower().endswith(tuple(VIDEO_EXTENSIONS)) and os.path.isfile(text):
-            self._load_video(text)
+        expanded = expand_houdini_path(text)
+        if expanded == self._current_video_path:
+            return
+        ext = os.path.splitext(expanded)[1].lower()
+        if ext in VIDEO_EXTENSIONS and os.path.isfile(expanded):
+            self._load_media(text)
+            return
+        if ext in SEQUENCE_EXTENSIONS and (
+                "$F" in os.path.basename(text) or os.path.isfile(expanded)):
+            self._load_media(text)
             return
         self._status_label.setVisible(True)
-        self._status_label.setText("路径无效或不是支持的视频格式，已恢复")
+        self._status_label.setText(
+            "路径无效或不是支持的视频/序列格式，已恢复")
         self._status_label.setStyleSheet("color: #d1283e; font-size: 12px;")
         self._path_edit.setText(self._current_video_path)
 
     # ── 拖放（整窗接收；光标落在视频源分组框内时由分组框优先处理）──
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 — Qt 命名约定
-        if _video_path_from_mime(event.mimeData()):
+        if _media_path_from_mime(event.mimeData()):
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -1223,10 +1542,10 @@ class _VideoToSequenceWindow(QDialog):
         event.acceptProposedAction()
 
     def dropEvent(self, event) -> None:  # noqa: N802 — Qt 命名约定
-        path = _video_path_from_mime(event.mimeData())
+        path = _media_path_from_mime(event.mimeData())
         if path:
             event.acceptProposedAction()
-            self._load_video(path)
+            self._load_media(path)
 
     def _on_browse_output_dir(self):
         directory = QFileDialog.getExistingDirectory(self, "选择输出目录")
@@ -1241,7 +1560,7 @@ class _VideoToSequenceWindow(QDialog):
             return
 
         if not self._current_video_path:
-            dialogs.warn(self, "提示", "请先选择一个视频文件。")
+            dialogs.warn(self, "提示", "请先选择一个视频或序列文件。")
             return
 
         if not self._video_info:
@@ -1293,6 +1612,20 @@ class _VideoToSequenceWindow(QDialog):
             dialogs.warn(
                 self, "错误", f"无法创建输出目录:\n{output_dir}\n\n{e}")
             return
+
+        # 序列缺口预检：ffmpeg image2 不做 glob，按 start_number 逐帧生成
+        # 文件名，第一个缺帧处静默断流——提前告知而非事后困惑
+        if self._video_info.is_sequence and self._video_info.frame_numbers:
+            nums = self._video_info.frame_numbers
+            expected = nums[-1] - nums[0] + 1
+            missing = expected - len(nums)
+            if missing > 0 and not dialogs.question(
+                self, "序列存在缺帧",
+                f"序列编号范围 {nums[0]}-{nums[-1]}（应有 {expected} 帧），"
+                f"实际仅 {len(nums)} 帧，缺 {missing} 帧。\n"
+                "转换会在第一个缺帧处停止，是否继续？",
+            ):
+                return
 
         quality = self._quality_spin.value()
         start_frame = self._start_frame_spin.value()
@@ -1440,7 +1773,7 @@ class _VideoToSequenceWindow(QDialog):
 
     # ── Probe Callbacks ──────────────────────────────────────────────
 
-    def _probe_video(self, filepath):
+    def _probe_video(self, filepath, sequence_info=None):
         from houtools.videoseq.ffmpeg import find_ffmpeg
         ffmpeg_path = find_ffmpeg()
         if not ffmpeg_path:
@@ -1459,10 +1792,11 @@ class _VideoToSequenceWindow(QDialog):
             self._retire_worker(old)
 
         self._status_label.setVisible(True)
-        self._status_label.setText("正在分析视频信息...")
+        self._status_label.setText("正在分析视频/序列信息...")
         self._status_label.setStyleSheet("color: #e0cb56; font-size: 12px;")
 
-        self._probe_worker = _ProbeWorker(filepath, ffmpeg_path)
+        self._probe_worker = _ProbeWorker(
+            filepath, ffmpeg_path, sequence_info=sequence_info)
         self._probe_worker.info_ready.connect(self._on_probe_ready)
         self._probe_worker.error.connect(self._on_probe_error)
         self._probe_worker.start()

@@ -4,7 +4,18 @@
 
 ## 拖放与入口
 
-整窗 + `_VideoSourceGroup` 双层接收拖放；`_load_video` 是浏览/拖放/手输共用入口。
+整窗 + `_VideoSourceGroup` 双层接收拖放；`_load_media` 是浏览/拖放/手输共用入口（视频走原链，静帧走 `_load_still_sequence`）。
+
+## 静帧序列（EXR/PNG/TIF → JPG，2026-11 新增）
+
+- **交互形态是用户拍板**：整条序列的唯一入口是「浏览...」按钮的 Houdini 文件选择器（`hou.ui.selectFile(collapse_sequences=True, pattern="*")`，同一序列折叠成一个选项、返回 `name.$F4.exr` 形态）；拖入/手输**具体帧只转换该帧，不向兄弟帧扩张**。`pattern` 必须显式传 `"*"`——文档明确 `None` 会复用该文件类型上次使用的记忆值。
+- **解析纯函数**（模块级、smoke test 直测）：`parse_still_frame`（具体帧 → 单帧 spec，无编号静帧返回 None 走"具体文件直转"）与 `parse_sequence_pattern`（`$F` 模式 → 扫盘枚举；位数取 `$F` 声明，裸 `$F` 且磁盘宽度唯一取磁盘宽度）。**两个坑都是点号**：`_SEQ_PATTERN_RE` 的 `ext` 捕获组不含前导点（`\.` 被消耗），拼 `%0Nd` 模式与枚举 regex 时都要显式补 `.`——两处漏补各自炸过一次（枚举 regex 少点 = 永远枚举 0 帧）。
+- **ffmpeg 侧机制**（SideFX hffmpeg 7.1.0 实测）：image2 demuxer **不做 glob**，按 `-start_number` 逐帧 zfill 生成文件名——**缺帧即静默断流**（零报错、rc=0、只出到缺口前），故 `_on_convert` 有缺口预检（`max-min+1 ≠ 文件数` 弹确认框，告知"会在第一个缺帧处停止"）。输入/输出帧号解耦：demuxer/muxer 两侧各一个 `-start_number`，输入侧=探测出的首帧号，输出侧=UI 起始帧号。
+- **色彩管理**：EXR 是线性编码，ffmpeg 默认直通转 JPG 全片偏暗（实测 0.502 线性灰 YAVG≈128）——转换命令对 `.exr` 输入加解码器选项 `-apply_trc iec61966_2_1`（放 `-i` **前**），转出 sRGB（YAVG≈188，与 hoiiotool `--colorconvert linear sRGB` 逐值一致）。**该选项是 exr 解码器专属**：png/tif 本身是显示色域编码，不套 TRC（重复套伽马会洗白），色彩分支只认扩展名 `.exr`。DWAA/DWAB 压缩实测可解（Karma/Arnold 常用）；**multipart EXR / deep data 不支持**（ffmpeg exr 解码器限制）；`>1.0` 高光直接裁切无 tonemap 滚动——视窗背景代理足够，lookdev 精查不是本工具定位。
+- **探测**：序列模式跳过整条视频探测链（ffprobe 全量→ffmpeg 回退→逐帧计数），`_ProbeWorker` 收窗口主线程解析好的 `VideoInfo`（`sequence_info` 参数）只跑 `_probe_first_frame`（ffprobe 首帧取分辨率，失败静默——分辨率不是转换必要条件）；帧数=磁盘枚举数，fps/duration 恒 0（信息面板显示 "-"）。
+- **$HIP 变量路径必须先展开**（GUI 实测报错修复）：Houdini 文件选择器与手输都可能返回 `$HIP/render/...` 形态，`os.listdir/isfile/ffprobe` 对字面 `$HIP` 直接 WinError 3。`expand_houdini_path`（模块级纯函数）只展开**目录部分**、basename 原样——`hou.text.expandString` 会把 `$F4` 展开成当前帧号、整条序列退化成单帧，所以不能整串展开；无头回退 `os.path.expandvars`（未知变量原样保留，交给 isfile 拒绝）。`_current_video_path` 存展开后的真实路径（探测/转换用），路径框显示保留 `$HIP` 原文（换机/分享更有意义）；`_on_path_editing_finished` 的相等守卫用展开后比对，否则 `$HIP` 形态每次失焦都会重新探测。
+- **ffmpeg 查找优先级不变**：项目根 ffmpeg.exe 优先的老规则保留——项目根放了老版 ffmpeg 的用户走 EXR 可能报"参数不受支持"，属预期行为。
+- 相机背景写回、旧序列 .bak 三态、取消语义对序列输入零改动（输出仍是 JPG 序列，`vm_background` 闭环成立：EXR 渲染 → 低质量 JPG 代理 → 相机背景）。
 
 ## 取消与子进程（踩坑重灾区）
 
