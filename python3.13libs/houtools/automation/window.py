@@ -47,6 +47,10 @@ from houtools.core.constants import PROJECT_ROOT
 from houtools.core.log import get_logger
 from houtools.ui import dialogs
 from houtools.ui import fonts as tool_fonts
+from houtools.ui.networknav import (
+    frame_node as _networknav_frame,
+    jump_to_node as _networknav_jump,
+)
 logger = get_logger("automation.window")
 
 
@@ -848,37 +852,9 @@ def _extract_drag_text(mime) -> str:
 
 
 def _frame_node_in_editor(editor, node):
-    """在 network editor 中取景单个节点（等价按 F 的效果）。
-
-    H22 运行时没有 frameSelection/homeToSelection（文档列出但存根缺失），
-    且 setCurrentNode 的 pick 机制会异步清空选择，因此不依赖选择状态：
-    用 itemRect 取节点在该编辑器中的精确布局矩形（自适应节点大小，
-    之前固定边距版对大节点会裁出视野导致居中时好时坏），四周外扩约
-    35% 后交给 setVisibleBounds。
-
-    set_center_when_scale_rejected 必须为 True：max_scale 默认上限 100，
-    当前视图缩放状态使目标缩放超限时，False（默认）会让整个调用被
-    拒绝、什么都不发生——这正是"视图移远后无法居中"的原因；True 则
-    在缩放被拒时仍把视图中心平移到节点上，保证每次点击都居中。
-    """
-    try:
-        import hou
-        rect = editor.itemRect(node)
-        mn = rect.min()
-        sz = rect.size()
-        # 边距取节点尺寸的 1 倍（节点约占画面 1/3），视野留白更宽松；
-        # 矩形越大所需放大倍率越小，也更不容易触发 max_scale 缩放上限
-        pad_x = max(sz[0] * 1.0, 2.0)
-        pad_y = max(sz[1] * 1.0, 1.5)
-        editor.setVisibleBounds(
-            hou.BoundingRect(
-                mn[0] - pad_x, mn[1] - pad_y,
-                mn[0] + sz[0] + pad_x, mn[1] + sz[1] + pad_y,
-            ),
-            set_center_when_scale_rejected=True,
-        )
-    except Exception as exc:  # noqa: BLE001 - 取景失败不影响跳转与选中
-        logger.warning("frame node %s failed: %s", node, exc)
+    """取景单个节点——实现已迁 houtools/ui/networknav.py（videoseq 复用），
+    保留别名防模块内/子类直呼旧名。"""
+    _networknav_frame(editor, node)
 
 
 class AutomationWindow(QWidget):
@@ -1647,44 +1623,12 @@ class AutomationWindow(QWidget):
     def _jump_to_node(self, node_path: str) -> None:
         """在网络编辑器中跳转到节点（与 Houdini 自带跳转行为一致）。
 
-        目标编辑器优先取最近聚焦的 Houdini 面板（hou.ui.currentPaneTabs），
-        聚焦面板不是 NetworkEditor 时退回全局第一个；随后切 pwd、选中
-        目标节点并取景居中（同官方路径栏点击行为）。
+        实现已迁 houtools/ui/networknav.py（Video to Sequence 的媒体来源
+        跳转按钮复用同款）；空路径文案是任务语境的，经 empty_message
+        保持原文。
         """
-        try:
-            import hou
-        except ImportError:
-            return
-        node_path = (node_path or "").strip()
-        if not node_path:
-            hou.ui.setStatusMessage(
-                "Automation: 该任务未填写参数路径",
-                severity=hou.severityType.Warning,
-            )
-            return
-        node = hou.node(node_path)
-        if node is None:
-            hou.ui.setStatusMessage(
-                f"Automation: 节点不存在 {node_path}",
-                severity=hou.severityType.Warning,
-            )
-            return
-        editor = next(
-            (p for p in hou.ui.currentPaneTabs() if isinstance(p, hou.NetworkEditor)),
-            None,
-        )
-        if editor is None:
-            editor = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
-        if editor is None:
-            hou.ui.setStatusMessage(
-                "Automation: 未找到网络编辑器",
-                severity=hou.severityType.Warning,
-            )
-            return
-        if node.parent() != editor.pwd():
-            editor.setPwd(node.parent())
-        node.setSelected(True, clear_all_selected=True)
-        _frame_node_in_editor(editor, node)
+        _networknav_jump(
+            node_path, prefix="Automation", empty_message="Automation: 该任务未填写参数路径")
 
     # ── 选中(单击手柄) ─────────────────────────────────────
 

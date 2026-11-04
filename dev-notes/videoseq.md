@@ -6,9 +6,15 @@
 
 整窗 + `_VideoSourceGroup` 双层接收拖放；`_load_media` 是浏览/拖放/手输共用入口（视频走原链，静帧走 `_load_still_sequence`）。
 
+## 图标按钮改版（2026-11 用户指定）
+
+- **两个「浏览」按钮文件夹图标化**（视频源/输出目录）：Automation flipbook 同款 22×22 无边框图标按钮，`_make_icon_button` 统一构建、`ui/icons.svg_icon` QSvgRenderer 离屏渲染（QtSvg 缺失回退文字）。**行为不变**——视频源仍走 `hou.ui.selectFile(collapse_sequences=True)` 折叠序列（Qt 对话框兜底链保留），输出目录仍走目录选择对话框；原 `QPushButton#browseBtn` 文本按钮样式随之删除。
+- **相机行「选择」改 chooser 图标按钮**（官方 `BUTTONS/chooser_node.svg` 提取件 = 参数面板 "Open floating operator chooser" 同款图标：浅色节点块 + 白光标；**不是红光标的 `chooser.svg`**——chooser 家族 7 个变体离屏渲染逐一比对定案，"node" 语义也对得上选节点器）+ 前置跳转按钮：点击 `hou.ui.selectNode(title, initial_node=当前所选, custom_node_filter_callback=_cam_filter_callback)` 原生浮动操作员选择器选相机。**返回值坑**：`multiple_select=False` 返回单个路径 str、取消/清空返回 None——勿按 tuple 处理（`houpythonportion/ui.py` 实证：`_hou` C 层只有 `ui__selectNode`，公开名在该文件以 `@_addMethod(hou.ui)` 绑定）。`_cam_filter_callback` 只放行 OBJ cam（`type().name()=="cam"` 且 category Object——SOP Camera 等同名类型不放行，所选相机要吃 `vm_background`/`resx`/`resy`，必须 OBJ 相机）。旧 `_on_pick_camera`（QInputDialog 下拉）随之删除——原生选择器列完整路径树，"同名相机按 basename 反查永远命中第一个"的问题不复存在。
+- **跳转按钮**（jump.svg，Automation 任务槽同款图标）：`ui/networknav.jump_to_node`（与 automation 同源实现，2026-11 迁出共享）定位当前所选相机（`_selected_camera_node()`，未选/已删黄字提示）。
+
 ## 静帧序列（EXR/PNG/TIF → JPG，2026-11 新增）
 
-- **交互形态是用户拍板**：整条序列的唯一入口是「浏览...」按钮的 Houdini 文件选择器（`hou.ui.selectFile(collapse_sequences=True, pattern="*")`，同一序列折叠成一个选项、返回 `name.$F4.exr` 形态）；拖入/手输**具体帧只转换该帧，不向兄弟帧扩张**。`pattern` 必须显式传 `"*"`——文档明确 `None` 会复用该文件类型上次使用的记忆值。
+- **交互形态是用户拍板**：整条序列的唯一入口是「浏览」按钮的 Houdini 文件选择器（`hou.ui.selectFile(collapse_sequences=True, pattern="*")`，同一序列折叠成一个选项、返回 `name.$F4.exr` 形态）；拖入/手输**具体帧只转换该帧，不向兄弟帧扩张**。`pattern` 必须显式传 `"*"`——文档明确 `None` 会复用该文件类型上次使用的记忆值。
 - **解析纯函数**（模块级、smoke test 直测）：`parse_still_frame`（具体帧 → 单帧 spec，无编号静帧返回 None 走"具体文件直转"）与 `parse_sequence_pattern`（`$F` 模式 → 扫盘枚举；位数取 `$F` 声明，裸 `$F` 且磁盘宽度唯一取磁盘宽度）。**两个坑都是点号**：`_SEQ_PATTERN_RE` 的 `ext` 捕获组不含前导点（`\.` 被消耗），拼 `%0Nd` 模式与枚举 regex 时都要显式补 `.`——两处漏补各自炸过一次（枚举 regex 少点 = 永远枚举 0 帧）。
 - **ffmpeg 侧机制**（SideFX hffmpeg 7.1.0 实测）：image2 demuxer **不做 glob**，按 `-start_number` 逐帧 zfill 生成文件名——**缺帧即静默断流**（零报错、rc=0、只出到缺口前），故 `_on_convert` 有缺口预检（`max-min+1 ≠ 文件数` 弹确认框，告知"会在第一个缺帧处停止"）。输入/输出帧号解耦：demuxer/muxer 两侧各一个 `-start_number`，输入侧=探测出的首帧号，输出侧=UI 起始帧号。
 - **色彩管理**：EXR 是线性编码，ffmpeg 默认直通转 JPG 全片偏暗（实测 0.502 线性灰 YAVG≈128）——转换命令对 `.exr` 输入加解码器选项 `-apply_trc iec61966_2_1`（放 `-i` **前**），转出 sRGB（YAVG≈188，与 hoiiotool `--colorconvert linear sRGB` 逐值一致）。**该选项是 exr 解码器专属**：png/tif 本身是显示色域编码，不套 TRC（重复套伽马会洗白），色彩分支只认扩展名 `.exr`。DWAA/DWAB 压缩实测可解（Karma/Arnold 常用）；**multipart EXR / deep data 不支持**（ffmpeg exr 解码器限制）；`>1.0` 高光直接裁切无 tonemap 滚动——视窗背景代理足够，lookdev 精查不是本工具定位。

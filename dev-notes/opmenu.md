@@ -24,3 +24,10 @@
 - Capture：所有节点可用（context expression 仅 `kwargs.get("node") is not None`）。
 - Delete：仅带截图标记（`ht_capture_image`，与 MARKER_KEY 双处同步）的节点显示。
 - 两者机制见 [capture-viewport.md](capture-viewport.md)。
+
+## Paste Center
+
+- **仅 SOP 节点显示**（2026-11 用户指定）：context expression 判
+  `node.type().category().name() == "Sop"`，与 `paste_center.is_sop_target`
+  **双处同步**（smoke test 假节点 type/category 链 eval 对照）。LOP/COP 的
+  xform 映射工具侧保留（菜单不再露出，防误入非 SOP 网络）。

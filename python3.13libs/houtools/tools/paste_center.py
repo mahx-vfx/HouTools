@@ -1,7 +1,8 @@
 """粘贴中心（Paste Center，节点右键菜单，双模式子项）
 =========================================
 网络编辑器 Ctrl+C 复制源节点 A 后，右键目标节点 B →「Paste Center [HT]」
-子菜单（OPmenu.xml，所有节点可见）：在 B 正下方创建 transform 节点并接管
+子菜单（OPmenu.xml，仅 SOP 节点显示——context 判 category 名 == "Sop"，
+与 is_sop_target 双处同步）：在 B 正下方创建 transform 节点并接管
 显示/渲染输出（启用），把 B 的输出内容平移到 A 的中心位置——
 
   px py pz ← centroid(B)             绝对值；枢轴落在 B 自身原中心，
@@ -16,8 +17,8 @@
 
 transform 类型按目标节点所在网络类别映射：SOP/LOP/COP 的显示名都叫
 Transform、内部类型名统一是 xform，t/p 均为三分量元组（H22.0.429 无头
-实测三类俱全）；其余类别（Object/ROP/DOP 等）没有可创建的 transform
-节点 → 黄字拒绝。
+实测三类俱全）；LOP/COP 映射保留在 _TRANSFORM_TYPES（菜单已只对 SOP
+露出，此处兜程序化调用），其余类别黄字拒绝。
 
 实现要点（与 paste_bbox.py 同源的坑）：
   - 绝对值与表达式走同一套 hou.hscriptExpression 求值 centroid()，cook
@@ -58,6 +59,15 @@ def run_absolute(kwargs=None):
 def run_expressions(kwargs=None):
     """Paste Expressions [HT] 菜单入口。"""
     _apply(kwargs, expression_mode=True)
+
+
+def is_sop_target(node):
+    """菜单 context 判定的工具侧镜像（OPmenu.xml 双处同步）。
+
+    仅 SOP 节点显示 Paste Center 子菜单；表达式与这里必须同语义
+    （smoke test 用假节点 eval XML 表达式与本函数对照）。
+    """
+    return node.type().category().name() == "Sop"
 
 
 def _apply(kwargs, expression_mode):

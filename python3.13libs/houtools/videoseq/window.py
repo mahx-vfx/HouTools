@@ -9,6 +9,13 @@
 该帧。EXR 是线性编码，转换时经解码器 -apply_trc 转 sRGB——实测
 SideFX hffmpeg 7.1 默认直通（0.502 线性灰转出 YAVG≈128 全片偏暗），
 apply_trc iec61966_2_1 后 ≈188 与 hoiiotool --colorconvert 一致。
+
+图标按钮改版（2026-11 用户指定）：视频源/输出目录两个「浏览」按钮
+改 Automation flipbook 同款文件夹图标按钮（行为不变）；相机行「选择」
+改官方 BUTTONS/chooser_node.svg 图标（即参数面板 "Open floating operator
+chooser"），点击打开 Houdini 原生浮动操作员选择器（hou.ui.selectNode，
+过滤器只列 OBJ cam）选相机，前面带跳转按钮（ui/networknav.jump_to_node）
+在网络编辑器中定位所选相机。
 """
 
 import os
@@ -22,9 +29,9 @@ from typing import Optional
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QSpinBox, QSlider, QGroupBox, QFormLayout,
-    QFileDialog, QProgressBar, QInputDialog, QMenu,
+    QFileDialog, QProgressBar, QMenu,
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize
 
 from houtools.videoseq.ffmpeg import find_ffprobe as _get_ffprobe_path
 from houtools.videoseq.ffmpeg import get_startup_kwargs as _get_startup_kwargs
@@ -32,6 +39,8 @@ from houtools.videoseq.ffmpeg import get_startup_kwargs as _get_startup_kwargs
 from houtools.core.log import get_logger
 from houtools.ui import dialogs
 from houtools.ui import fonts as tool_fonts
+from houtools.ui import icons as tool_icons
+from houtools.ui.networknav import jump_to_node
 logger = get_logger("videoseq.window")
 
 # 支持的视频格式
@@ -276,17 +285,6 @@ QProgressBar {
 QProgressBar::chunk {
     background-color: #0d6399;
     border-radius: 5px;
-}
-QPushButton#browseBtn {
-    background-color: #e0cb56;
-    color: #000000;
-    padding: 5px 14px;
-    border-radius: 8px;
-    min-width: 50px;
-    font-weight: bold;
-}
-QPushButton#browseBtn:hover {
-    background-color: #d4bf40;
 }
 QPushButton#confirmBtn {
     background-color: #0d6399;
@@ -1020,6 +1018,37 @@ class _ExtractWorker(QThread):
 
 # ─── Main Window ─────────────────────────────────────────────────────
 
+def _make_icon_button(rel_name, tooltip, fallback_text):
+    """22×22 无边框图标按钮（Automation flipbook/任务槽图标按钮同款）。
+
+    图标经 tool_icons.svg_icon 离屏渲染；QtSvg 缺失/渲染失败回退文字
+    （仅极端环境，正常环境都有 QtSvg）。
+    """
+    btn = QPushButton()
+    btn.setObjectName("iconBtn")
+    btn.setFixedSize(22, 22)
+    btn.setToolTip(tooltip)
+    icon = tool_icons.svg_icon(rel_name)
+    if icon is not None:
+        btn.setIcon(icon)
+        btn.setIconSize(QSize(16, 16))
+    else:
+        btn.setText(fallback_text)
+    btn.setStyleSheet(
+        "QPushButton { border: none; padding: 0px; background: transparent; }"
+        "QPushButton:hover { background: rgba(255,255,255,0.15); border-radius: 3px; }"
+    )
+    return btn
+
+
+def _cam_filter_callback(node):
+    """浮动操作员选择器过滤器：只列 OBJ cam（与 _find_scene_cameras 的
+    objNodeTypeCategory "cam" instances() 同口径；SOP Camera 等同名类型
+    不放行，所选相机要吃 vm_background/resx/resy，必须 OBJ 相机）。"""
+    return (node.type().name() == "cam"
+            and node.type().category().name() == "Object")
+
+
 def show_video_to_sequence_window():
     """显示视频转序列图窗口（单例经 houtools.ui.window_manager 登记）"""
     from houtools.ui import window_manager
@@ -1091,14 +1120,11 @@ class _VideoToSequenceWindow(QDialog):
         layout.setSpacing(6)
 
         file_row = QHBoxLayout()
-        self._browse_btn = QPushButton("浏览...")
-        self._browse_btn.setObjectName("browseBtn")
-        self._browse_btn.clicked.connect(self._on_browse)
         self._path_edit = QLineEdit()
         self._path_edit.setPlaceholderText("请选择、拖入或粘贴视频/序列路径...")
         self._path_edit.setToolTip(
             "支持把视频或静帧（EXR/PNG/TIF）文件直接拖进本区域；\n"
-            "静帧序列请点「浏览...」在 Houdini 文件选择器中按折叠序列选择；\n"
+            "静帧序列请点「浏览」在 Houdini 文件选择器中按折叠序列选择；\n"
             "拖入单个静帧只转换该帧。\n"
             "也可手动编辑路径，按 Enter 或移开焦点后加载，清空则重置"
         )
@@ -1108,6 +1134,13 @@ class _VideoToSequenceWindow(QDialog):
         self._path_edit.textChanged.connect(self._on_path_text_changed)
         self._path_edit.editingFinished.connect(self._on_path_editing_finished)
         file_row.addWidget(self._path_edit, 1)
+        # 「浏览」按钮文件夹图标化（Automation flipbook 同款 22×22 图标按钮，
+        # 2026-11 用户指定）；行为不变：Houdini 文件选择器折叠序列
+        self._browse_btn = _make_icon_button(
+            "folder.svg",
+            "选择视频或序列帧（Houdini 文件选择器，同一序列折叠为一个选项）",
+            "浏")
+        self._browse_btn.clicked.connect(self._on_browse)
         file_row.addWidget(self._browse_btn)
         layout.addLayout(file_row)
 
@@ -1158,12 +1191,20 @@ class _VideoToSequenceWindow(QDialog):
         self._camera_edit = QLineEdit()
         self._camera_edit.setReadOnly(True)
         self._camera_edit.setPlaceholderText("未选择相机...")
-        self._pick_cam_btn = QPushButton("选择...")
-        self._pick_cam_btn.setObjectName("browseBtn")
-        self._pick_cam_btn.clicked.connect(self._on_pick_camera)
+        # 「选择」按钮改 Houdini 原生浮动操作员选择器（chooser_node.svg =
+        # 官方 BUTTONS/chooser_node.svg，即参数面板"Open floating operator
+        # chooser"图标——浅色节点块+白光标，chooser.svg 红光标是另一颗按钮
+        # 的；离屏渲染逐个比对确认），前面带跳转按钮定位所选相机
+        self._cam_jump_btn = _make_icon_button(
+            "jump.svg", "在网络编辑器中跳转到所选相机", "跳")
+        self._cam_jump_btn.clicked.connect(self._on_jump_to_camera)
+        self._cam_choose_btn = _make_icon_button(
+            "chooser_node.svg", "在 Houdini 浮动操作员选择器中选择相机", "选")
+        self._cam_choose_btn.clicked.connect(self._on_choose_camera)
         cam_row.addWidget(cam_lbl)
         cam_row.addWidget(self._camera_edit, 1)
-        cam_row.addWidget(self._pick_cam_btn)
+        cam_row.addWidget(self._cam_jump_btn)
+        cam_row.addWidget(self._cam_choose_btn)
         layout.addLayout(cam_row)
 
         # 相机分辨率行：跟随所选相机显示（resx/resy），宽/高各占一个输入框；
@@ -1268,8 +1309,8 @@ class _VideoToSequenceWindow(QDialog):
         self._output_dir_edit.setPlaceholderText(
             "$HIP/images/{视频或序列名}/"
         )
-        self._output_dir_btn = QPushButton("浏览...")
-        self._output_dir_btn.setObjectName("browseBtn")
+        self._output_dir_btn = _make_icon_button(
+            "folder.svg", "选择输出目录", "浏")
         self._output_dir_btn.clicked.connect(self._on_browse_output_dir)
         dir_row.addWidget(dir_lbl)
         dir_row.addWidget(self._output_dir_edit, 1)
@@ -1334,10 +1375,17 @@ class _VideoToSequenceWindow(QDialog):
 
     # ── Event Handlers ───────────────────────────────────────────────
 
+    def _show_status_hint(self, text, color="#d29a55"):
+        """底部状态条非阻塞提示（黄字=预期内拒绝，红字=环境不可用）。"""
+        self._status_label.setVisible(True)
+        self._status_label.setText(text)
+        self._status_label.setStyleSheet(f"color: {color}; font-size: 12px;")
+
     def _on_browse(self):
         """浏览按钮：优先 Houdini 文件选择器——collapse_sequences 把同一
         静帧序列折叠成一个 $F 模式选项（2026-11 用户拍板）；环境不可用
-        （无头/会话异常）时回退 Qt 对话框。"""
+        （无头/会话异常）时回退 Qt 对话框。按钮本身已文件夹图标化
+        （Automation flipbook 同款），行为不变。"""
         path = self._select_media_via_houdini()
         if path:
             self._load_media(path)
@@ -1981,38 +2029,46 @@ class _VideoToSequenceWindow(QDialog):
         if len(cameras) == 1:
             self._set_selected_camera(cameras[0])
 
-    def _on_pick_camera(self):
-        """打开相机选择对话框"""
+    def _on_jump_to_camera(self):
+        """跳转按钮：在网络编辑器中定位所选相机（houtools/ui/networknav
+        的 jump_to_node，与 Automation 任务槽跳转同款实现）。"""
+        node = self._selected_camera_node()
+        if node is None:
+            self._show_status_hint("尚未选择相机（点右侧「选」按钮选取）")
+            return
+        jump_to_node(node.path(), prefix="Video to Sequence")
+
+    def _on_choose_camera(self):
+        """选择按钮：Houdini 原生浮动操作员选择器选相机（2026-11 用户
+        指定，取代旧 QInputDialog 下拉对话框）。
+
+        过滤器只列 OBJ cam（与 _find_scene_cameras 同口径，模块级
+        _cam_filter_callback）；取消/清空不动任何状态。
+        hou.ui.selectNode 在 multiple_select=False 时返回单个路径 str、
+        取消/清空返回 None（houpythonportion/ui.py 实证，勿按 tuple 处理）。
+        """
         try:
-            import hou  # noqa: F401 — 仅探测 hou 可用性
+            import hou
         except ImportError:
-            dialogs.warn(self, "提示", "此功能仅在 Houdini 中可用。")
+            hou = None
+        if hou is None or not hasattr(hou, "ui"):
+            # ImportError=纯 python 无头；无 ui 属性=hython 等无 UI 会话
+            # （hou.ui 模块只在 GUI 会话挂载，hasattr(hou, "ui") 才安全）
+            self._show_status_hint(
+                "Houdini 会话不可用，无法打开节点选择器", "#d1283e")
             return
-
-        cameras = self._find_scene_cameras()
-        if not cameras:
-            dialogs.info(self, "提示", "当前场景中没有找到相机。")
+        picked = hou.ui.selectNode(
+            title="选择相机",
+            initial_node=self._selected_camera_node(),
+            custom_node_filter_callback=_cam_filter_callback,
+        )
+        if not picked:
+            return   # 用户取消/清空
+        node = hou.node(picked)
+        if node is None:
+            dialogs.warn(self, "提示", f"所选相机不存在：{picked}")
             return
-
-        # 下拉直接列完整路径：多机位/多 shot 布局常有同名相机，按
-        # basename 反查 index 会永远命中第一个，分辨率写进错误的相机
-        current = self._camera_edit.text()
-        current_idx = cameras.index(current) if current in cameras else 0
-
-        # 实例化调用：静态便利函数 getItem 拿不到内部按钮（英文系统出
-        # 英文按钮），无法中文化
-        dlg = QInputDialog(self)
-        dlg.setWindowTitle("选择相机")
-        dlg.setLabelText("场景中的相机:")
-        dlg.setComboBoxItems(cameras)
-        dlg.setComboBoxEditable(False)
-        dlg.setTextValue(cameras[current_idx])
-        dialogs.localize_buttons(dlg)
-        ok = dlg.exec_() == QDialog.Accepted
-        name = dlg.textValue()
-        dlg.deleteLater()
-        if ok and name in cameras:
-            self._set_selected_camera(name)
+        self._set_selected_camera(node.path())
 
     def _set_selected_camera(self, cam_path: str):
         """记录所选相机并同步分辨率显示（选择对话框/自动选择共用入口）。"""

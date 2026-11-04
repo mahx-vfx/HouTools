@@ -20,6 +20,7 @@
 - **stdout tee 带属主 + 收尾沿链 splice（`_strip_owned_tees`）**（2026-10 审查修复）：重定向是进程级单槽，复制停靠页签可造出第二个 Automation 面板——无属主时 W1 收尾会把 W2 的 tee 顶掉、W2 开工会剥掉 W1 的。摘除不要求自家层在栈顶：沿 `_original` 链把属主是自己（含无属主遗留）的层 splice 掉（prev._original 跳过），别的存活面板的层不动——只剥栈顶的旧写法在"W1、W2 同时执行、W1 先收尾"时会把自己的 tee 永久埋在链里、再被 W2 收尾用捕获值顶回栈顶。Start 时不再另存 `_orig_stdout`（嵌套时捕获值可能是别人的 tee，用它还原反而互踩）。
 - **去重浮动面板 close 前查 `_any_panel_running`**：重复实例里有引擎在跑时本轮跳过去重（close = 协作式放弃数小时任务），空闲后再收。
 - 任务槽小图标（jump/folder）模块级缓存：每槽重建 = 重复读盘 + QSvgRenderer 解析，100 槽配置每次载入付 100 倍代价。
+- **跳转/取景实现已迁 `houtools/ui/networknav.py`**（2026-11，Video to Sequence 的媒体来源跳转按钮复用同款）：`_jump_to_node` 方法是委托薄壳（空路径文案经 `empty_message` 参数保持原文"该任务未填写参数路径"），模块级 `_frame_node_in_editor` 保留别名防旧引用；图标缓存仍在本模块未迁。
 - stdout 重定向恢复不看日志开关现值（开关可能运行中被改），Start 前预还原防 `_LogTee` 嵌套。
 - 未知任务类型**与缺失 type 字段**都渲染为禁用占位槽并**原样透传保存**（不落默认 BUTTON_CLICK——缺 type 走默认会在首次 Start 保存时把原始 params 形状永久改坏，2026-10 复审补齐）。
 - **stdout 重定向的生命周期必须不依赖面板存活**：tee 是进程级替换，面板执行中被销毁时（pane 可关、收不到 closeEvent）实例的 `_restore_stdout` 不可达——`destroyed` 连模块级 `_force_restore_stdout`（沿链 splice 本属主层）+ `_close_log_file` 兜底。

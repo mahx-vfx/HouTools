@@ -217,8 +217,8 @@ def main():
         assert eval(bbox_expr, {"kwargs": {"node": node}}) == _expected(comps)
     print("paste_bbox context: consistent")
 
-    # OPmenu:粘贴中心子菜单——所有节点可见（最小判定，无类型过滤），
-    # 两个模式条目各自走两行分发器
+    # OPmenu:粘贴中心子菜单——仅 SOP 节点显示（context 判 category 名，
+    # 与 paste_center.is_sop_target 双处同步），两个模式条目各自走两行分发器
     assert 'id="houtools_paste_center_menu"' in op_xml
     assert '<label>Paste Center [HT]</label>' in op_xml
     assert 'id="houtools_paste_center_absolute"' in op_xml
@@ -231,8 +231,34 @@ def main():
         if sub.get("id") == "houtools_paste_center_menu":
             center_expr = sub.find("context/expression").text
     assert center_expr, "houtools_paste_center_menu context expression missing"
-    # 所有节点可见 = 只判 node 存在；任何假节点（含缺 size/t 的）都必须命中
-    assert eval(center_expr, {"kwargs": {"node": _FakeNode({})}})
+
+    class _FakeCategory:
+        def __init__(self, name):
+            self._name = name
+
+        def name(self):
+            return self._name
+
+    class _FakeType:
+        def __init__(self, name):
+            self._category = _FakeCategory(name)
+
+        def category(self):
+            return self._category
+
+    class _FakeCatNode:
+        def __init__(self, category_name):
+            self._type = _FakeType(category_name)
+
+        def type(self):
+            return self._type
+
+    from houtools.tools.paste_center import is_sop_target
+    for cat_name, expected in (("Sop", True), ("Lop", False),
+                               ("Cop", False), ("Object", False)):
+        node = _FakeCatNode(cat_name)
+        assert is_sop_target(node) == expected
+        assert eval(center_expr, {"kwargs": {"node": node}}) == expected
     assert eval(center_expr, {"kwargs": {"node": None}}) is False
     print("paste_center context: consistent")
 
@@ -756,6 +782,22 @@ def main():
     vs_win.show()
     assert not vs_win._status_label.isVisible()
     assert vs_win._status_label.text() == ""
+
+    # 图标按钮改版（2026-11 用户指定）：视频源/输出目录两个「浏览」按钮
+    # 文件夹图标化（行为不变：文件选择器/目录选择器），相机行「选择」改
+    # 原生浮动操作员选择器 + 前置跳转按钮；旧 QInputDialog 相机对话框已删。
+    # 图标素材在盘（QtSvg 缺失时 svg_icon 回退 None→文字按钮，不致命）
+    for _attr in ("_browse_btn", "_output_dir_btn", "_cam_choose_btn",
+                  "_cam_jump_btn"):
+        assert getattr(vs_win, _attr).toolTip()
+    for _name in ("folder.svg", "jump.svg", "chooser_node.svg"):
+        assert (ROOT / "python3.13libs" / "houtools" / "icons" / _name).is_file(), _name
+    assert not hasattr(vs_win, "_on_pick_camera"), "旧相机下拉对话框应已删除"
+    assert not hasattr(vs_win, "_pick_cam_btn")
+    # 无头会话（无 hou.ui）相机两个新入口走提示路径，不抛异常
+    vs_win._on_choose_camera()
+    vs_win._on_jump_to_camera()
+    assert vs_win._status_label.text() != ""
 
     # P0 回归：提取 worker 在跑时 is_close_deferred 必须为 True——否则
     # Reload 的 close_all 走 else 分支 deleteLater 掉窗口，运行中 QThread
