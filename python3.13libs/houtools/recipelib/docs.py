@@ -48,11 +48,12 @@ _OVERLAY_SB_QSS = (
 
 # ---- 文档排版（setMarkdown 后格式化，2026-11 用户拍板）----
 # 配色参考用户 vault 的 OnePage 主题暗色方案（--typo-h1..h6/bold/italic
-# 变量原值照搬）；字重用 VF 变量轴精确取主题的 650/620/580 小数权重
+# 变量原值照搬）；字重一~三级按级别加粗（2026-11 用户要求）：700/600/500
+# 恰是 H21 枚举降级档的落点，两版渲染一致；H4-6 与 H3 同重，靠字号/色阶区分
 _HEAD_STYLES = {   # level: (pt, 颜色, wght 轴值, 上间距, 下间距)
-    1: (15.0, "#4F74AF", 650, 10, 4),
-    2: (12.5, "#8567BD", 620, 8, 3),
-    3: (11.25, "#4E9A8A", 580, 7, 2),
+    1: (15.0, "#4F74AF", 700, 10, 4),
+    2: (12.5, "#8567BD", 600, 8, 3),
+    3: (11.25, "#4E9A8A", 500, 7, 2),
     4: (10.5, "#C0765E", 500, 6, 2),
     5: (10.0, "#C99B5E", 500, 6, 2),
     6: (9.5, "#8A8478", 500, 6, 2),
@@ -77,12 +78,14 @@ _HAS_VAR_AXIS = hasattr(QtGui.QFont, "setVariableAxis")
 
 
 def _apply_heading_weight(f, wght):
-    """标题字重：变量轴精确取 650/620/580 等小数权重，旧 Qt 降级枚举档。"""
+    """标题字重：枚举档打底（fontWeight() 报告值两版一致——轴值不回写
+    weight）+ Qt 6.7+ 变量轴精确取权重。轴对 wght 渲染恒优先于枚举档
+    （实测 dual w600+a650 == dual w700+a650 == axis650）；旧 Qt 无轴 API，
+    就用枚举档渲染。"""
+    f.setWeight(QtGui.QFont.Weight(
+        500 if wght < 540 else 600 if wght < 660 else 700))
     if _HAS_VAR_AXIS:
         f.setVariableAxis(QtGui.QFont.Tag("wght"), float(wght))
-    else:
-        f.setWeight(QtGui.QFont.Weight(
-            500 if wght < 540 else 600 if wght < 660 else 700))
 
 
 class _DocPreview(QtWidgets.QTextBrowser):
@@ -533,6 +536,88 @@ class MediaDialog(QtWidgets.QDialog):
         super().closeEvent(event)
 
 
+# ---- 文档编辑器：列表延续（Obsidian 式，2026-11 用户要求）----
+# 无序/有序/任务勾选框/引用行尾回车延续同型标记（有序自增、勾选框延续为
+# 未勾选）；空列表行/空引用行（只有标记无内容）行尾回车 = 退出该层格式；
+# 引用与列表可组合（"> - item" → "> - "），逐层回车逐层退。行中回车在
+# 光标处切分、后半段随标记落到下一行。围栏内与 Shift+Enter 不延续。
+_LIST_ITEM_RE = re.compile(
+    r"^(\s*)([-*+]|\d+[\.\)])\s+(\[[ xX]\]\s*)?(.*)$")
+_QUOTE_RE = re.compile(r"^(\s*)((?:>\s*)+)")
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+class _DocEditor(QtWidgets.QPlainTextEdit):
+    """markdown 文档编辑器：回车自动延续列表/勾选框/引用格式（Obsidian 式）。
+
+    拦截 Return 键自行处理（其余键全部走原生）；继续/退出都是单步
+    insertText/removeSelectedText，撤销粒度天然一次一步。解析按
+    「缩进 × 引用前缀 × 列表标记」三段组合：引用可嵌套（"> > "整体一个
+    前缀）、引用内可挂列表；空项退出逐层进行（"> - " → "> " → 空）。
+    """
+
+    def keyPressEvent(self, event):
+        mods = event.modifiers() & ~QtCore.Qt.KeypadModifier
+        if (event.key() != QtCore.Qt.Key_Return
+                or mods != QtCore.Qt.NoModifier):
+            super().keyPressEvent(event)   # Shift+Enter 软换行等走原生
+            return
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            super().keyPressEvent(event)   # 有选区：原生替换选区
+            return
+        block = cursor.block()
+        blk = block.previous()
+        fences = 0
+        while blk.isValid():
+            if _FENCE_RE.match(blk.text()):
+                fences += 1
+            blk = blk.previous()
+        if fences % 2:                     # 代码围栏内不延续
+            super().keyPressEvent(event)
+            return
+        col = cursor.positionInBlock()
+        line = block.text()[:col]
+        qm = _QUOTE_RE.match(line)
+        indent = qm.group(1) if qm else ""
+        quotes = qm.group(2) if qm else ""
+        content = line[qm.end():] if qm else line
+        lm = _LIST_ITEM_RE.match(content)
+        if lm is None:
+            if not quotes:
+                super().keyPressEvent(event)   # 普通行：原生换行
+                return
+            if cursor.atBlockEnd() and not content:
+                self._strip_prefix(len(indent))   # 空引用行：退出引用层
+                return
+            cursor.insertText("\n" + indent + quotes)  # 引用延续，尾部随行
+            return
+        l_indent, marker, checkbox, rest = lm.groups()
+        if cursor.atBlockEnd() and not rest:
+            # 空列表项（只有标记无内容）：只退列表层、保留引用前缀，
+            # 下一层回车再退引用。rest 取自截至光标的行文本——行尾时
+            # "标记后无内容"即整行仅标记
+            self._strip_prefix(
+                len(indent) + len(quotes) + len(l_indent))
+            return
+        # 延续列表标记：有序自增；勾选框延续为未勾选 [ ]
+        if marker[0].isdigit():
+            marker = str(int(marker[:-1]) + 1) + marker[-1]
+        cont = indent + quotes + l_indent + marker + " "
+        if checkbox is not None:
+            cont += "[ ] "
+        cursor.insertText("\n" + cont)   # 光标后既有文字自然落到标记之后
+
+    def _strip_prefix(self, keep):
+        """退出引用/列表层：删除行内 keep 之后到行尾的标记文本。
+        保留 keep（原始缩进或缩进+引用前缀），光标落在保留段末尾。"""
+        cur = self.textCursor()
+        cur.setPosition(cur.block().position() + keep)
+        cur.movePosition(QtGui.QTextCursor.EndOfBlock,
+                         QtGui.QTextCursor.KeepAnchor)
+        cur.removeSelectedText()
+
+
 class DocEditorDialog(QtWidgets.QDialog):
     """配方文档编辑器（非模态子窗口）：左编辑、右实时预览。
 
@@ -556,7 +641,7 @@ class DocEditorDialog(QtWidgets.QDialog):
         self._doc_dir = metadata.doc_dir(self._name)
         self._inserted_assets = []   # 本次会话新插入的 assets 相对路径
 
-        self.editor = QtWidgets.QPlainTextEdit()
+        self.editor = _DocEditor()
         # 没有文档就是空白（不自动建模板文件）——确认保存后 doc.md 才存在，
         # 主面板的"有文档渲染 markdown / 无文档显示备注"随之切换
         self.editor.setPlainText(metadata.read_doc(self._name))

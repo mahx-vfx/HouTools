@@ -3277,6 +3277,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         else:
             anchor = w.mapToGlobal(pos)
         menu = QtWidgets.QMenu(w)
+        # 文档区子树豁免工具字体（阅读字体），挂在其下的弹出菜单不会被
+        # enforcer 刷——显式沿用工具窗口字体，与其他区域右键菜单一致
+        menu.setFont(self.font())
         act_doc = menu.addAction("编辑文档")
         # 目录不存在（无文档）不显示打开入口，与卡片菜单「清除缩略图」
         # 仅在有缩略图时显示同款约定

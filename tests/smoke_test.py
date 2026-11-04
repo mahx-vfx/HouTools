@@ -2697,6 +2697,44 @@ def main():
             dlg.editor.setPlainText("# 标题\n\n正文 **粗体**\n")
             dlg._render_preview()
             assert "标题" in dlg.preview.toPlainText()
+            # 列表/勾选框回车延续（Obsidian 式）：直接调 keyPressEvent，
+            # 各分支=延续同型标记/有序自增/勾选框续为未勾选/空项退出/
+            # 围栏与 Shift+Enter 不延续（用例与 dev-notes 对齐）
+            def _press_return(ed, mods=QtCore.Qt.NoModifier):
+                ed.keyPressEvent(QtGui.QKeyEvent(
+                    QtCore.QEvent.Type.KeyPress, QtCore.Qt.Key_Return,
+                    mods, "\r"))
+            def _run(initial, col=None, **kw):
+                ed = rl_docs._DocEditor()
+                ed.setPlainText(initial)
+                cur = ed.textCursor()
+                if col is not None:
+                    cur.setPosition(col)
+                else:
+                    cur.movePosition(QtGui.QTextCursor.End)
+                ed.setTextCursor(cur)
+                _press_return(ed, **kw)
+                return ed.toPlainText()
+            assert _run("- item") == "- item\n- "
+            assert _run("- ") == ""                       # 空项 → 退出列表
+            assert _run("3. foo") == "3. foo\n4. "        # 有序自增
+            assert _run("2) foo") == "2) foo\n3) "
+            assert _run("- [ ] task") == "- [ ] task\n- [ ] "
+            assert _run("- [x] ") == ""                   # 勾选框空项退出
+            assert _run("- foobar", col=5) == "- foo\n- bar"  # 行中切分
+            assert _run("```\n- item") == "```\n- item\n"  # 围栏内不延续
+            assert _run("hello") == "hello\n"
+            assert _run("- item", mods=QtCore.Qt.ShiftModifier) \
+                == "- item\n"                             # 软换行不延续
+            # 引用块延续与逐层退出（引用可组合列表/嵌套）
+            assert _run("> foo") == "> foo\n> "
+            assert _run("> ") == ""                       # 空引用行退出
+            assert _run(">") == ""
+            assert _run("> - item") == "> - item\n> - "   # 引用内列表延续
+            assert _run("> - ") == "> "                   # 只退列表层
+            assert _run("> > x") == "> > x\n> > "         # 嵌套引用整体延续
+            assert _run("> 3. foo") == "> 3. foo\n> 4. "
+            assert _run("> foobar", col=5) == "> foo\n> bar"
             # 确认/取消模式：编辑期间不落盘，确认才写 doc.md
             assert not rl_meta.doc_exists(info.name)
             dlg._confirm_save()
