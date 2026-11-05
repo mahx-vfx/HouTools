@@ -8,11 +8,17 @@
 - 库按"总目录 / 一级分类子文件夹"组织（如 hdr白天、hdr黑夜、室内、户外），
   递归扫描；第一级子文件夹即分类，左侧侧栏切换（全部 / 收藏 / 各分类），
   分类文件夹可在侧栏右键新建/打开，后续下载的 HDR 放进对应分类即可。
-- 缩略图按需生成：点「刷新」时比对缓存目录，仅缺失的由后台
-  QThread 调用 Houdini 自带 hoiiotool 生成（linear→sRGB + 缩放），
-  hoiiotool 路径与子进程环境在主线程解析好再传入（线程内不触
-  HOM——hou.* 非线程安全）；生成完线程即退出，无常驻开销；
-  无主缓存（HDR 已删）在刷新时清理。
+- 打开秒开：扫描是单趟 os.scandir 遍历（Windows/SMB 下枚举数据自带
+  mtime/size，整库成本 = 每目录一次列表往返，而非 os.walk+逐文件
+  getmtime 的 2N 次往返）；结果落成本地快照（配置目录，目录 mtime 表
+  + HDR 状态 + 缩略图对应状态），下次打开先比对目录 mtime——库没动
+  就复用内存/快照直接出网格，不做全量重扫。快照比对是"快照 vs 本次
+  扫描"的等值比较，双方都来自库盘，与本机时钟无关（NAS 时钟偏差
+  不影响判定）。
+- 缩略图按需生成：仅缺失/失效的由后台 QThread 调用 Houdini 自带
+  hoiiotool 生成（linear→sRGB + 缩放），hoiiotool 路径与子进程环境在
+  主线程解析好再传入（线程内不触 HOM——hou.* 非线程安全）；生成完
+  线程即退出，无常驻开销；无主缓存（HDR 已删）在真重扫时清理。
   线程不 parent 到窗口：Reload 关窗销毁窗口时，运行中的线程改为
   自行跑完自删（每张图生成前后及子进程等待中均响应中断请求），
   避免 Qt "QThread: Destroyed while thread is still running" 崩溃；
@@ -20,7 +26,13 @@
   _LIVE_ENGINES），防窗口销毁后引用链断掉被 GC 连带析构。
 - 缓存固定 256px 宽（清晰度），以相对路径+原扩展名命名（目录用
   __ 连接），子文件夹同名、同名字不同扩展（a.hdr 与 a.exr）不冲突；
-  HDR 文件比缩略图新（内容更新过）时缓存自动失效重生成。
+  缩略图有效性按"状态等值"判定：生成时记下当时的 HDR mtime+size，
+  当前状态与记录一致即有效——不做跨文件 mtime 比大小（缩略图由本机
+  写入、HDR mtime 来自它的写入方，NAS 时钟偏差的库上比大小会把刚
+  生成的图永久判过期、无限重生成）。文件状态随扫描免费带回参与比对，
+  HDR 被原地同名覆盖更新（目录 mtime 对此不敏感）同样会被检出重生成；
+  「刷新」按钮强制全量重扫，是一切可疑情形（快照损坏/NAS 时间戳
+  异常等）的手动兜底。
 - 显示大小：滑条值 = 缩略图宽，网格尺寸固定不随面板宽伸缩（面板宽窄
   只改变每排列数；原"列宽自适应铺满"方案会随面板宽拉伸缩略图，
   用户否决，缩略图是刚体——与 Recipe Library 卡片同一套逻辑）。
@@ -85,6 +97,20 @@ _SETTINGS = JsonStore("hdr_library.json", defaults={
     "thumb_size": DEFAULT_THUMB_SIZE,
     "pin_on_top": False,    # 默认不置顶，勾选后按机器各自记住
     "favorites": [],        # 收藏的 HDR 绝对路径（normcase 后）
+})
+
+# 扫描快照（可再生缓存，非用户设置）：目录 mtime 表 + HDR 状态 +
+# 各缩略图生成时的 HDR 状态。打开时先等值比对目录 mtime（双方都来自
+# 库盘的 stat 返回，与本机时钟无关），库没动就直接复用快照——大库/
+# 共享盘的日常打开不再触发全量重扫。存本机配置目录，绝不写网络库
+# 目录；损坏由 JsonStore 留底 .bak 回退空值（= 视为无快照，全量重扫
+# 一遍即恢复），换库目录同理。路径键统一 '/' 分隔的库内相对路径，
+# 不存绝对路径（盘符映射/大小写在机器间与重挂载间会漂移）。
+_SCAN_INDEX = JsonStore("hdr_scan_index.json", defaults={
+    "lib_dir": "",   # normcase 后的库目录；与当前 lib_dir 不符 = 无快照
+    "dirs": {},      # {相对目录路径（根为 ""）: mtime_ns}
+    "files": {},     # {相对文件路径: [mtime_ns, size]}
+    "thumbs": {},    # {相对文件路径: [mtime_ns, size]} 缩略图对应的 HDR 状态
 })
 
 
@@ -196,21 +222,28 @@ def thumb_cache_dir(lib_dir):
     return os.path.join(lib_dir, ".thumb_cache")
 
 
+def _thumb_name(rel):
+    """库内相对路径（统一 '/' 分隔）→ 缩略图缓存文件名。
+
+    目录用 __ 连接，子文件夹同名、同名字不同扩展不冲突；相对路径
+    本身含 __ 时（a__b/x.hdr 与 a/b/x.hdr 得到同一个缓存名互相覆盖），
+    追加相对路径（按平台原生分隔符，与历史缓存命名一致）的 8 位 md5
+    短哈希消歧；不含 __ 的路径命名保持不变，旧缓存不受影响。缓存可
+    重新生成，新旧命名并存无害。
+    """
+    native = rel.replace("/", os.sep)
+    safe = native.replace(os.sep, "__").replace("/", "__")
+    if "__" in native:
+        digest = hashlib.md5(native.encode("utf-8")).hexdigest()[:8]
+        safe += "-" + digest
+    return safe + ".jpg"
+
+
 def thumb_path(lib_dir, hdr_path):
     """缓存缩略图路径：按相对路径+原扩展名命名（目录用 __ 连接），
-    子文件夹同名、同名字不同扩展（a.hdr 与 a.exr）不冲突。
-
-    相对路径本身含 __ 时（目录/文件名带 __ 会与连接符混淆：
-    a__b/x.hdr 与 a/b/x.hdr 得到同一个缓存名互相覆盖），在扩展名前
-    追加相对路径的 8 位 md5 短哈希消歧；不含 __ 的路径命名保持
-    不变。缓存可重新生成，新旧命名并存无害。
-    """
-    rel = os.path.relpath(hdr_path, lib_dir)
-    safe = rel.replace(os.sep, "__").replace("/", "__")
-    if "__" in rel:
-        digest = hashlib.md5(rel.encode("utf-8")).hexdigest()[:8]
-        safe += "-" + digest
-    return os.path.join(thumb_cache_dir(lib_dir), safe + ".jpg")
+    子文件夹同名、同名字不同扩展（a.hdr 与 a.exr）不冲突。"""
+    rel = os.path.relpath(hdr_path, lib_dir).replace(os.sep, "/")
+    return os.path.join(thumb_cache_dir(lib_dir), _thumb_name(rel))
 
 
 def _run_oiiotool(cmd, env, timeout, interrupt=None):
@@ -319,31 +352,175 @@ def make_thumbnail(lib_dir, hdr_path, oiiotool, env, interrupt=None):
     return out if os.path.exists(out) else None
 
 
+def _scan_library(lib_dir):
+    """单趟 os.scandir 遍历库目录 → (records, dir_mtimes, thumb_names)。
+
+    - records: [(rel, category, mtime_ns, size)]，rel 统一 '/' 分隔；
+      category 为第一级子文件夹名（嵌套归第一级，根目录文件为 ""），
+      已按 (分类小写, 文件名小写) 排序（与旧 _iter_hdrs 输出序一致）
+    - dir_mtimes: {相对目录路径: mtime_ns}，含根 ""（根目录文件的
+      增删只改根 mtime，必须记档）；跳过隐藏目录（含 .thumb_cache）
+    - thumb_names: {缓存文件名: mtime_ns}，.thumb_cache 下的 .jpg
+
+    Windows（含 SMB）上 scandir 的目录枚举数据自带 mtime/size，
+    entry.stat(follow_symlinks=False) 直接取缓存值、不产生额外系统
+    调用——整库成本 = 每目录一次列表往返。旧实现 os.walk 丢掉这些
+    数据再逐文件 getmtime，是 2N 次往返，网络盘上那才是打开卡顿的
+    大头。任何一层目录列表失败只告警跳过（该子树本轮视作不存在，
+    下轮目录比对自然判变化重扫）。
+    """
+    records = []
+    dir_mtimes = {}
+    thumb_names = {}
+    if not lib_dir:
+        return records, dir_mtimes, thumb_names  # 未配置：不扫文件系统
+    try:
+        dir_mtimes[""] = os.stat(lib_dir).st_mtime_ns
+    except OSError as exc:
+        log.warning("cannot stat %s: %s", lib_dir, exc)
+        return records, dir_mtimes, thumb_names
+    stack = [(lib_dir, "")]
+    while stack:
+        abs_dir, rel_dir = stack.pop()
+        try:
+            with os.scandir(abs_dir) as it:
+                entries = list(it)
+        except OSError as exc:
+            log.warning("cannot scan %s: %s", abs_dir, exc)
+            continue
+        for entry in entries:
+            name = entry.name
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if name.startswith("."):
+                        continue  # 隐藏目录（.thumb_cache 等）不扫不记
+                    st = entry.stat(follow_symlinks=False)
+                    child_rel = name if not rel_dir else rel_dir + "/" + name
+                    dir_mtimes[child_rel] = st.st_mtime_ns
+                    stack.append((os.path.join(abs_dir, name), child_rel))
+                elif name.lower().endswith(HDR_EXTS):
+                    st = entry.stat(follow_symlinks=False)
+                    rel = name if not rel_dir else rel_dir + "/" + name
+                    records.append((
+                        rel,
+                        rel_dir.split("/", 1)[0] if rel_dir else "",
+                        st.st_mtime_ns, st.st_size))
+            except OSError as exc:
+                log.warning("cannot stat %s: %s", entry.path, exc)
+    records.sort(key=lambda r: (r[1].lower(), r[0].rsplit("/", 1)[-1].lower()))
+    # 缩略图缓存单独一趟列表（目录 mtime 走查里它被当作隐藏目录跳过，
+    # 但跳扫路径需要"现存缓存名"来判有效性）；目录不存在属首跑常态
+    cache = thumb_cache_dir(lib_dir)
+    try:
+        with os.scandir(cache) as it:
+            for entry in it:
+                if entry.name.lower().endswith(".jpg"):
+                    thumb_names[entry.name] = \
+                        entry.stat(follow_symlinks=False).st_mtime_ns
+    except OSError as exc:
+        log.debug("no thumb cache listing %s: %s", cache, exc)
+    return records, dir_mtimes, thumb_names
+
+
+def _load_scan_index(lib_dir):
+    """读取扫描快照；lib_dir 不匹配或内容不完整返回 None（走全量重扫）。
+
+    快照是可再生缓存：损坏（JsonStore 已留底 .bak）或换库目录都按
+    无快照处理，全量重扫一遍即恢复，无需任何修复动作。
+    """
+    if _SCAN_INDEX.get("lib_dir") != os.path.normcase(os.path.abspath(lib_dir)):
+        return None
+    dirs = _SCAN_INDEX.get("dirs")
+    files = _SCAN_INDEX.get("files")
+    thumbs = _SCAN_INDEX.get("thumbs")
+    if not isinstance(dirs, dict) or not isinstance(files, dict) \
+            or not isinstance(thumbs, dict) or "" not in dirs:
+        return None
+    return {"dirs": dirs, "files": files, "thumbs": thumbs}
+
+
+def _save_scan_index(lib_dir, dirs, files, thumbs):
+    _SCAN_INDEX.set("lib_dir", os.path.normcase(os.path.abspath(lib_dir)),
+                    save=False)
+    _SCAN_INDEX.set("dirs", dict(dirs), save=False)
+    _SCAN_INDEX.set("files", dict(files), save=False)
+    _SCAN_INDEX.set("thumbs", dict(thumbs), save=False)
+    _SCAN_INDEX.save()  # 单次原子写（JsonStore 临时文件 + os.replace）
+
+
+def _rel_of(lib_dir, path):
+    """绝对路径 → 库内相对路径（'/' 分隔）；无法相对化（跨盘符等）
+    返回 None。"""
+    try:
+        return os.path.relpath(path, lib_dir).replace(os.sep, "/")
+    except ValueError:
+        return None
+
+
+def _resolve_thumbs(lib_dir, records, thumb_names, recorded):
+    """判定每个 HDR 的缩略图有效性，返回 (thumb_by_rel, states, need_gen,
+    adopted)。
+
+    - thumb_by_rel: {rel: 缩略图绝对路径或 None}
+    - states: {rel: [mtime_ns, size]} 本轮采用的最终记档状态（含新
+      采用项，调用方回写快照）
+    - need_gen: 需要重新生成的 rel 列表（保序）
+    - adopted: 凭迁移启发式沿用的历史缓存数量
+
+    有效性判定是**状态等值**：生成缩略图时记下当时的 HDR mtime+size
+    （recorded），当前状态与记录一致即有效。不做"缩略图比 HDR 新"的
+    跨文件 mtime 比大小——缩略图由本机经 SMB 写入、盖的是本机时钟，
+    HDR 的 mtime 来自它各自的写入方；NAS 时钟偏差几十分钟的库上，
+    比大小会把刚生成的图永久判过期、每轮刷新无限重生成。等值比较
+    双方都是库盘返回的同一套时间戳，与任何本机时钟无关。
+
+    无记录的历史缓存（首次升级 / 快照丢失）按旧启发式迁移采用：缓存
+    不旧于 HDR 即沿用并立即记档，此后走状态等值——存量库升级零重生成。
+    """
+    thumb_by_rel = {}
+    states = {}
+    need_gen = []
+    adopted = 0
+    for rel, _category, mtime_ns, size in records:
+        name = _thumb_name(rel)
+        tpath = os.path.join(thumb_cache_dir(lib_dir), name)
+        rec = recorded.get(rel)
+        if rec is not None:
+            if name in thumb_names and list(rec) == [mtime_ns, size]:
+                thumb_by_rel[rel] = tpath
+                states[rel] = [mtime_ns, size]
+                continue
+        elif name in thumb_names and thumb_names[name] >= mtime_ns:
+            # 迁移采用（仅无记录的缓存走这里；mtime 比大小继承旧版
+            # 语义，时钟差库上判不准的个别图会重生成一次后记档稳定）
+            thumb_by_rel[rel] = tpath
+            states[rel] = [mtime_ns, size]
+            adopted += 1
+            continue
+        thumb_by_rel[rel] = None
+        need_gen.append(rel)
+    return thumb_by_rel, states, need_gen, adopted
+
+
 def _iter_hdrs(lib_dir):
     """递归列出库里的 HDR，返回 [(path, category)]。
 
     category 为第一级子文件夹名（嵌套子文件夹归到第一级），
     根目录文件为 ""；跳过隐藏目录（含 .thumb_cache）。
+    兼容入口（脚本/测试用；窗口扫描走 _scan_library 单趟 scandir 版）。
     """
-    out = []
-    if not lib_dir:
-        return out  # 未配置库目录：不 os.walk("")
-    for root, dirs, files in os.walk(lib_dir):
-        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
-        rel = os.path.relpath(root, lib_dir)
-        category = "" if rel == "." else rel.split(os.sep)[0]
-        for name in files:
-            if name.lower().endswith(HDR_EXTS):
-                out.append((os.path.join(root, name), category))
-    out.sort(key=lambda t: (t[1].lower(), os.path.basename(t[0]).lower()))
-    return out
+    records, _dirs, _thumbs = _scan_library(lib_dir)
+    return [(os.path.join(lib_dir, rel.replace("/", os.sep)), category)
+            for rel, category, _m, _s in records]
 
 
 def list_categories(lib_dir):
     """库目录下的一级子文件夹（含空分类），已排除隐藏目录，排序返回。
 
     lib_dir 为空（未配置）直接返回空——不 os.listdir("")，否则控制台
-    每次 reload/刷新都刷一条 cannot list 警告。
+    每次 reload/刷新都刷一条 cannot list 警告。独立辅助函数：窗口的
+    侧栏分类改从扫描快照的目录表推导（见 _rebuild_sidebar），不再
+    listdir+isdir 逐项探测（网络盘上那又是 K 次往返）。
     """
     if not lib_dir:
         return []
@@ -358,29 +535,19 @@ def list_categories(lib_dir):
         key=str.lower)
 
 
-def _thumb_valid(thumb, hdr):
-    """缩略图存在且不旧于 HDR 文件（HDR 内容更新后缓存自动失效）。"""
-    try:
-        return os.path.getmtime(thumb) >= os.path.getmtime(hdr)
-    except OSError:
-        return False
-
-
-def _scan_entries(lib_dir):
-    """单次遍历库目录 → [(hdr_path, category, thumb_path)]（thumb 不做
-    有效性判断）。
-
-    scan_hdrs 与刷新侧的缓存清理共用同一次遍历——各自独立 os.walk 会让
-    同一棵目录树在一轮刷新里走两遍，大库/网络盘上这是刷新成本的大头。
-    """
-    return [(p, category, thumb_path(lib_dir, p))
-            for p, category in _iter_hdrs(lib_dir)]
-
-
 def scan_hdrs(lib_dir):
-    """递归扫描 HDR 库目录，返回 [(hdr_path, category, thumb_path_or_None), ...]。"""
-    return [(p, category, tp if _thumb_valid(tp, p) else None)
-            for p, category, tp in _scan_entries(lib_dir)]
+    """递归扫描 HDR 库目录，返回 [(hdr_path, category, thumb_path_or_None), ...]。
+
+    兼容入口（脚本/测试用）：有效性与窗口 reload 同语义——快照记录的
+    状态等值优先，无记录的历史缓存按迁移启发式沿用。
+    """
+    records, _dirs, thumb_names = _scan_library(lib_dir)
+    snapshot = _load_scan_index(lib_dir) if lib_dir else None
+    thumb_by_rel, _states, _gen, _adopted = _resolve_thumbs(
+        lib_dir, records, thumb_names, snapshot["thumbs"] if snapshot else {})
+    return [(os.path.join(lib_dir, rel.replace("/", os.sep)), category,
+             thumb_by_rel[rel])
+            for rel, category, _m, _s in records]
 
 
 def clean_stale_thumbs(lib_dir, expected_names=None):
@@ -396,21 +563,27 @@ def clean_stale_thumbs(lib_dir, expected_names=None):
     if not os.path.isdir(cache):
         return 0
     if expected_names is None:
-        expected_names = {os.path.basename(tp)
-                          for _p, _c, tp in _scan_entries(lib_dir)}
+        records, _dirs, _thumbs = _scan_library(lib_dir)
+        expected_names = {_thumb_name(rel)
+                          for rel, _c, _m, _s in records}
     removed = 0
-    candidates = glob.glob(os.path.join(cache, "*.jpg")) \
-        + glob.glob(os.path.join(cache, "*.part"))
-    for f in candidates:
-        base = os.path.basename(f)
+    try:
+        with os.scandir(cache) as it:
+            candidates = [e.name for e in it
+                          if e.name.lower().endswith((".jpg", ".part"))]
+    except OSError as exc:
+        log.warning("cannot list %s: %s", cache, exc)
+        return 0
+    for base in candidates:
         if base.startswith("~tmp_"):
             continue
         if base not in expected_names:
             try:
-                os.remove(f)
+                os.remove(os.path.join(cache, base))
                 removed += 1
             except OSError as exc:
-                log.warning("cannot remove stale thumb %s: %s", f, exc)
+                log.warning("cannot remove stale thumb %s: %s",
+                            os.path.join(cache, base), exc)
     return removed
 
 
@@ -721,6 +894,12 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         self._thumbs = {}        # path -> 缩略图路径或 None
         self._item_by_path = {}  # path -> 当前网格里的条目（随过滤重建）
         self._pending_icons = {}  # 待批量应用的缩略图（防每张一重排）
+        # 扫描快照的内存镜像（None = 本窗口还没完成过任何一轮 reload；
+        # showEvent 的自动扫描用它区分"会话内重开复用内存"与"重启后
+        # 从快照重建"）
+        self._scan_dirs = None    # {相对目录: mtime_ns} 目录 mtime 表
+        self._file_states = None  # {相对路径: [mtime_ns, size]}
+        self._thumb_states = None  # {相对路径: [mtime_ns, size]} 缩略图对应状态
         self._badge = FavoriteBadge()  # 收藏角标（共享组件，见 ui.badge）
         self._placeholder = self._make_placeholder()
 
@@ -833,7 +1012,9 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         lay.addWidget(self.status)
 
         self.dir_btn.clicked.connect(self._choose_dir)
-        self.refresh_btn.clicked.connect(self.reload)
+        # 手动「刷新」= 强制全量重扫（自动扫描走快照跳扫；clicked 自带
+        # 的 checked 参数不传入 reload，force 必须显式）
+        self.refresh_btn.clicked.connect(lambda: self.reload(force=True))
         self.pin_chk.toggled.connect(self._toggle_pin)
         self.pause_btn.clicked.connect(self._on_pause_resume)
         self.stop_btn.clicked.connect(self._on_stop)
@@ -870,7 +1051,18 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
 
     # ---------------- 数据加载 ----------------
 
-    def reload(self):
+    def reload(self, force=False):
+        """扫描库目录并重建界面。
+
+        force=False（showEvent 自动扫描/建分类后）：单趟 scandir 拿到
+        全量数据（免费 stat），先与本地快照等值比对目录 mtime——库没动
+        就不重扫：会话内重开直接复用内存数据连重建都跳过（日常打开
+        秒开的主路径），重启后首开从快照重建（零额外文件系统访问）。
+        文件级状态（mtime+size）随扫描免费带回并参与比对，HDR 被原地
+        同名覆盖更新（目录 mtime 对此不敏感）同样会被检出重生成。
+        force=True（「刷新」按钮）：无条件全量重扫并回写快照——对一切
+        可疑情形（快照损坏/NAS 时间戳异常等）的手动兜底。
+        """
         if not self.lib_dir:
             # 未配置库目录：清空视图只给提示，绝不扫文件系统
             self._hdrs = []
@@ -879,41 +1071,80 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
             self._apply_filter()
             self.status.setText("未设置库目录，请先点「更换目录」选择 HDR 库")
             return
-        # 先打断仍在跑的上一轮生成线程再清理缓存目录：clean_stale_thumbs
-        # 会把 ~tmp_<线程id>_ 临时文件当"无主缩略图"删掉，旧线程随后的
-        # os.replace 就会失败（单张异常有兜底，但这一张白生成了）
-        self._stop_worker()
-        # 清理无主缩略图（HDR 已被删除/移走的）+ 扫描：共用同一次目录
-        # 遍历（独立 os.walk 会让同一棵树在一轮刷新里走两遍）
-        entries = _scan_entries(self.lib_dir)
-        stale = clean_stale_thumbs(
-            self.lib_dir, {os.path.basename(tp) for _p, _c, tp in entries})
-        hdrs = [(p, c, tp if _thumb_valid(tp, p) else None)
-                for p, c, tp in entries]
-        self._hdrs = hdrs
-        self._thumbs = {p: t for p, _c, t in hdrs}
-        need_gen = [p for p, _c, t in hdrs if not t]
+        records, dir_mtimes, thumb_names = _scan_library(self.lib_dir)
+        snapshot = _load_scan_index(self.lib_dir)
+        unchanged = (not force and snapshot is not None
+                     and snapshot["dirs"] == dir_mtimes)
+        # 文件状态恒取本轮扫描的新鲜值（scandir 免费 stat）：thumbReady
+        # 记档用的是它——若取快照旧值，原地覆盖过的文件会"记录状态永
+        # 远追不上新鲜状态"而被无限重生成
+        file_states = {rel: [m, s] for rel, _c, m, s in records}
+        if unchanged and self._scan_dirs is not None \
+                and self._file_states == file_states:
+            # 会话内重开（单例窗口隐藏过再显示）：目录与文件状态都未变，
+            # 内存数据即最新（缩略图生成线程的更新一直在写内存并回写
+            # 快照），跳过全部重建——窗口条目本来就还在，字面秒开
+            self.status.setText(
+                "{}：{}/{} 个 HDR，库未变化。选中场景灯光后双击缩略图链接贴图"
+                .format(self._category_label(self._category_key),
+                        self.list.count(), len(self._hdrs)))
+            return
+        if unchanged:
+            # 重启后首开：内存是空的，从快照重建网格（后续零额外文件
+            # 系统访问——目录表与本轮扫描比对已通过，缩略图按快照记录
+            # 的状态等值判定，新鲜文件状态不一致的（原地覆盖过）照样
+            # 失效进生成队列）
+            thumb_by_rel, thumb_states, need_gen, _adopted = _resolve_thumbs(
+                self.lib_dir, records, thumb_names, snapshot["thumbs"])
+            notes = ["库未变化，已从本地快照恢复"]
+        else:
+            # 真重扫：先打断仍在跑的上一轮生成线程再清理缓存目录——
+            # clean_stale_thumbs 会把 ~tmp_<线程id>_ 临时文件当"无主
+            # 缩略图"删掉，旧线程随后的 os.replace 就会失败（单张异常
+            # 有兜底，但这一张白生成了）
+            self._stop_worker()
+            stale = clean_stale_thumbs(
+                self.lib_dir,
+                {_thumb_name(rel) for rel, _c, _m, _s in records})
+            thumb_by_rel, thumb_states, need_gen, _adopted = _resolve_thumbs(
+                self.lib_dir, records, thumb_names,
+                snapshot["thumbs"] if snapshot else {})
+            _save_scan_index(self.lib_dir, dir_mtimes, file_states,
+                             thumb_states)
+            notes = []
+            if stale:
+                notes.append("已清理 {} 张无主缩略图".format(stale))
+        if need_gen:
+            notes.append("正在后台生成 {} 张缩略图".format(len(need_gen)))
+        self._scan_dirs = dir_mtimes
+        self._file_states = file_states
+        self._thumb_states = thumb_states
+        self._hdrs = [
+            (os.path.join(self.lib_dir, rel.replace("/", os.sep)),
+             category, thumb_by_rel[rel])
+            for rel, category, _m, _s in records]
+        self._thumbs = {p: t for p, _c, t in self._hdrs}
+        need_gen_paths = [
+            os.path.join(self.lib_dir, rel.replace("/", os.sep))
+            for rel in need_gen]
 
         self._favs = get_favorites()
         self._rebuild_sidebar()
         # 状态文案与过滤视图一次写好：这里先写会被 _apply_filter 覆盖
-        notes = []
-        if stale:
-            notes.append("已清理 {} 张无主缩略图".format(stale))
-        if need_gen:
-            notes.append("正在后台生成 {} 张缩略图".format(len(need_gen)))
         self._apply_filter(
             note="（{}）".format("；".join(notes)) if notes else "")
-        if need_gen:
-            self._start_worker(need_gen)
+        if need_gen_paths:
+            self._start_worker(need_gen_paths)
 
     # ---------------- 分类侧栏 ----------------
 
     def _rebuild_sidebar(self):
-        """按最近一次扫描结果 + 库里的一级子文件夹重建分类侧栏。
+        """按最近一次扫描结果重建分类侧栏。
 
         空分类文件夹也列出（方便"按分类下载"先建目录）；
         保持当前选中分类，原分类不存在（换目录/被删）时回"全部"。
+        分类集合从扫描目录表推导（目录表含全部非隐藏目录，含空分类），
+        不再 listdir+isdir 逐项探测——网络盘上那是一级目录数级的往返。
         """
         counts = {}
         fav_count = 0
@@ -921,7 +1152,8 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
             counts[category] = counts.get(category, 0) + 1
             if _norm_path(hdr_path) in self._favs:
                 fav_count += 1
-        categories = set(list_categories(self.lib_dir))
+        categories = {rel.split("/", 1)[0]
+                      for rel in (self._scan_dirs or {}) if rel}
         categories.update(counts)
 
         self.sidebar.blockSignals(True)
@@ -1427,6 +1659,15 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         # 重排（条目上千时表现为持续闪烁），攒 400ms 合成一次重绘
         self._thumbs[hdr_path] = thumb_path
         self._pending_icons[hdr_path] = thumb_path
+        # 记档缩略图对应的 HDR 状态（取自本轮扫描——生成队列就是按它
+        # 排的）：此后有效性走状态等值，不再比跨机器/跨时钟的 mtime
+        # 大小（NAS 时钟偏差的库上比大小会把刚生成的图永久判过期）。
+        # 路径不在本轮记录 = 旧线程余量，只刷图标不记档
+        rel = _rel_of(self.lib_dir, hdr_path)
+        state = self._file_states.get(rel) \
+            if rel is not None and self._file_states else None
+        if state is not None:
+            self._thumb_states[rel] = [state[0], state[1]]
         self._icon_timer.start()
 
     def _flush_pending_icons(self):
@@ -1447,6 +1688,12 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
     def _on_thumbs_done(self, ok_count):
         if self._thread is not self.sender():
             return  # 旧线程的完成数不覆盖新状态
+        # 本批缩略图状态回写快照：下次打开（含 Houdini 重启后首开）按
+        # 状态等值直接判定有效，不再重生成这批。快照在本机配置目录，
+        # 写失败只影响下次判定起点（JsonStore 内部已告警留底）
+        if self._scan_dirs is not None:
+            _save_scan_index(self.lib_dir, self._scan_dirs,
+                             self._file_states, self._thumb_states)
         self.status.setText("共 {} 个 HDR，缩略图就绪（本次新生成 {} 张）。"
                             "选中灯光后双击缩略图链接贴图".format(
                                 len(self._hdrs), ok_count))

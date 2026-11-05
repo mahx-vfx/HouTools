@@ -1012,7 +1012,13 @@ def main():
             defaults={"favorites": [], "thumb_size": 128, "pin_on_top": True})
         _track_rm(fav_store.path)
         fav_store.set("favorites", [])  # 上次异常中断可能残留旧收藏
-        with patch.object(hdr_browser, "_SETTINGS", fav_store):
+        # 扫描快照同样用临时 store（reload 会读写 hdr_scan_index.json）
+        scan_store = houtools.core.settings.JsonStore(
+            "_smoke_hdr_scan.json",
+            defaults={"lib_dir": "", "dirs": {}, "files": {}, "thumbs": {}})
+        _track_rm(scan_store.path)
+        with patch.object(hdr_browser, "_SETTINGS", fav_store), \
+                patch.object(hdr_browser, "_SCAN_INDEX", scan_store):
             assert not hdr_browser.get_favorites()
             target = str(day / "a.hdr")
             assert hdr_browser.set_favorite(target, True) is True
@@ -1086,6 +1092,130 @@ def main():
             empty.deleteLater()
         fav_store.path.unlink(missing_ok=True)
     print("HdrLibrary window + favorites OK")
+
+    # Hdr Library 扫描快照：目录 mtime 等值跳扫 / 会话内内存复用 /
+    # 重启后快照重建 / 新增文件触发真重扫
+    from houtools.hdrlight import browser as _hb
+    with tempfile.TemporaryDirectory() as tmp:
+        day = Path(tmp, "day")
+        day.mkdir()
+        (day / "a.hdr").touch()
+        # NTFS 目录 mtime 在新建条目后有毫秒级延迟更新：不定桩的话两次
+        # 扫描的目录比对会假性不等（生产里表现为"刚加完文件后的那次
+        # 打开多做一次重扫"，偏移方向只会触发重扫、不会漏检，自愈无害）
+        settle = time.time() - 60
+        os.utime(day, (settle, settle))
+        os.utime(day / "a.hdr", (settle, settle))
+        fav_store = houtools.core.settings.JsonStore(
+            "_smoke_hdr.json",
+            defaults={"favorites": [], "thumb_size": 128, "pin_on_top": True})
+        _track_rm(fav_store.path)
+        scan_store = houtools.core.settings.JsonStore(
+            "_smoke_hdr_scan.json",
+            defaults={"lib_dir": "", "dirs": {}, "files": {}, "thumbs": {}})
+        _track_rm(scan_store.path)
+
+        def _stop_gen(w):
+            w._on_stop()
+            if w._thread is not None and w._thread.isRunning():
+                assert w._thread.wait(5000), "thumbnail thread not stopping"
+
+        with patch.object(_hb, "_SETTINGS", fav_store), \
+                patch.object(_hb, "_SCAN_INDEX", scan_store):
+            # 首次 reload：全量扫描 + 写快照（根 mtime 必须记档——根目录
+            # 文件的增删只改根 mtime，不记就漏检）
+            win = _hb._HdrLibraryWindow(tmp)
+            win.reload()
+            assert win.list.count() == 1, win.list.count()
+            assert scan_store.get("lib_dir") == \
+                os.path.normcase(os.path.abspath(tmp))
+            assert "" in scan_store.get("dirs"), scan_store.get("dirs")
+            assert list(scan_store.get("files")) == ["day/a.hdr"], \
+                scan_store.get("files")
+            assert win._thread is not None  # 无缩略图 → 生成队列已启动
+            _stop_gen(win)
+
+            # 会话内重开（库未变化）→ 复用内存：不重扫不重建
+            win._need_reload = True
+            win._auto_reload()
+            assert "库未变化" in win.status.text(), win.status.text()
+            win.deleteLater()
+
+            # 重启后首开（新实例、内存为空）→ 从快照重建
+            win2 = _hb._HdrLibraryWindow(tmp)
+            win2.reload()
+            assert win2.list.count() == 1, win2.list.count()
+            assert "快照" in win2.status.text(), win2.status.text()
+            assert win2._thread is not None  # 快照无缩略图记录 → 仍要生成
+            _stop_gen(win2)
+
+            # 新增文件 → 所在目录 mtime 变化 → 自动扫描触发真重扫。
+            # NTFS 对"新建条目"的父目录 mtime 更新有毫秒级延迟（生产里
+            # 表现为加完文件瞬间重开面板可能漏检一次，下次打开必抓到，
+            # 或手动刷新兜底），测试用 utime 直接置"更新已物化"的目录
+            # mtime，验证比对→重扫链路本身
+            (day / "b.exr").touch()
+            bumped = time.time() + 30
+            os.utime(day, (bumped, bumped))
+            win2._need_reload = True
+            win2._auto_reload()
+            assert win2.list.count() == 2, win2.list.count()
+            assert "正在后台生成" in win2.status.text(), win2.status.text()
+            _stop_gen(win2)
+            win2.deleteLater()
+
+            # 原地同名覆盖检出：b.exr 先凭"缓存不旧于文件"迁移采用记档，
+            # 再原地覆盖（只变文件 mtime，目录 mtime 不动）→ 重启后首开
+            # 路径也判失效重生成；记档恒用新鲜状态，不会无限重生成
+            Path(tmp, ".thumb_cache").mkdir()
+            tp_b = Path(_hb.thumb_path(tmp, str(day / "b.exr")))
+            tp_b.touch()
+            os.utime(tp_b, (time.time() + 60, time.time() + 60))
+            win3 = _hb._HdrLibraryWindow(tmp)
+            win3.reload()
+            assert win3._thumb_states.get("day/b.exr") is not None, \
+                win3._thumb_states  # 迁移采用已记档
+            _stop_gen(win3)  # a.hdr 无缩略图仍会排队
+            win3.deleteLater()
+            edited = time.time() + 120
+            os.utime(day / "b.exr", (edited, edited))  # 原地覆盖
+            win4 = _hb._HdrLibraryWindow(tmp)
+            win4.reload()
+            assert win4._thumb_states.get("day/b.exr") is None, \
+                win4._thumb_states  # 状态等值失效
+            assert "正在后台生成" in win4.status.text(), win4.status.text()
+            _stop_gen(win4)
+            win4.deleteLater()
+    print("HdrLibrary scan snapshot OK")
+
+    # _resolve_thumbs 语义单元测试：状态等值 / 状态失效 / 历史缓存迁移
+    # 采用（纯函数，不触文件系统）
+    now_ns = int(time.time() * 1e9)
+    future_ns = now_ns + 3600 * 10 ** 9
+    # 缩略图 mtime 旧于 HDR（NAS 时钟快几十分钟的形态）：状态等值仍判
+    # 有效——旧的 mtime 比大小会把它永久判死、每轮刷新无限重生成
+    by_rel, states, need_gen, adopted = _hb._resolve_thumbs(
+        "X:/lib", [("a.hdr", "", future_ns, 10)], {"a.hdr.jpg": now_ns},
+        {"a.hdr": [future_ns, 10]})
+    assert by_rel["a.hdr"] and not need_gen and adopted == 0
+    assert states == {"a.hdr": [future_ns, 10]}
+    # 记录状态 != 当前（HDR 内容更新过）→ 失效重生成
+    by_rel, _s, need_gen, _a = _hb._resolve_thumbs(
+        "X:/lib", [("a.hdr", "", future_ns, 10)], {"a.hdr.jpg": now_ns},
+        {"a.hdr": [now_ns, 10]})
+    assert by_rel["a.hdr"] is None and need_gen == ["a.hdr"]
+    # 无记录的历史缓存 + 缓存不旧于 HDR → 迁移采用并记档（存量库升级
+    # 零重生成）
+    by_rel, states, need_gen, adopted = _hb._resolve_thumbs(
+        "X:/lib", [("b.hdr", "", now_ns, 5)], {"b.hdr.jpg": now_ns}, {})
+    assert adopted == 1 and not need_gen
+    assert states == {"b.hdr": [now_ns, 5]}
+    # 无记录且缓存比 HDR 旧 → 不采用（待重生成）
+    by_rel, _s, need_gen, adopted = _hb._resolve_thumbs(
+        "X:/lib", [("b.hdr", "", now_ns, 5)], {"b.hdr.jpg": now_ns - 10}, {})
+    assert adopted == 0 and need_gen == ["b.hdr"]
+    assert by_rel["b.hdr"] is None
+    print("HdrLibrary thumb state semantics OK")
 
     # 灯光赋值目标:LOP domelight 的 punycode 参数匹配 / 过滤器排除 /
     # RenderMan 灯走通用匹配(鸭子类型 fake,无 hou 依赖)
