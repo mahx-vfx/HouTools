@@ -376,6 +376,12 @@ class MarkdownMediaView(_DocPreview):
     - GIF：QMovie 逐帧同步进文档资源（loadResource 返回当前帧 +
       frameChanged 时 addResource + viewport 刷新），真正内联动画；
       超宽的帧按视口宽度等比缩小
+    - 图片尺寸参数（2026-11 用户要求）：![alt|300](path)、![alt|300x200]
+      （Obsidian 式）与 ![alt](path =300x)、![alt](path =x150)（Typora
+      式），setMarkdown 前剥除尺寸、导入后写进 QTextImageFormat（实测
+      其宽高确定性控制布局绘制尺寸）；GIF 帧按注册宽度缩放
+    - <br>：无斜杠形式会被 Qt 的 markdown 导入吞掉段落剩余内容（实测），
+      统一重写为 <br/>（段内软换行 U+2028）
     - 视频：set_markdown_with_media 前把 ![](x.mp4) 预处理成普通链接
       （QTextCursor 无 insertWidget，Qt 富文本不支持内嵌控件），点击
       链接由 _DocPreview._on_anchor 弹播放器
@@ -383,17 +389,135 @@ class MarkdownMediaView(_DocPreview):
 
     _VIDEO_IMAGE_RE = re.compile(
         r"!\[([^\]]*)\]\(([^)]+\.(?:mp4|mov|avi|webm|mkv))\)", re.IGNORECASE)
+    # 图片尺寸参数（2026-11 用户要求）：Obsidian 式 alt 尺寸 + Typora 式
+    # URL 后缀。md4c 对 URL 空格零容忍（![t](x.png =250x) 整段变字面文本）、
+    # 对无空格的 y.png=250x 会把后缀并进 URL（砸 _resolve 与 .gif 判定）、
+    # 内联 <img> 整体丢弃——所以两种写法都必须在 setMarkdown 前剥除。
+    # 两种写法合并为单正则单趟 sub：同 URL 多次注册按文档顺序后写覆盖
+    # 先写（分趟会打乱跨语法的文档顺序）
+    _IMAGE_SIZE_RE = re.compile(
+        r"!\[([^\]]*)\]\(([^)\s]+?)\s+=((?:\d+(?:x\d*)?|x\d+))\)"   # Typora
+        r"|"
+        r"!\[([^|\]]*)\|(\d+)(?:x(\d+))?\]\(([^)\s]+)\)"            # Obsidian
+    )
+    # <br>（无斜杠）在 Qt 的 markdown 导入里会吞掉段落剩余内容（实测
+    # 'A<br>B' → 'A'），<br/> 才是段内软换行（U+2028）——统一重写
+    _BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
 
     def __init__(self, doc_dir, parent=None):
         super().__init__(doc_dir, parent)
         self._movies = {}   # 文档里的 url 字符串 -> QMovie
+        self._image_sizes = {}   # url 字符串 -> (w, h)，参数化尺寸注册表
 
     def set_markdown_with_media(self, text):
         self.stop_media()
         text = self._VIDEO_IMAGE_RE.sub(r"[▶ \1](\2)", text)
+        text, self._image_sizes = self._extract_image_sizes(text)
+        text = self._BR_RE.sub("<br/>", text)
         self.setMarkdown(text)
         self._restyle_document()
+        self._apply_image_sizes()
         # QMovie 在布局首次查询图片资源时经 loadResource 惰性创建并启动
+
+    def _extract_image_sizes(self, text):
+        """抽取并剥除图片尺寸参数，返回 (清洗后的 markdown, {url: (w, h)})。
+
+        - ![alt|300](path) / ![alt|300x200](path)：尺寸在 alt 文本里，
+          URL 天然干净
+        - ![alt](path =300x) / ![alt](path =x150)：Typora 式，必须在导入
+          前剥除（URL 空格让 md4c 拒绝整段、无空格变体污染 URL）
+        只给一边的尺寸按源图比例补全（QImageReader 只探尺寸不解码）；
+        同 URL 多次注册按文档顺序后写覆盖先写（文档级注册表按 URL 键）。
+        """
+        sizes = {}
+
+        def _record(url, w, h):
+            size = self._resolve_size(url, w, h)
+            if size is not None:
+                sizes[url] = size
+
+        def _sub(m):
+            if m.group(3) is not None:   # Typora：![alt](url =spec)，组1=alt
+                url, spec = m.group(2), m.group(3).lower()
+                if spec.startswith("x"):
+                    _record(url, None, int(spec[1:]))
+                elif "x" in spec:
+                    a, b = spec.split("x", 1)
+                    _record(url, int(a) if a else None,
+                            int(b) if b else None)
+                else:
+                    _record(url, int(spec), None)
+                return "![%s](%s)" % (m.group(1), url)
+            # Obsidian：![alt|WxH](url)
+            url = m.group(7)
+            _record(url, int(m.group(5)),
+                    int(m.group(6)) if m.group(6) else None)
+            return "![%s](%s)" % (m.group(4), url)
+
+        text = self._IMAGE_SIZE_RE.sub(_sub, text)
+        return text, sizes
+
+    def _resolve_size(self, url_str, w, h):
+        """补全单边尺寸：缺的一边按源图比例（QImageReader 只探尺寸不解
+        码整图）。两边都无或源图不可读返回 None（该图维持原生尺寸）。"""
+        if w and h:
+            return int(w), int(h)
+        if not w and not h:
+            return None
+        path = unquote(url_str)
+        if not os.path.isabs(path):
+            path = os.path.join(self._doc_dir, path)
+        try:
+            sz = QtGui.QImageReader(path).size()
+        except Exception as exc:
+            log.debug("probe image size failed %s: %s", path, exc)
+            return None
+        if not sz.isValid() or sz.width() <= 0 or sz.height() <= 0:
+            return None
+        if w:
+            return int(w), max(1, int(round(sz.height() * w / sz.width())))
+        return max(1, int(round(sz.width() * h / sz.height()))), int(h)
+
+    def _lookup_size(self, url_str):
+        """按 fragment 的图片 URL 查注册尺寸；md4c 对非 ASCII 路径可能
+        百分号编码，raw 未命中再试 unquote。"""
+        sizes = self._image_sizes
+        if not sizes:
+            return None
+        size = sizes.get(url_str)
+        if size is None:
+            size = sizes.get(unquote(url_str))
+        return size
+
+    def _apply_image_sizes(self):
+        """setMarkdown 后把注册尺寸写进图片 fragment 的
+        QTextImageFormat（实测该宽高确定性地控制布局绘制尺寸）。"""
+        if not self._image_sizes:
+            return
+        doc = self.document()
+        blk = doc.firstBlock()
+        while blk.isValid():
+            it = blk.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                fmt = frag.charFormat()
+                if fmt.isImageFormat():
+                    # PySide6 的 charFormat() 返回基类包装，name() 在
+                    # QTextImageFormat 上——isImageFormat 后显式转型
+                    size = self._lookup_size(
+                        QtGui.QTextImageFormat(fmt).name())
+                    if size is not None:
+                        cur = QtGui.QTextCursor(blk)
+                        cur.setPosition(frag.position())
+                        cur.setPosition(
+                            frag.position() + frag.length(),
+                            QtGui.QTextCursor.KeepAnchor)
+                        imf = QtGui.QTextImageFormat(fmt)
+                        imf.setWidth(size[0])
+                        imf.setHeight(size[1])
+                        cur.setCharFormat(imf)
+                it += 1
+            blk = blk.next()
 
     def stop_media(self):
         for movie in self._movies.values():
@@ -412,13 +536,21 @@ class MarkdownMediaView(_DocPreview):
         if movie is not None:
             self.document().addResource(
                 QtGui.QTextDocument.ImageResource, QtCore.QUrl(url_str),
-                self._movie_frame_pixmap(movie))
+                self._movie_frame_pixmap(movie, url_str))
             self.viewport().update()
 
-    def _movie_frame_pixmap(self, movie):
+    def _movie_frame_pixmap(self, movie, url_str):
+        """当前帧 pixmap：注册了参数化尺寸的按注册宽度等比缩放（参数
+        优先于视口压宽），否则沿用"超视口宽等比缩小"。"""
         pm = movie.currentPixmap()
+        if pm.isNull():
+            return pm
+        size = self._lookup_size(url_str)
+        if size is not None:
+            return pm.scaledToWidth(
+                max(1, size[0]), QtCore.Qt.SmoothTransformation)
         max_w = max(120, self.viewport().width() - 12)
-        if not pm.isNull() and pm.width() > max_w:
+        if pm.width() > max_w:
             pm = pm.scaledToWidth(max_w, QtCore.Qt.SmoothTransformation)
         return pm
 
@@ -438,7 +570,7 @@ class MarkdownMediaView(_DocPreview):
                         self._movies[url_str] = movie
                         movie.start()
                 if movie is not None:
-                    return self._movie_frame_pixmap(movie)
+                    return self._movie_frame_pixmap(movie, url_str)
         return super().loadResource(rtype, url)
 
 

@@ -2920,6 +2920,49 @@ def main():
             mv.deleteLater()
     print("RecipeLibrary doc editor OK")
 
+    # MarkdownMediaView：图片尺寸参数 + <br> 支持（2026-11）。尺寸在
+    # setMarkdown 前剥除（md4c 对 URL 空格零容忍、无空格变体会污染 URL）、
+    # 导入后写进 QTextImageFormat；<br> 无斜杠形式会吞段落内容，统一
+    # 重写 <br/>
+    _md_dir = tempfile.mkdtemp(prefix="ht_md_sizes_")
+    _shot = QtGui.QPixmap(200, 100)
+    _shot.fill(QtGui.QColor("#406080"))
+    assert _shot.save(os.path.join(_md_dir, "shot.png"), "PNG")
+    mv = rl_docs.MarkdownMediaView(_md_dir)
+    _cleaned, _sizes = mv._extract_image_sizes(
+        "![a|150](shot.png)\n\n![b](shot.png =x60)\n\n"
+        "![c](shot.png =300x120)\n\n![k](shot.png)\n\n![m](nope.png =50x)")
+    assert _cleaned == ("![a](shot.png)\n\n![b](shot.png)\n\n"
+                        "![c](shot.png)\n\n![k](shot.png)\n\n![m](nope.png)"), \
+        repr(_cleaned)
+    # 同 URL 多次注册后写覆盖先写（文档级注册表按 URL 键）；nope.png
+    # 源图不可读 → 尺寸放弃、文本仍剥净
+    assert _sizes == {"shot.png": (300, 120)}, _sizes
+    mv.set_markdown_with_media("![a|150](shot.png)")
+    _fmt = None
+    _blk = mv.document().firstBlock()
+    while _blk.isValid():
+        _it = _blk.begin()
+        while not _it.atEnd():
+            _cf = _it.fragment().charFormat()
+            if _cf.isImageFormat():
+                _fmt = QtGui.QTextImageFormat(_cf)
+            _it += 1
+        _blk = _blk.next()
+    assert _fmt is not None and _fmt.name() == "shot.png", "图片 fragment 缺失"
+    assert _fmt.width() == 150 and _fmt.height() == 75, \
+        (_fmt.width(), _fmt.height())   # 只给宽 → 200x100 源图等比
+    mv.set_markdown_with_media("左<br>右")
+    # 块级断言：单块内 U+2028 软换行（toPlainText 会把 U+2028 归一成
+    # \n，且拆成两个段落也是 \n——只有块级才验得出真 <br> 语义）
+    _texts = []
+    _blk = mv.document().firstBlock()
+    while _blk.isValid():
+        _texts.append(_blk.text())
+        _blk = _blk.next()
+    assert _texts == ["左\u2028右"], _texts
+    mv.deleteLater()
+
     # 裁剪框四角拖动方向（模拟鼠标事件）：往外拉变宽、往里推变窄，
     # 宽高比始终锁定卡片缩略图区比例——方向符号曾整体写反，固化回归
     pm = QtGui.QPixmap(800, 600)
