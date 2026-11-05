@@ -95,9 +95,10 @@ Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_paste_as_object_mer
 按原因提示重新复制（不粘贴副本，避免目标网络多出副本节点）。整次操作占用单个 undo 槽。
 
 ffmpeg 说明：优先使用 Houdini 自带的 `$HFS/bin/hffmpeg`，**无需单独安装**；如需指定版本，
-把 `ffmpeg.exe` 放到项目根目录即可（已被 `.gitignore` 排除，不入库）。
-只放 `ffmpeg.exe` 一个文件也可以：视频信息探测会自动借用 Houdini 自带的
-`hffprobe`（或 PATH 上的 ffprobe），无需一并放置。
+把 `ffmpeg.exe` 放到 HouTools 配置目录即可优先使用（包清单 `HouTools.json` 里
+`HOUTOOLS_FFMPEG` 变量的默认位置，与 `HOUTOOLS_SETTINGS_DIR` 同根；值也可改成
+ffmpeg.exe 完整路径或其他目录）。ffprobe 无需单独配置：视频信息探测优先借用
+ffmpeg 同目录配套的 ffprobe，缺失时自动回退 PATH / Houdini 自带的 `hffprobe`。
 
 ### 拖放导入 Alembic / FBX / USD
 

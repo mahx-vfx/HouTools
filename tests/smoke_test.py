@@ -633,14 +633,38 @@ def main():
             os.path.join(full_like, ffmpeg_name)) == os.path.join(
                 full_like, ffprobe_name)
 
-        # 目录里只有 ffmpeg.exe（项目根只放一个文件的场景）：
-        # 回退链（$HFS/bin -> PATH）只返回真实存在的文件
+        # 目录里只有 ffmpeg.exe（同目录推导失败的典型场景）：
+        # 回退链（PATH -> $HFS/bin）只返回真实存在的文件
         lone_dir = os.path.join(td, "lone")
         os.mkdir(lone_dir)
         open(os.path.join(lone_dir, ffmpeg_name), "wb").close()
         probe = ffc.find_ffprobe(os.path.join(lone_dir, ffmpeg_name))
         assert probe is None or os.path.isfile(probe)
-    print("find_ffprobe: same-dir pairing + fallback OK")
+
+        # env 自定义入口（HOUTOOLS_FFMPEG，单变量；ffprobe 不设独立变量、
+        # 由同目录推导接管）：值可为 exe 完整路径或目录（h 名优先）；指向
+        # 不存在=未配置，静默落回常规链
+        custom_dir = os.path.join(td, "custom")
+        os.mkdir(custom_dir)
+        custom_ffmpeg = os.path.join(custom_dir, ffmpeg_name)
+        custom_ffprobe = os.path.join(custom_dir, ffprobe_name)
+        open(custom_ffmpeg, "wb").close()
+        open(custom_ffprobe, "wb").close()
+
+        saved = os.environ.pop(ffc.ENV_FFMPEG, None)
+        try:
+            os.environ[ffc.ENV_FFMPEG] = custom_ffmpeg
+            assert ffc.find_ffmpeg() == custom_ffmpeg
+            # 单变量闭环：env 指向目录时，ffprobe 经同目录推导命中同目录
+            os.environ[ffc.ENV_FFMPEG] = custom_dir
+            assert ffc.find_ffmpeg() == custom_ffmpeg
+            assert ffc.find_ffprobe(custom_ffmpeg) == custom_ffprobe
+            os.environ[ffc.ENV_FFMPEG] = os.path.join(td, "nope.exe")
+            assert ffc.find_ffmpeg() != os.path.join(td, "nope.exe")
+        finally:
+            if saved is not None:
+                os.environ[ffc.ENV_FFMPEG] = saved
+    print("find_ffmpeg/find_ffprobe: env 自定义 + 同目录推导 + 回退 OK")
 
     # 真实实例化 Automation 界面（捕获 __init__ 结构损伤）
     from PySide6.QtWidgets import (

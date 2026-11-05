@@ -1421,7 +1421,8 @@ class _VideoToSequenceWindow(QDialog):
             ffmpeg_path = find_ffmpeg()
         if not ffmpeg_path:
             return ("ffmpeg: 未找到（转换不可用）\n"
-                    "可将 ffmpeg.exe 放到项目根目录，或加入系统 PATH")
+                    "可把 ffmpeg.exe 放到 HouTools 配置目录"
+                    "（HOUTOOLS_FFMPEG 指向处）或加入系统 PATH")
         # 8.3 短路径形态（部分环境的 HFS 是 PROGRA~1）展开成长路径，纯
         # 展示用——探测/转换仍用原始解析结果
         ffprobe_path = find_ffprobe(ffmpeg_path)
@@ -1719,8 +1720,9 @@ class _VideoToSequenceWindow(QDialog):
             dialogs.warn(
                 self, "错误",
                 "未找到 ffmpeg。\n"
-                "通常随 Houdini 附带：$HFS/bin/hffmpeg；\n"
-                "也可将 ffmpeg.exe 放到项目根目录或加入系统 PATH。",
+                "可把 ffmpeg.exe 放到 HouTools 配置目录（HOUTOOLS_FFMPEG "
+                "指向处，默认 Documents/HouTools/settings）或加入系统 PATH；\n"
+                "Houdini 自带的 $HFS/bin/hffmpeg 通常也可用。",
             )
             return
 
