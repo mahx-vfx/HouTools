@@ -517,6 +517,9 @@ def _assign_hdr_to_node(hdr_path, node):
       其 _control 参数（作者状态）默认即 'set'，若被改过则修正，否则
       值不会写入 USD stage
     其余灯型（distant/point/rect 等非 dome 灯）本无环境贴图参数，抛错说明。
+    写入显式 follow_parm_reference=False：Parm.set 默认沿 channel
+    reference 链改到被引用参数头上（HOM 文档），赋贴图应当直接改本参数
+    并就地断链，而不是把路径写进别人的参数。
     """
     path = os.path.abspath(hdr_path).replace("\\", "/")
 
@@ -524,16 +527,16 @@ def _assign_hdr_to_node(hdr_path, node):
     if parm_name:
         sky = node.parm("skymap_enable")
         if sky is not None and sky.eval():
-            sky.set(0)
-        node.parm(parm_name).set(path)
+            sky.set(0, follow_parm_reference=False)
+        node.parm(parm_name).set(path, follow_parm_reference=False)
         return node.path(), parm_name
 
     value, control = _find_lop_texture_parm(node)
     if value is not None:
         if control is not None and control.evalAsString() != "set" \
                 and "set" in (control.menuItems() or []):
-            control.set("set")
-        value.set(path)
+            control.set("set", follow_parm_reference=False)
+        value.set(path, follow_parm_reference=False)
         return node.path(), value.description() or value.name()
 
     raise RuntimeError(
@@ -1334,6 +1337,10 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
     def _toggle_pin(self, on):
         _SETTINGS.set("pin_on_top", bool(on))
         self.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, on)
+        # 置顶切换引发的隐藏/重显不触发重扫（hideEvent 置 _need_reload、
+        # showEvent 同步检查后排队 reload）。show 前清标志——showEvent 的
+        # 检查在 show() 内同步执行，晚了拦不住。同 Recipe Library 写法
+        self._need_reload = False
         self.show()  # setWindowFlag 会使窗口隐藏，需要重新 show
 
     def _make_placeholder(self):

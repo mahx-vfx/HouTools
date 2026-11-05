@@ -374,7 +374,14 @@ def create_panel_widget(parent=None):
     return widget
 
 
-_PANEL_REFS: list = []
+# NameError 守卫：同 _LIVE_ENGINES——reload 重跑模块体会把注册表换成
+# 新空列表，旧面板的登记全部失联，_any_panel_running 随之恒 False
+# （"有引擎在跑就跳过关闭重复浮动面板"的运行态判断失效）。reload 在
+# 同一 module dict 里执行、已有名字可见，守卫让重载后沿用旧列表。
+try:
+    _PANEL_REFS
+except NameError:
+    _PANEL_REFS: list = []
 """本会话创建过的 AutomationWindow 弱引用(单实例复用注册表)。
 
 热重载会重建本模块 → 注册表清空,因此桌面接口名扫描作为兜底路径。
@@ -964,6 +971,14 @@ class AutomationWindow(QWidget):
         app = QApplication.instance()
         if app is not None:
             app.removeEventFilter(self)
+        # pane 子部件收不到 closeEvent（dev-notes/automation.md）：面板被
+        # 关闭/切走时把防抖窗口内的编辑强制落盘——destroyed 期子控件已
+        # 析构，_collect_data 不能留到那时补。仅 _dirty_pending 时才写，
+        # 无编辑零开销
+        try:
+            self._flush_dirty_tasks()
+        except Exception as exc:
+            logger.debug("Automation: hideEvent flush failed: %s", exc)
 
     def _is_own_native_window(self, obj) -> bool:
         """判断事件源 ``obj``(QWindow) 是否为本面板专属的原生窗口。
@@ -1918,6 +1933,8 @@ class AutomationWindow(QWidget):
         act_above = menu.addAction("在上方插入任务")
         act_below = menu.addAction("在下方插入任务")
         chosen = menu.exec(pos_global)
+        menu.deleteLater()   # exec_ 的模态菜单用完即释放，防积存
+                             # （同 recipelib/hdrlight 右键菜单写法）
 
         if chosen is act_delete:
             self._remove_slot(target)
@@ -2574,7 +2591,27 @@ class AutomationWindow(QWidget):
         self._cancel_requested = False
         self._running = True
         self._start_btn.setText("取消")
-        self._engine.start()
+        try:
+            self._engine.start()
+        except Exception as exc:
+            # 引擎没跑起来（线程创建失败等极端情形）：此时 tee 已装、
+            # _running 已置——不兜底会让 stdout 挂到面板销毁、按钮停在
+            # 「取消」。整组还原到 Start 前状态，面板保持可用可重试。
+            logger.error("Automation: 启动执行引擎失败: %s", exc, exc_info=True)
+            engine = self._engine
+            self._engine = None
+            if engine is not None and engine in _LIVE_ENGINES:
+                _LIVE_ENGINES.remove(engine)
+            self._running = False
+            self._cancel_requested = False
+            try:
+                self._start_btn.setEnabled(True)
+                self._start_btn.setText("执行")
+            except RuntimeError:
+                logger.debug("Automation: start button already destroyed")
+            self._restore_stdout()
+            dialogs.warn(self, "Automation",
+                         "执行引擎启动失败：{}".format(exc))
 
     def _cancel_execution(self):
         """请求取消：协作式，引擎在当前任务完成后才真正停止。
@@ -2612,14 +2649,24 @@ class AutomationWindow(QWidget):
         hours = int(total_elapsed // 3600)
         minutes = int((total_elapsed % 3600) // 60)
         seconds = int(total_elapsed % 60)
-        print(f"{timestamp} 执行完成 总耗时: {hours:02d}时{minutes:02d}分{seconds:02d}秒 — 成功 {success}, 失败 {failed}")
-        print("=" * 80)  # 通过 tee 同时写入控制台和日志文件
-        self._running = False
-        self._cancel_requested = False
-        self._start_btn.setEnabled(True)
-        self._start_btn.setText("执行")
-        self._engine = None
-        self._restore_stdout()
+        try:
+            print(f"{timestamp} 执行完成 总耗时: {hours:02d}时{minutes:02d}分{seconds:02d}秒 — 成功 {success}, 失败 {failed}")
+            print("=" * 80)  # 通过 tee 同时写入控制台和日志文件
+        except Exception:
+            # 底层 stdout 流被关闭等：输出失败不阻断收尾——状态复位与
+            # stdout 还原必须执行，否则 tee 永久挂着、面板卡在执行态
+            logger.warning("Automation: 收尾输出写入失败（已跳过）",
+                           exc_info=True)
+        finally:
+            self._running = False
+            self._cancel_requested = False
+            try:
+                self._start_btn.setEnabled(True)
+                self._start_btn.setText("执行")
+            except RuntimeError:
+                logger.debug("Automation: start button already destroyed")
+            self._engine = None
+            self._restore_stdout()
 
     def _restore_stdout(self):
         """恢复被重定向的 stdout/stderr（幂等，可安全重复调用）。

@@ -631,8 +631,13 @@ class _ImageViewerDialog(QtWidgets.QDialog):
             # frameChanged 会继续向已删的 label 投帧直到循环 GC
             self._movie = QtGui.QMovie(self)
             self._movie.setCacheMode(QtGui.QMovie.CacheAll)
+            self._movie.setFileName(image_path)
             self._movie.jumpToFrame(0)
-            self._fit = self._movie.currentPixmap().size().scaled(
+            pm = self._movie.currentPixmap()
+            # 源文件失效（被移动/删除）时 currentPixmap 为空：退回基准
+            # 尺寸，别让窗口尺寸算出异常值
+            src_size = pm.size() if not pm.isNull() else self._base
+            self._fit = src_size.scaled(
                 self._base, QtCore.Qt.KeepAspectRatio)
             self._label = QtWidgets.QLabel()
             self._label.setAlignment(QtCore.Qt.AlignCenter)
@@ -1649,6 +1654,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             on_export=self._export_recipes,
             on_import=self._import_recipes)
         dlg.exec_()
+        dlg.deleteLater()   # exec_ 的模态框用完即释放，防积存
 
     def _apply_version_filter(self, hide):
         """设置面板「显示」页的版本过滤开关：落盘 + 轻量重建侧栏/网格
@@ -1697,13 +1703,15 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             return
         items = list(self._recipes) + list(self._code_infos)
         dlg = _ExportDialog(parent, len(items))
-        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+        accepted = dlg.exec_() == QtWidgets.QDialog.Accepted
+        zip_path = dlg.zip_path() if accepted else ""
+        include_hda = dlg.include_hda() if accepted else False
+        dlg.deleteLater()   # exec_ 的模态框用完即释放，防积存（取值后再删）
+        if not accepted:
             return
-        zip_path = dlg.zip_path()
         if not zip_path:
             warn(parent, "导出", "请填写导出 zip 路径。")
             return
-        include_hda = dlg.include_hda()
         try:
             summary = _run_with_progress(
                 parent, "正在打包导出...",
@@ -1787,9 +1795,11 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                                  "、".join(a for a, _r in s["hda_skip"])))
         dlg = _ImportConfirmDialog(parent, "\n".join(lines),
                                    bool(s["hda_import"]))
-        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+        accepted = dlg.exec_() == QtWidgets.QDialog.Accepted
+        lib_dir = dlg.target() if accepted else None
+        dlg.deleteLater()   # exec_ 的模态框用完即释放，防积存（取值后再删）
+        if not accepted:
             return
-        lib_dir = dlg.target() if s["hda_import"] else None
         if s["hda_import"] and not lib_dir:
             warn(parent, "导入", "请先选择 .hda 的目标库文件夹"
                                  "（或点「新建文件夹...」）。")
@@ -3469,9 +3479,11 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         current = self._display_label(info)
         dlg = _PromptDialog(self, "自定义显示名",
                             "显示名称（留空恢复默认，支持中文）：", current)
-        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+        accepted = dlg.exec_() == QtWidgets.QDialog.Accepted
+        title = dlg.text_value() if accepted else ""
+        dlg.deleteLater()   # exec_ 的模态框用完即释放，防积存（取值后再删）
+        if not accepted:
             return
-        title = dlg.text_value()
         metadata.set_display_name(info.name, title)
         self._rebuild_sidebar()
         self._apply_filter()
@@ -3541,9 +3553,12 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self, "标签设置 - {}".format(self._display_label(info)),
             "标签（多个用逗号分隔，留空清除全部标签）：",
             ", ".join(metadata.get_tags(info.name)))
-        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+        accepted = dlg.exec_() == QtWidgets.QDialog.Accepted
+        tags_text = dlg.text_value() if accepted else ""
+        dlg.deleteLater()   # exec_ 的模态框用完即释放，防积存（取值后再删）
+        if not accepted:
             return
-        tags = [t.strip() for t in dlg.text_value().split(",") if t.strip()]
+        tags = [t.strip() for t in tags_text.split(",") if t.strip()]
         metadata.set_tags(info.name, tags)
         self._show_tags(tags)
         self._rebuild_sidebar()
@@ -3709,10 +3724,17 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
     def _open_doc_for(self, info):
         if self._doc_dialog is not None:
             try:
-                self._doc_dialog.close()
+                if not self._doc_dialog.close():
+                    # closeEvent 在用户拒绝「放弃修改」时 ignore，close()
+                    # 返回 False——此时无条件 deleteLater 会绕过确认把
+                    # 未保存正文连窗销毁（确认框形同虚设）。中止本次打开。
+                    self.status.setText(
+                        "上一个文档编辑器还有未保存修改，未打开新文档")
+                    return
                 self._doc_dialog.deleteLater()
             except RuntimeError as exc:
                 log.debug("close previous doc dialog failed: %s", exc)
+            self._doc_dialog = None
         self._doc_dialog = DocEditorDialog(self, info,
                                            display_label=self._display_label(info))
         self._doc_dialog.docSaved.connect(self._on_doc_saved)
@@ -3789,7 +3811,11 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         _UI_SETTINGS.set("grid_size", int(self.size_slider.value()))
         if self._doc_dialog is not None:
             try:
-                self._doc_dialog.close()
+                if not self._doc_dialog.close():
+                    # 编辑器「放弃修改」被取消：连带取消主面板关闭，让
+                    # 用户回去保存（此处 deleteLater 会静默丢稿）
+                    event.ignore()
+                    return
                 self._doc_dialog.deleteLater()
             except RuntimeError as exc:
                 log.debug("close doc dialog failed: %s", exc)

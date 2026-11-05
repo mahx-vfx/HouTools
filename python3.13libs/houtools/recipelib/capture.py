@@ -291,7 +291,12 @@ class SnipOverlay(QtCore.QObject):
     def repaint_all(self):
         """选框是共享状态，任何变化都要让全部遮罩重绘。"""
         for ov in self._overlays:
-            ov.update()
+            try:
+                ov.update()
+            except RuntimeError as exc:
+                # 遮罩被单独关闭（如 Alt+F4，WA_DeleteOnClose）后死包装
+                # 仍在列表里——跳过已删对象，不中断其余遮罩重绘（同 close）
+                log.debug("repaint on deleted overlay skipped: %s", exc)
 
     # ---- 交互（由各屏遮罩转发；坐标一律虚拟桌面坐标）----
 
@@ -522,7 +527,10 @@ class SnipOverlay(QtCore.QObject):
         pt = self._sel.topLeft()
         first = None
         for o in self._overlays:
-            g = o.geometry()
+            try:
+                g = o.geometry()
+            except RuntimeError:
+                continue   # 已被单独关闭的遮罩（同 repaint_all 的防护）
             if g.contains(pt):
                 return o is ov
             if first is None and g.intersects(self._sel):

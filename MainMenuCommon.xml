@@ -58,7 +58,7 @@ _houtools_dispatcher.run("recipe_library")
            (粘贴为 Object Merge 的菜单入口在 NetworkViewMenu.xml,
            其 scriptItem 注册热键符号 h.pane.wsheet.houtools_paste_as_object_merge) -->
       <scriptItem id="houtools.houtools_settings">
-        <label>HouTools Settings…</label>
+        <label>HouTools Settings...</label>
         <scriptCode><![CDATA[
 import houtools.dev.dispatcher as _houtools_dispatcher
 _houtools_dispatcher.run("houtools_settings")

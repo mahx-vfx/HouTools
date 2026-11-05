@@ -12,7 +12,8 @@ Usage:
            for HouTools.json + MainMenuCommon.xml when omitted.
 
 Behavior:
-1. Assert the working tree already carries <version> in houtools/__init__.py
+1. Check (explicit raise, not assert -- python -O strips asserts) the
+   working tree already carries <version> in houtools/__init__.py
    and docs/index.html (prevents packing a stale version).
 2. Stage ONLY runtime-necessary files with a two-entry top level: the package
    manifest HouTools.json at the zip ROOT and everything else under a
@@ -33,9 +34,11 @@ Behavior:
 """
 
 import ctypes
+import os
 import shutil
 import sys
 import tempfile
+import threading
 import uuid
 import zipfile
 from pathlib import Path
@@ -99,10 +102,14 @@ def main(argv: list[str]) -> None:
 
     init_py = (root / "python3.13libs" / "houtools" / "__init__.py").read_text(encoding="utf-8")
     html = (root / "docs" / "index.html").read_text(encoding="utf-8")
-    assert '__version__ = "%s"' % version in init_py, \
-        "python3.13libs/houtools/__init__.py not bumped to %s" % version
-    assert '<span class="v">v%s</span>' % version in html, \
-        "docs/index.html hero version not bumped to v%s" % version
+    # 校验用显式 raise 不用 assert：python -O 会剥掉全部 assert，版本
+    # 错误的包会静默打出来
+    if '__version__ = "%s"' % version not in init_py:
+        raise SystemExit(
+            "python3.13libs/houtools/__init__.py not bumped to %s" % version)
+    if '<span class="v">v%s</span>' % version not in html:
+        raise SystemExit(
+            "docs/index.html hero version not bumped to v%s" % version)
 
     tmp = Path(tempfile.mkdtemp(prefix="houtools_pkg_"))
     try:
@@ -116,28 +123,52 @@ def main(argv: list[str]) -> None:
         shutil.copy2(root / MANIFEST, tmp / MANIFEST)
 
         out.parent.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
-            for p in sorted(tmp.rglob("*")):
-                if p.is_file():
-                    z.write(p, p.relative_to(tmp))
+        # 先写临时名再原子落位：直接写最终路径时中途崩溃/盘满会留下
+        # 截断 zip，create_release 上传前只检查 is_file()，坏包会被当
+        # 附件传上去。临时名带 PID+线程 id（同插件内原子写约定）
+        tmp_zip = out.with_name(
+            out.name + ".~tmp%d_%d" % (os.getpid(), threading.get_ident()))
+        try:
+            with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED,
+                                 compresslevel=9) as z:
+                for p in sorted(tmp.rglob("*")):
+                    if p.is_file():
+                        z.write(p, p.relative_to(tmp))
+            os.replace(tmp_zip, out)
+        finally:
+            if tmp_zip.exists():
+                try:
+                    tmp_zip.unlink()
+                except OSError as exc:
+                    print("warn: cannot remove partial zip %s: %s"
+                          % (tmp_zip, exc))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
     with zipfile.ZipFile(out) as z:
-        assert z.testzip() is None, "corrupt zip entry"
+        # 以下全部显式 raise（-O 下 assert 失效，见上）
+        if z.testzip() is not None:
+            raise SystemExit("corrupt zip entry")
         names = z.namelist()
-        assert not any("\\" in n for n in names), "backslash entry name"
-        assert MANIFEST in names, "manifest not at zip top level"
-        assert not any(n.startswith("%s/%s" % (PACKAGE_DIR, MANIFEST))
-                       for n in names), "manifest leaked into package dir"
-        assert not any("__pycache__" in n or n.endswith(".pyc") for n in names), "pycache leaked"
+        if any("\\" in n for n in names):
+            raise SystemExit("backslash entry name")
+        if MANIFEST not in names:
+            raise SystemExit("manifest not at zip top level")
+        if any(n.startswith("%s/%s" % (PACKAGE_DIR, MANIFEST))
+               for n in names):
+            raise SystemExit("manifest leaked into package dir")
+        if any("__pycache__" in n or n.endswith(".pyc") for n in names):
+            raise SystemExit("pycache leaked")
         banned = ("%s/tests/" % PACKAGE_DIR,
                   "%s/AGENTS" % PACKAGE_DIR,
                   "%s/settings/" % PACKAGE_DIR)
-        assert not any(n.startswith(banned) for n in names), "dev file leaked"
-        assert "%s/LICENSE" % PACKAGE_DIR in names, "LICENSE missing from package"
+        if any(n.startswith(banned) for n in names):
+            raise SystemExit("dev file leaked")
+        if "%s/LICENSE" % PACKAGE_DIR not in names:
+            raise SystemExit("LICENSE missing from package")
         packaged_html = z.read("%s/docs/index.html" % PACKAGE_DIR).decode("utf-8")
-        assert "v%s" % version in packaged_html, "packaged index.html missing v%s" % version
+        if "v%s" % version not in packaged_html:
+            raise SystemExit("packaged index.html missing v%s" % version)
 
     print("zip:", out)
     print("entries:", len(names))

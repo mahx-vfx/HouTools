@@ -99,6 +99,7 @@ def _apply(kwargs, expression_mode):
     if not _node_ok(src) or not _node_ok(target):
         return
 
+    xform = None
     try:
         with hou.undos.group(_UNDO_GROUP):
             xform = target.parent().createNode(type_name)
@@ -112,6 +113,23 @@ def _apply(kwargs, expression_mode):
             xform.setSelected(True, clear_all_selected=True)
     except Exception as exc:
         logger.warning("paste_center failed on %s: %s", target.path(), exc)
+        if xform is not None:
+            # 已建的 transform 不能留在网络里：输入已接、显示/渲染旗标
+            # 已开、_write_parms 逐分量写中途失败即半应用——destroy
+            # 回滚（仍在 undo 组语境，撤一次干净）。路径先取好：destroy
+            # 抛 RuntimeError 时节点可能已删，再调 path() 会二次抛
+            try:
+                xform_path = xform.path()
+            except Exception:
+                xform_path = "?"
+            try:
+                xform.destroy()
+            except Exception as destroy_exc:
+                logger.warning("paste_center 回滚失败: %s", destroy_exc)
+                _status("创建 transform 失败：{}；回滚也失败，残留节点 "
+                        "{} 请手动删除".format(exc, xform_path),
+                        severity="error")
+                return
         _status("创建 transform 失败：{}".format(exc), severity="error")
         return
 

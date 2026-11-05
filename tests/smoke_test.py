@@ -116,7 +116,7 @@ def main():
     assert 'id="houtools.paste_as_object_merge"' not in main_xml
     assert 'id="houtools.houtools_settings"' in main_xml
     assert 'id="houtools.paste_hotkey_settings"' not in main_xml
-    assert '<label>HouTools Settings…</label>' in main_xml
+    assert '<label>HouTools Settings...</label>' in main_xml
     nv_xml = (ROOT / "NetworkViewMenu.xml").read_text(encoding="utf-8")
     assert 'id="pane.wsheet.houtools_paste_as_object_merge"' in nv_xml
     for _hook in ("python3.13libs/uiready.py",

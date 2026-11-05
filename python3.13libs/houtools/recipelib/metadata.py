@@ -259,7 +259,16 @@ def bulk_set(favorites=None, tags=None, thumbs=None, display_names=None,
     if display_names is not None:
         _SETTINGS.set("display_names", dict(display_names), save=False)
     if colors is not None:
-        _SETTINGS.set("colors", dict(colors), save=False)
+        # 与单条入口 set_color 同一套 #rrggbb 校验：导入第三方包的
+        # colors 段可能带非法值，QColor(非法串) 是 invalid 色（不抛
+        # 异常），会把卡片主题/标签栏渲染成异常色且无提示
+        clean = {str(k): v for k, v in colors.items()
+                 if isinstance(v, str)
+                 and re.fullmatch(r"#[0-9a-fA-F]{6}", v)}
+        dropped = len(colors) - len(clean)
+        if dropped:
+            log.warning("导入 colors 段有 %d 个非法颜色值，已丢弃", dropped)
+        _SETTINGS.set("colors", clean, save=False)
     _SETTINGS.save()
 
 
@@ -269,11 +278,16 @@ def bulk_set(favorites=None, tags=None, thumbs=None, display_names=None,
 
 def get_lib_dirs():
     """库文件夹列表：转绝对路径、去重、保序；不存在的目录保留
-    （用户可能后挂载盘符），扫描时才告警。"""
+    （用户可能后挂载盘符），扫描时才告警。空串条目（手改配置/旧版
+    遗留）直接丢弃——abspath("") 会解析成进程 CWD，空守卫必须放在
+    abspath 之前，否则整棵 CWD 目录树被当库扫描。"""
     out = []
     for d in _SETTINGS.get("lib_dirs") or []:
+        d = str(d).strip()
+        if not d:
+            continue
         d = os.path.abspath(d)
-        if d and d not in out:
+        if d not in out:
             out.append(d)
     return out
 
@@ -281,8 +295,11 @@ def get_lib_dirs():
 def set_lib_dirs(dirs):
     clean = []
     for d in dirs or []:
-        d = os.path.abspath(str(d).strip())
-        if d and d not in clean:
+        d = str(d).strip()
+        if not d:
+            continue
+        d = os.path.abspath(d)
+        if d not in clean:
             clean.append(d)
     _SETTINGS.set("lib_dirs", clean)
     return clean
@@ -748,7 +765,20 @@ def insert_asset(name, src):
     while os.path.exists(dst):
         dst = os.path.join(adir, "{}_{}{}".format(base, i, ext))
         i += 1
-    shutil.copyfile(src, dst)
+    # 先写临时名再 os.replace 原子落位（set_thumb_from_file 同款）：
+    # copyfile 直写正式名中途失败（盘满/源被拔/杀软占用）会留下半截
+    # 文件——正文引用指向坏图，且后续同名插入会跳过它改用 _2 序号，
+    # 坏文件长期滞留 assets/ 并被打进导出包
+    tmp = "{}.~tmp{}_{}".format(dst, os.getpid(), threading.get_ident())
+    try:
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, dst)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError as exc:
+                log.warning("cannot remove partial asset %s: %s", tmp, exc)
     return "assets/" + os.path.basename(dst)
 
 

@@ -50,12 +50,40 @@ def paste_merge_current_key() -> str:
     return PASTE_MERGE_DEFAULT_KEY
 
 
-def paste_merge_apply_key(key: str) -> bool:
-    """把键位写入 Houdini 会话并持久化;返回是否成功。"""
+def _apply_sole_assignment(key: str) -> bool:
+    """把 key 设为该符号的唯一键位，返回是否成功。
+
+    hou.hotkeys.addAssignment 是**追加**语义（HOM 文档示例对同一符号连
+    绑 alt+k 与 shift+del 两键），只 add 不摘会让旧键残留生效——改键后
+    默认键仍触发、「恢复默认」清不掉自定义键。先加新键（失败不动原状），
+    再沿 assignments() 把其余键逐个 removeAssignment。
+    """
     import hou
 
     if not hou.hotkeys.addAssignment(PASTE_MERGE_CONTEXT,
                                      PASTE_MERGE_SYMBOL, key):
+        return False
+    try:
+        current = hou.hotkeys.assignments(PASTE_MERGE_CONTEXT,
+                                          PASTE_MERGE_SYMBOL)
+    except Exception as exc:
+        logger.debug("查询键位失败，跳过旧绑定清理: %s", exc)
+        return True
+    for old in current:
+        # 大小写不敏感比较：addAssignment 可能归一化键名大小写
+        if str(old).lower() == key.lower():
+            continue
+        try:
+            hou.hotkeys.removeAssignment(PASTE_MERGE_CONTEXT,
+                                         PASTE_MERGE_SYMBOL, old)
+        except Exception as exc:
+            logger.debug("摘除旧键位 %s 失败: %s", old, exc)
+    return True
+
+
+def paste_merge_apply_key(key: str) -> bool:
+    """把键位写入 Houdini 会话并持久化;返回是否成功。"""
+    if not _apply_sole_assignment(key):
         return False
     set_custom_key(PASTE_MERGE_SYMBOL, key)
     return True
@@ -67,11 +95,7 @@ def paste_merge_clear_custom() -> bool:
     返回是否成功。注意:直接应用默认值(不走 install_defaults 的
     "已有键位不覆盖"分支)——用户明确要求恢复默认。
     """
-    import hou
-
-    if not hou.hotkeys.addAssignment(PASTE_MERGE_CONTEXT,
-                                     PASTE_MERGE_SYMBOL,
-                                     PASTE_MERGE_DEFAULT_KEY):
+    if not _apply_sole_assignment(PASTE_MERGE_DEFAULT_KEY):
         return False
     clear_custom_key(PASTE_MERGE_SYMBOL)
     return True

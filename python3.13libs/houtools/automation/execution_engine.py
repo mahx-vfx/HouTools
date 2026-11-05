@@ -324,8 +324,9 @@ class ExecutionEngine(QThread):
     def _execute_open_dw(self, params: OpenDWParams):
         """执行打开DW：启动 Deadline Worker。
 
-        软件路径从应用配置文件 ``{项目根}/settings/Automation_Config.json``
-        的 ``dw_exe_path`` 字段读取（用户可手动编辑），任务参数为空。
+        软件路径从应用配置文件（``AutomationDataManager.get_app_config_path()``
+        = 配置目录下 ``Automation_Config.json``）的 ``dw_exe_path`` 字段读取
+        （用户可手动编辑），任务参数为空。
         ``subprocess.Popen`` 非阻塞启动，无需派发主线程。
 
         Raises:
@@ -334,11 +335,20 @@ class ExecutionEngine(QThread):
         # 路径已在引擎构造时(主线程)预读,避免后台线程触碰 hou.getenv
         exe_path = self._dw_exe_path
         if not exe_path:
+            # 防御分支：load_dw_exe_path 对空值回退默认路径，理论不可达
             raise ValueError(
-                "DW 软件路径为空，请在 settings/Automation_Config.json 中配置 dw_exe_path"
+                "DW 软件路径为空，请在配置文件 {} 中设置 dw_exe_path 字段"
+                .format(AutomationDataManager.get_app_config_path())
             )
         if not os.path.isfile(exe_path):
-            raise ValueError(f"DW 软件路径不存在: {exe_path}")
+            # 未配置过时这里报的是内置默认路径——文案须指明去哪改，否则
+            # 看起来像"路径填错"却找不到配置处
+            raise ValueError(
+                "DW 软件路径不存在: {}（这是未配置时的内置默认路径，"
+                "可在配置文件 {} 的 dw_exe_path 字段填入实际路径）"
+                .format(exe_path,
+                        AutomationDataManager.get_app_config_path())
+            )
 
         try:
             # CREATE_NO_WINDOW 防配置成控制台程序时弹黑框（与 videoseq

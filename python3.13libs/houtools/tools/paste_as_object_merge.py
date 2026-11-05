@@ -45,6 +45,11 @@ _MIME_NODE_PATH = "application/sidefx-houdini-node.path"
 _HOU_NODE_RE = re.compile(
     r"""hou\s*\.\s*node\s*\(\s*['"](.+?)['"]\s*\)\s*$"""
 )
+# 多行形态（网络编辑器一次复制多个节点时，文本剪贴板是每行一个
+# hou.node('...')）：上面的 $ 锚定匹配不到整段，提取/判型用非锚定版
+_HOU_NODE_ANY_RE = re.compile(
+    r"""hou\s*\.\s*node\s*\(\s*['"](.+?)['"]\s*\)"""
+)
 
 
 def run(**kwargs):
@@ -242,7 +247,7 @@ def _path_like_text(text: str) -> bool:
     纯字符串判定、不碰 hou（smoke test 直测）：用于区分「复制过节点但
     原件已不存在」与「剪贴板被其他文本复制覆盖」两种失效文案。
     """
-    if _HOU_NODE_RE.match(text):
+    if _HOU_NODE_RE.match(text) or _HOU_NODE_ANY_RE.search(text):
         return True
     return any(token.startswith("/") for token in text.split())
 
@@ -271,12 +276,18 @@ def _clipboard_node_paths() -> list[str]:
     try:
         text = hou.ui.getTextFromClipboard().strip()
         if text:
-            m = _HOU_NODE_RE.match(text)
-            if m:
-                text = m.group(1)
-            for token in text.split():
-                if token.startswith("/") and hou.node(token) is not None:
-                    paths.append(token)
+            # 先全量提取 hou.node('...')：多节点复制是每行一个，单行
+            # 锚定正则匹配不到整段，token 过滤又只认 / 开头会全部漏掉
+            found = _HOU_NODE_ANY_RE.findall(text)
+            if found:
+                paths.extend(p for p in found if hou.node(p) is not None)
+            else:
+                m = _HOU_NODE_RE.match(text)
+                if m:
+                    text = m.group(1)
+                for token in text.split():
+                    if token.startswith("/") and hou.node(token) is not None:
+                        paths.append(token)
     except Exception as e:
         logger.debug("text clipboard probe failed: %s", e)
 

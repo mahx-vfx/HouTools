@@ -145,8 +145,9 @@ class AutomationDataManager:
                 logger.warning("无法写入应用配置文件: %s (%s)", path, exc)
                 try:
                     os.unlink(tmp_path)
-                except OSError:
-                    pass
+                except OSError as exc2:
+                    logger.debug("cannot remove config tmp %s: %s",
+                                 tmp_path, exc2)
 
         return data
 
@@ -286,8 +287,18 @@ class AutomationDataManager:
                         raise ValueError(
                             "顶层必须是对象，实际为 " + type(loaded).__name__)
                     existing_data = loaded
+                except OSError as exc:
+                    # 读不了 ≠ 文件坏了（杀软/同步盘瞬时占用等）：不动
+                    # 原文件、本次拒绝写入——基于空合并基覆盖会把读到
+                    # 的内容冲掉（core/settings.JsonStore 同约定）。改动
+                    # 即存语义下下一次编辑会自动重试
+                    logger.warning("读取现有配置失败，本次不保存: %s (%s)",
+                                   path, exc)
+                    return False
                 except Exception as exc:
-                    logger.warning("读取现有配置失败: %s (%s)", path, exc)
+                    # 解析失败/顶层不是对象：留底再覆盖，尚可抢救的内容
+                    # 不随本次写入直接丢失
+                    logger.warning("现有配置损坏，先留底: %s (%s)", path, exc)
                     cls._backup_corrupt(path)
             # 合并数据
             existing_data["tasks"] = tasks_data
@@ -376,8 +387,15 @@ class AutomationDataManager:
                         raise ValueError(
                             "顶层必须是对象，实际为 " + type(loaded).__name__)
                     existing_data = loaded
+                except OSError as exc:
+                    # 读不了 ≠ 文件坏了：不动原文件、本次拒绝写入（同
+                    # save() 的 OSError 分支语义）
+                    logger.warning("读取现有配置失败，本次不保存: %s (%s)",
+                                   path, exc)
+                    return False
                 except Exception as exc:
-                    logger.warning("读取现有配置失败: %s (%s)", path, exc)
+                    # 解析失败/顶层不是对象：留底再覆盖
+                    logger.warning("现有配置损坏，先留底: %s (%s)", path, exc)
                     cls._backup_corrupt(path)
             # 合并数据
             existing_data["settings"] = settings_data

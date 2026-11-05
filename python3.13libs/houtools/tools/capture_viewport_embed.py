@@ -33,6 +33,7 @@ dispatcher onto delete_capture() in this module.
 
 import os
 import shutil
+import threading
 
 from houtools.core.log import get_logger
 
@@ -207,14 +208,21 @@ def _recompress_jpg(file_abs):
     if image.isNull():
         log.warning("截图重编码：无法读取 %s（保留原质量）", file_abs)
         return
-    # 临时名带 PID：固定名会被同节点的并发截图（两次快速右键）或同盘
-    # 两个 Houdini 互写
-    tmp_abs = file_abs + ".~tmp%d.jpg" % os.getpid()
+    # 临时名带 PID+线程 id（同 core/settings、automation/data_manager 的
+    # 原子写约定，防同盘同名临时文件互踩）
+    tmp_abs = file_abs + ".~tmp%d_%d.jpg" % (os.getpid(),
+                                             threading.get_ident())
     try:
         if not image.save(tmp_abs, "JPG", _JPG_QUALITY):
             log.warning("截图重编码失败（保留原质量）: %s", file_abs)
             return
-        os.replace(tmp_abs, file_abs)
+        try:
+            os.replace(tmp_abs, file_abs)
+        except OSError as exc:
+            # 原文件已好好躺在磁盘上：替换失败只降级为原质量，不外抛
+            # （外抛会经 _capture_to_file 中止整次截图，违背 best-effort）
+            log.warning("截图重编码替换失败（保留原质量）: %s (%s)",
+                        file_abs, exc)
     finally:
         if os.path.exists(tmp_abs):
             try:

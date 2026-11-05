@@ -572,10 +572,19 @@ class _ProbeWorker(QThread):
             "-show_streams",
             self.video_path,
         ]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=30, **startup
-        )
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, **startup
+            )
+        except subprocess.TimeoutExpired:
+            # 网络盘/大文件探测超时：与探测失败同待遇走 ffmpeg 回退，
+            # 不让 TimeoutExpired 冒到 run() 把整条探测链打成"分析失败"
+            # 且把含完整路径的英文异常原样上状态栏
+            logger.warning("ffprobe 探测超时（30s），回退 ffmpeg 解析: %s",
+                           self.video_path)
+            self._probe_ffmpeg(info, startup)
+            return
         if result.returncode != 0:
             self._probe_ffmpeg(info, startup)
             return
@@ -649,10 +658,17 @@ class _ProbeWorker(QThread):
             "-i", self.video_path,
             "-f", "null", "-",
         ]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=120, **startup
-        )
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=120, **startup
+            )
+        except subprocess.TimeoutExpired:
+            # 回退解析也超时：放弃探测并保留已解析字段，不抛——异常冒到
+            # run() 会把错误码路径整个跳过、信息面板回到全 "-"
+            logger.warning("ffmpeg 回退解析超时（120s），放弃探测: %s",
+                           self.video_path)
+            return
         output = result.stderr
 
         # 解析分辨率（锚定 Video: 流行）：output 是整段 stderr，Input #0
@@ -697,10 +713,17 @@ class _ProbeWorker(QThread):
             "-map", "0:v:0",
             "-f", "null", "-",
         ]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=300, **startup
-        )
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=300, **startup
+            )
+        except subprocess.TimeoutExpired:
+            # 逐帧计数超时（nb_frames 缺失的大文件/网络盘常见）：只放弃
+            # 帧数，已解析的分辨率/fps/时长保留在 info 上
+            logger.warning("逐帧计数超时（300s），帧数留空: %s",
+                           self.video_path)
+            return
         # text=True 已把进度行的 \r 转成 \n：stderr 是几十上百条 frame=
         # 进度行，search 命中的是解码刚起步的第一条（总帧数严重偏小、
         # 进度条到不了 100%），必须取最后一条
@@ -1448,7 +1471,21 @@ class _VideoToSequenceWindow(QDialog):
         # 转换一律用展开后的真实路径，界面显示保留用户原文（$HIP 在
         # 换机/分享场景更有意义）
         expanded = expand_houdini_path(media_path)
-        if os.path.splitext(expanded)[1].lower() not in VIDEO_EXTENSIONS:
+        ext = os.path.splitext(expanded)[1].lower()
+        if ext not in VIDEO_EXTENSIONS and ext not in SEQUENCE_EXTENSIONS:
+            # 「浏览」的选择器 pattern="*" 允许选任意文件：非视频/序列
+            # 一律红字拒绝（拖放与手输路径已有同款白名单），否则 .txt 等
+            # 会被当单帧序列静默装载、到转换才报"ffmpeg 退出码非 0"
+            self._status_label.setVisible(True)
+            self._status_label.setText(
+                "不支持的文件类型 {}（支持视频 {}；静帧序列 {}）".format(
+                    ext or "（无扩展名）",
+                    "、".join(VIDEO_EXTENSIONS),
+                    "、".join(SEQUENCE_EXTENSIONS)))
+            self._status_label.setStyleSheet(
+                "color: #d1283e; font-size: 12px;")
+            return
+        if ext not in VIDEO_EXTENSIONS:
             self._load_still_sequence(expanded, display_path=media_path)
             return
         self._current_video_path = expanded

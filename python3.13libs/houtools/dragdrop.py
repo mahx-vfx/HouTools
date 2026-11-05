@@ -157,9 +157,12 @@ def _import_files_under_cursor(abc_files, fbx_files, usd_files):
                 node_type="alembic", parm_name="fileName",
                 undo_group=_UNDO_GROUP_ABC) or handled
         if fbx_files:
+            # stack_from 续位：混合拖放各类型共用一套纵向错开序（与
+            # Object 分支一致），缺了它两类节点会摆到同一处互相盖住
             handled = _import_nodes(
                 context, position, fbx_files,
                 node_type="file", parm_name="file",
+                stack_from=len(abc_files),
                 undo_group=_UNDO_GROUP_FBX) or handled
         return handled
     if category == "Lop":
