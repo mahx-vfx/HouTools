@@ -450,6 +450,82 @@ except NameError:
     _DOC_INFO_STATE = {"current": None}
 
 
+_PIN_SVG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "icons", "pin.svg")
+_PIN_SVG_FILL = "#e6e6e6"      # pin.svg 的原始 fill，着色时整体替换
+_PIN_COLOR_IDLE = "#555555"    # 未钉住：同 ✕/□ 的灰
+_PIN_COLOR_PINNED = "#e0533a"  # 钉住：橙红（取 📌 emoji 的观感色）
+_PIN_ICON_CACHE: dict = {}     # 纯渲染缓存，Reload 后重建（ui/icons 同注释）
+
+
+def _pin_icon(filled):
+    """钉住按钮图标：icons/pin.svg（斜置图钉，📌 emoji 同款造型）按状态
+    整体替换 fill 渲染——未钉住灰、钉住橙红（2026-11 用户指定）。
+
+    不能用 📌 emoji 字符：彩色 emoji 由字体（Segoe UI Emoji）渲染，
+    QSS 的 color 属性管不到它——checked 切换样式等于没切。
+    """
+    cached = _PIN_ICON_CACHE.get(filled)
+    if cached is not None:
+        return cached
+    icon = None
+    try:
+        from PySide6 import QtSvg
+        with open(_PIN_SVG_PATH, "r", encoding="utf-8") as f:
+            svg = f.read()
+        color = _PIN_COLOR_PINNED if filled else _PIN_COLOR_IDLE
+        renderer = QtSvg.QSvgRenderer(QtCore.QByteArray(
+            svg.replace(_PIN_SVG_FILL, color).encode("utf-8")))
+        if renderer.isValid():
+            icon = QtGui.QIcon()
+            for dpr in (1.0, 2.0):   # 双档位图，Qt 按屏幕 DPR 取用（svg_icon 同套路）
+                pm = QtGui.QPixmap(int(14 * dpr), int(14 * dpr))
+                pm.setDevicePixelRatio(dpr)
+                pm.fill(QtCore.Qt.transparent)
+                p = QtGui.QPainter(pm)
+                p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+                renderer.render(p, QtCore.QRectF(0, 0, 14, 14))
+                p.end()
+                icon.addPixmap(pm)
+    except Exception as exc:
+        log.debug("pin svg render failed (filled=%s): %s", filled, exc)
+        icon = None
+    if icon is None:
+        icon = _pin_icon_fallback(filled)   # QtSvg 缺失/素材损坏：手绘兜底
+    _PIN_ICON_CACHE[filled] = icon
+    return icon
+
+
+def _pin_icon_fallback(filled):
+    """_pin_icon 的手绘兜底（ui/sidebar 线稿同款手法，QtSvg 缺失时用）。"""
+    color = _PIN_COLOR_PINNED if filled else _PIN_COLOR_IDLE
+    icon = QtGui.QIcon()
+    for dpr in (1.0, 2.0):   # 双档位图，Qt 按屏幕 DPR 取用（svg_icon 同套路）
+        pm = QtGui.QPixmap(int(14 * dpr), int(14 * dpr))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(QtCore.Qt.transparent)
+        p = QtGui.QPainter(pm)
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        pen = QtGui.QPen(QtGui.QColor(color), 1.4)
+        pen.setJoinStyle(QtCore.Qt.RoundJoin)
+        pen.setCapStyle(QtCore.Qt.RoundCap)
+        p.setPen(pen)
+        p.setBrush(QtGui.QColor(color) if filled else QtCore.Qt.NoBrush)
+        p.drawRoundedRect(QtCore.QRectF(5.2, 1.6, 3.6, 2.8), 1.4, 1.4)  # 圆帽
+        body = QtGui.QPainterPath()   # 锥形针体：宽肩收窄
+        body.moveTo(4.0, 4.4)
+        body.lineTo(10.0, 4.4)
+        body.lineTo(7.7, 8.4)
+        body.lineTo(6.3, 8.4)
+        body.closeSubpath()
+        p.drawPath(body)
+        p.drawLine(QtCore.QPointF(7.0, 8.4), QtCore.QPointF(7.0, 12.6))  # 针尖
+        p.end()
+        icon.addPixmap(pm)
+    return icon
+
+
 class DocInfoPopup(QtWidgets.QFrame):
     """文档详情面板（Node Info 风格）：中键点击预览区弹出完整渲染文档。
 
@@ -560,10 +636,11 @@ class DocInfoPopup(QtWidgets.QFrame):
             "color: #8a8a8a; font-size: 11px; "
             "background: transparent; border: none;")
         self._pin_btn = QtWidgets.QToolButton()
-        self._pin_btn.setText("📌")
         self._pin_btn.setCheckable(True)
         self._pin_btn.setToolTip("钉住：不再随失焦关闭")
         self._pin_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self._pin_btn.setIconSize(QtCore.QSize(14, 14))
+        self._pin_btn.setIcon(_pin_icon(False))
         self._max_btn = QtWidgets.QToolButton()
         self._max_btn.setText("□")
         self._max_btn.setToolTip("最大化 / 还原")
@@ -653,6 +730,7 @@ class DocInfoPopup(QtWidgets.QFrame):
 
     def _on_pin(self, checked):
         self._pinned = checked
+        self._pin_btn.setIcon(_pin_icon(checked))
         self._pin_btn.setStyleSheet(
             self._BTN_QSS_PINNED if checked else self._BTN_QSS)
 
