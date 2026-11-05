@@ -2961,6 +2961,58 @@ def main():
         _texts.append(_blk.text())
         _blk = _blk.next()
     assert _texts == ["左\u2028右"], _texts
+
+    # 软换行升级硬换行（2026-11 用户拍板以 Obsidian 体验为准）：Qt 导入
+    # 器把段内软换行折算成空格，「> test」的下一行/普通段落的下一行会
+    # 并进同一行渲染（用户实测 bug）。预处理给上一行补两个尾空格（硬换
+    # 行标记）+ 给续行内容贴 word joiner 标记（\u2060，restyle 据此把
+    # 续行块边距归零无缝拼合、收尾移除标记），导入器即逐行拆块。围栏内
+    # 是代码文本跳过；上一行侧：空引用行=段落断开、ATX 标题行后是新段
+    # 落，都不参与；下一行侧：空行/空引用行/块级标记行（列表/标题/围
+    # 栏/表格行/setext 下划线）不动——标记贴在标记行前会破坏其解析
+    _sb = rl_docs.MarkdownMediaView._soft_to_hard
+    assert _sb("> test\n> second\n") == "> test  \n> \u2060second\n", \
+        repr(_sb("> test\n> second\n"))
+    assert _sb("p1\np2\n") == "p1  \n\u2060p2\n"              # 普通段落同款
+    assert _sb("> a\n>\n> b\n") == "> a\n>\n> b\n"            # 空引用行=段落断开
+    assert _sb("> a\nplain\n") == "> a  \n\u2060plain\n"      # 懒续行也拆
+    assert _sb("> para\n> - item\n") == "> para\n> - item\n"  # 标记行不参与
+    assert _sb("> # T\n> body\n") == "> # T\n> body\n"        # 标题后=新段落
+    assert _sb("> > d1\n> > d2\n") == "> > d1  \n> > \u2060d2\n"
+    assert _sb("> ```\n> c1\n> c2\n> ```\n") == "> ```\n> c1\n> c2\n> ```\n"
+    assert _sb("> a\\\n> b\n") == "> a\\\n> \u2060b\n"        # 硬换行已在只补标记
+    assert _sb("p1\n---\n") == "p1\n---\n"                    # setext/hr 不碰
+    assert _sb("| a |\n| b |\n") == "| a |\n| b |\n"          # 表格行不碰
+    # 三连行逐对转换（快照覆写回归：本轮插的标记在下一轮成为"上一行"
+    # 时必须存活，enumerate 快照会把旧值覆写回去丢标记——实测踩过）
+    assert _sb("> a\n> b\n> c\n") == "> a  \n> \u2060b  \n> \u2060c\n", \
+        repr(_sb("> a\n> b\n> c\n"))
+    # 端到端：逐行成块（每块带左竖条 thin space）+ 续行块边距归零无缝
+    # 拼合（块背景不覆盖块边距/行高 leading，不归零多行引用断成色带；
+    # 引用块行高保持自然值，130% 比例行高同样漏底）+ 空行分段保留 6/6
+    # 间隙（=Obsidian 相邻引用是带间距的独立元素）
+    mv.set_markdown_with_media("> test\n> second\n")
+    _qblks = []
+    _blk = mv.document().firstBlock()
+    while _blk.isValid():
+        _bf = _blk.blockFormat()
+        if bool(_bf.property(rl_docs._MD_PROP_BLOCKQUOTE)):
+            _qblks.append((_blk.text(), _bf.topMargin(), _bf.bottomMargin(),
+                           _bf.lineHeight()))
+        _blk = _blk.next()
+    assert [(t, tm, bm) for t, tm, bm, _lh in _qblks] == \
+        [("\u2009\u2009 test", 6.0, 0.0), ("\u2009\u2009 second", 0.0, 6.0)], \
+        _qblks
+    assert all(lh == 0.0 for _t, _tm, _bm, lh in _qblks), _qblks
+    mv.set_markdown_with_media("> a\n\n> b\n")
+    _gapblks = []
+    _blk = mv.document().firstBlock()
+    while _blk.isValid():
+        _bf = _blk.blockFormat()
+        if bool(_bf.property(rl_docs._MD_PROP_BLOCKQUOTE)):
+            _gapblks.append((_bf.topMargin(), _bf.bottomMargin()))
+        _blk = _blk.next()
+    assert _gapblks == [(6.0, 6.0), (6.0, 6.0)], _gapblks
     mv.deleteLater()
 
     # 裁剪框四角拖动方向（模拟鼠标事件）：往外拉变宽、往里推变窄，

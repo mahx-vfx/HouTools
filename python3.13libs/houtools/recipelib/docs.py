@@ -65,14 +65,20 @@ _CODE_BG = "#2d2d2d"           # 行内代码/围栏块底色
 _QUOTE_BG = "#232327"          # OnePage blockquote 面板底（primary-alt 近似）
 _QUOTE_BAR = "#5a5a66"         # OnePage blockquote 左竖条（color-base-50 近似）
 _LINE_HEIGHT_PCT = 130         # 正文行高（比例式）
-_LIST_INDENT_PX = 14           # 列表缩进（Qt 默认 40px/级，空白过大）
+_LIST_INDENT_PX = 8            # 列表缩进（Qt 默认 40px/级，空白过大）
 _DOC_MARGIN_PX = 10            # 文档页边距（默认 4px 太贴边）
+_QUOTE_NEST_PX = 12            # 嵌套引用每级再缩进（一级 0=面板贴内容边）
 _BAR_CHARS = "\u2009\u2009"    # 引用左线体：thin space×2 打底色（逐块续成整线）
 # markdown 导入器打的块属性（Qt 头文件未公开常量名，PySide6 无属性名，
 # 数值经 detect 探针实测）：引用块 int 1 / 围栏代码块 bool True
 _MD_PROP_BLOCKQUOTE = 4224
 _MD_PROP_CODE_FENCE = 4176
 _INLINE_CODE_FAMILY = "monospace"   # 导入器给行内代码/围栏打的字族标记
+# 硬换行续行标记：word joiner（Cf，非空白零宽不可见——U+200B 是断行
+# 机会点会引起意外折行，弃用）；_soft_to_hard 贴在续行内容开头、导入后
+# 随块文本存活（探针实测，**加粗** 解析不受影响），_restyle_document 据
+# 此判定续行块并在收尾移除、不进选中复制的文本
+_CONT_MARK = "\u2060"
 # VF 变量轴精确字重（Qt 6.7+）；旧 Qt 就近取枚举档（H21 能力探测消化）
 _HAS_VAR_AXIS = hasattr(QtGui.QFont, "setVariableAxis")
 
@@ -190,7 +196,8 @@ class _DocPreview(QtWidgets.QTextBrowser):
         lh_type = QtGui.QTextBlockFormat.LineHeightTypes.\
             ProportionalHeight.value
         # ---- 第一趟：纯读 ----
-        blocks = []   # (block_number, blockFormat, [(pos, len, charFormat)])
+        # cont = 块文本带 _CONT_MARK（_soft_to_hard 打的硬换行续行标记）
+        blocks = []   # (block_number, blockFormat, frags, is_cont)
         block = doc.firstBlock()
         while block.isValid():
             frags = []
@@ -201,10 +208,14 @@ class _DocPreview(QtWidgets.QTextBrowser):
                     frags.append((frag.position(), frag.length(),
                                   frag.charFormat()))
                 it += 1
-            blocks.append((block.blockNumber(), block.blockFormat(), frags))
+            # 标记贴在前缀链后，容 4 字符缩进/引用前缀的偏差
+            cont = 0 <= block.text().find(_CONT_MARK) <= 4
+            blocks.append((block.blockNumber(), block.blockFormat(),
+                           frags, cont))
             block = block.next()
         # ---- 第二趟：纯写（新鲜寻址）----
-        for number, bf, frags in blocks:
+        cont_by_num = {number: cont for number, _bf, _frags, cont in blocks}
+        for number, bf, frags, cont in blocks:
             level = bf.headingLevel()
             # 引用标记存 int 1、围栏标记存 bool True——boolProperty/
             # intProperty 各只能读对一种（类型不匹配静默返 0），统一
@@ -216,19 +227,37 @@ class _DocPreview(QtWidgets.QTextBrowser):
             nbf = QtGui.QTextBlockFormat()
             for key, value in bf.properties().items():
                 nbf.setProperty(key, value)
-            nbf.setLineHeight(_LINE_HEIGHT_PCT, lh_type)
+            if not is_quote:
+                nbf.setLineHeight(_LINE_HEIGHT_PCT, lh_type)
             if level:
                 _pt, _color, _wght, top_m, bottom_m = _HEAD_STYLES[level]
                 nbf.setTopMargin(top_m)
                 nbf.setBottomMargin(bottom_m)
             elif is_quote:
-                # 导入器给引用块 40px 左右 margin（"空白太多"的来源之一）
-                nbf.setLeftMargin(8)
+                # 导入器给引用块 40px 左 margin。左缩进 0=面板贴内容边缘
+                # （Obsidian 同款，2026-11 用户反馈 8px 前方空白多）；嵌套
+                # 引用按深度递进缩进（导入器 40/80 全被覆平的问题一并修）
+                depth = int(bf.property(_MD_PROP_BLOCKQUOTE) or 0)
+                nbf.setLeftMargin(_QUOTE_NEST_PX * max(0, depth - 1))
                 nbf.setRightMargin(0)
             elif is_fence:
                 nbf.setBackground(QtGui.QColor(_CODE_BG))
+            if not level:
+                # 硬换行续行块与上一块无缝拼合（Obsidian 段内换行不分段）；
+                # 下一块是续行时本块底边距一并归零。块背景不覆盖块边距与
+                # 比例行高 leading（实测各漏 5-12px 页面底色），引用面板
+                # 不归零就断成一条条色带；空行分隔的段落不在此列，保留
+                # 导入器 6/6 边距 = 分段间隙（=Obsidian 相邻引用独立元素）
+                if cont:
+                    nbf.setTopMargin(0)
+                if cont_by_num.get(number + 1):
+                    nbf.setBottomMargin(0)
             if is_quote:
-                # OnePage：引用块 = 微亮面板底（引用内的标题也垫底色）
+                # OnePage：引用块 = 微亮面板底（引用内的标题也垫底色）。
+                # 行高保持自然（不套全局 130%）：比例行高的 leading 不被
+                # 块背景覆盖，块尾会漏 5px 页面底色、多行引用断成一条条
+                # 色带（LH100/FixedHeight=自然高实测无缝，探针固化在
+                # dev-notes）；引用面板靠底色+竖条成立，行距紧一点可接受
                 nbf.setBackground(QtGui.QColor(_QUOTE_BG))
             blk = doc.findBlockByNumber(number)
             sel = QtGui.QTextCursor(blk)
@@ -261,11 +290,22 @@ class _DocPreview(QtWidgets.QTextBrowser):
                     cur.setPosition(pos + length,
                                     QtGui.QTextCursor.KeepAnchor)
                     cur.setCharFormat(fmt)
-        # ---- 第三趟：引用左线垫底（块内插入不改块号）----
-        # 条体 = thin space×2 打底色 + 普通空格做间隔，无字形依赖。
-        # 标题竖条三轮方案（▍字形/thin space 底色条/图片条）全部被否，
-        # 2026-11 用户拍板：标题不放任何装饰条，只留配色/字阶/字重。
-        for number, bf, _frags in blocks:
+        # ---- 第三趟：移除续行标记 + 引用左线垫底（块内插入不改块号）----
+        # 标记已完成使命（第二趟边距判定），先逐块移除再插竖条，块号都
+        # 不受字符删除/插入影响。条体 = thin space×2 打底色 + 普通空格做
+        # 间隔，无字形依赖。标题竖条三轮方案（▍字形/thin space 底色条/
+        # 图片条）全部被否，2026-11 用户拍板：标题不放任何装饰条，只留
+        # 配色/字阶/字重。
+        for number, _bf, _frags, _cont in blocks:
+            blk = doc.findBlockByNumber(number)
+            idx = blk.text().find(_CONT_MARK)
+            if 0 <= idx <= 4:
+                cur = QtGui.QTextCursor(blk)
+                cur.setPosition(blk.position() + idx)
+                cur.setPosition(blk.position() + idx + len(_CONT_MARK),
+                                QtGui.QTextCursor.KeepAnchor)
+                cur.removeSelectedText()
+        for number, bf, _frags, _cont in blocks:
             if not bool(bf.property(_MD_PROP_BLOCKQUOTE)):
                 continue
             bar_cf = QtGui.QTextCharFormat()
@@ -403,6 +443,28 @@ class MarkdownMediaView(_DocPreview):
     # <br>（无斜杠）在 Qt 的 markdown 导入里会吞掉段落剩余内容（实测
     # 'A<br>B' → 'A'），<br/> 才是段内软换行（U+2028）——统一重写
     _BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+    # 软换行升级硬换行（2026-11 用户拍板以 Obsidian 体验为准）：Qt 导入
+    # 器把段内软换行折算成空格，「> test」的下一行/普通段落的下一行都
+    # 会并进同一行渲染；Obsidian 默认（非严格换行）逐行显示。扫描给上
+    # 一行补两个尾空格（硬换行标记），导入器即按行拆块；续行内容开头
+    # 贴 word joiner 标记（_CONT_MARK），restyle 据此把续行块与上一块
+    # 边距归零无缝拼合（=Obsidian 段内换行），空行分隔的段落保留导入器
+    # 6/6 边距=分段间隙（=Obsidian 相邻引用是带间距的独立元素），标记
+    # 在 restyle 收尾移除。围栏内是代码文本，跳过（尾空格会进代码内
+    # 容，奇偶判定允许 > 前缀、与 _DocEditor 回车延续同口径）
+    _FENCE_LINE_RE = re.compile(r"^\s*(?:>\s*)*(```|~~~)")
+    # 引用前缀链（含嵌套 > > 与无空格 >b）；* 量词兼容无前缀的普通段落
+    _PREFIX_CHAIN_RE = re.compile(r"^\s*(?:>\s*)*")
+    # 块级标记行：md4c 对它们自然开新块、不参与软换行续行，且标记前贴
+    # 不可见字符会破坏其解析（探针实测 '\u2060- item' 不再是列表）——
+    # 一律跳过不转换。含集合：无序/有序列表、ATX 标题、围栏、置中线
+    # （---/=== setext 下划线与 ***/hr，2+ 即拦）；| 打头的表格行同理
+    _BLOCK_MARKER_RE = re.compile(
+        r"(?:[-+*] |\d{1,9}[.)] |#{1,6}(?: |$)|`{3}|~{3}"
+        r"|\*{3}(?: |$)|_{3}(?: |$)|-{2,}|={2,}|\|)")
+    # ATX 标题（上一行侧单独用：标题行后是新段落、不算软换行续行）
+    _HEADING_RE = re.compile(r"#{1,6}(?: |$)")
+    _HARDBREAK_END_RE = re.compile(r"(?:  |\\)$")
 
     def __init__(self, doc_dir, parent=None):
         super().__init__(doc_dir, parent)
@@ -414,10 +476,50 @@ class MarkdownMediaView(_DocPreview):
         text = self._VIDEO_IMAGE_RE.sub(r"[▶ \1](\2)", text)
         text, self._image_sizes = self._extract_image_sizes(text)
         text = self._BR_RE.sub("<br/>", text)
+        text = self._soft_to_hard(text)
         self.setMarkdown(text)
         self._restyle_document()
         self._apply_image_sizes()
         # QMovie 在布局首次查询图片资源时经 loadResource 惰性创建并启动
+
+    @classmethod
+    def _soft_to_hard(cls, text):
+        """段内软换行 → 硬换行 + 续行标记，让源码逐行渲染成独立行。
+
+        见 _FENCE_LINE_RE 处注释。上一行已以两个空格或 \\ 结尾视为硬换
+        行已在，只补标记不重复加空格；下一行为空行/空引用行/块级标记行
+        （列表/标题/围栏/表格行）时不动——段落本就断开或 md4c 自然开新
+        块。标记只贴在"标记行检查通过"的续行上，块级标记行永不受污染。"""
+        lines = text.split("\n")
+        in_fence = False
+        # ★ 按下标取行而非 enumerate 快照：本轮给 lines[i+1] 插的标记
+        # 在下一轮它成为"上一行"时必须可见（快照会拿旧值覆写丢标记）
+        for i in range(len(lines) - 1):
+            line = lines[i]
+            if cls._FENCE_LINE_RE.match(line):
+                in_fence = not in_fence
+                continue
+            if in_fence or not line.strip():
+                continue
+            # 上一行侧：空引用行（> / > 空白）= 段落断开，不参与续行
+            # （「> a\n>\n> b」的 b 须保留分段间隙）；ATX 标题行后是
+            # 新段落而非软换行续行（尾空格被 ATX 剥掉、硬换行不成立），
+            # 也不标——标了会让正文 T0 贴死标题（Obsidian 有段距）
+            prev_m = cls._PREFIX_CHAIN_RE.match(line)
+            prev_content = line[prev_m.end():]
+            if (not prev_content.strip()
+                    or cls._HEADING_RE.match(prev_content)):
+                continue
+            m = cls._PREFIX_CHAIN_RE.match(lines[i + 1])
+            if m is None:
+                continue
+            content = lines[i + 1][m.end():]
+            if not content.strip() or cls._BLOCK_MARKER_RE.match(content):
+                continue
+            if not cls._HARDBREAK_END_RE.search(line):
+                lines[i] = line.rstrip() + "  "
+            lines[i + 1] = lines[i + 1][:m.end()] + _CONT_MARK + content
+        return "\n".join(lines)
 
     def _extract_image_sizes(self, text):
         """抽取并剥除图片尺寸参数，返回 (清洗后的 markdown, {url: (w, h)})。
