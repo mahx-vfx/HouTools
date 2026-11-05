@@ -49,7 +49,7 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings�
 | 视窗截图嵌入 | 节点右键 `Capture Viewport to Node [HT]` | 截取当前 3D 视窗存为 JPG（`$HIP/HouTools_cfg/captures/`），作为网络编辑器背景图钉在节点旁，随节点移动/改名跟随；只存路径引用不进 hip；右键 `Delete Viewport Capture [HT]` 删除截图 |
 | 粘贴边界框 | 节点右键 `Paste Bounding Box [HT]` | Ctrl+C 复制源节点后，右键带三分量 `size`/`t` 参数的目标节点（如 box），把源节点包围盒尺寸/中心粘贴到其 `size`/`t`——绝对值或 `bbox()`/`centroid()` 表达式（同网络相对路径、跨层级绝对路径）两种模式 |
 | 粘贴中心 | 节点右键 `Paste Center [HT]` | Ctrl+C 复制源节点后右键任意目标节点，在其下方创建 transform 并启用（接管显示/渲染）：枢轴=目标中心、平移=源中心−目标中心（目标内容对齐到源中心）——绝对值或 `centroid()` 表达式两种模式 |
-| 视频转序列图 | `HouTools → Video to Sequence` | ffmpeg 提取视频为 JPG 序列（帧级进度，质量/起始帧/位数/前缀可调），EXR/PNG/TIF 静帧序列同样支持（浏览时同一序列折叠为一个选项，EXR 自动转 sRGB），相机支持在 Houdini 节点选择器中直接选取 + 一键跳转定位，分辨率可读取/编辑（宽/高双框 + 预设），可选自动设置相机 Background Image |
+| 视频转序列图 | `HouTools → Video to Sequence` | ffmpeg 提取视频为 JPG 序列（帧级进度，质量/起始帧/位数/前缀可调），EXR/PNG/TIF 静帧序列同样支持（浏览时同一序列折叠为一个选项，EXR 自动转 sRGB），相机支持在 Houdini 节点选择器中直接选取 + 一键跳转定位，分辨率可读取/编辑（宽/高双框 + 预设），「编码器」行 ⓘ 按钮悬停/点击查看实际生效的 ffmpeg/ffprobe，可选自动设置相机 Background Image |
 | Hdr Library | `HouTools → Hdr Library` | HDR 环境贴图库浏览器：缩略图网格（后台生成）、子文件夹分类 + 收藏，选中灯光后双击即贴图 |
 | Recipe Library | `HouTools → Recipe Library` | recipes 资产库浏览器：官方 recipes 卡片网格浏览（缩略图/标签/主题色），树形侧栏过滤，双击/拖拽应用到网络，VEX/Python 代码块卡片（双击追加到选中节点），Markdown 文档，数据导入/导出 |
 | HouTools Settings | `HouTools → HouTools Settings…` | 设置窗口：配置目录展示（含修改方法）+ 快捷键设置（原 Paste Hotkey Settings 迁入） |
@@ -174,8 +174,8 @@ HDR 环境贴图库浏览器（独立窗口，进任务栏）。库按"总目录
   未配置时顶部路径为空、列表空置，文件对话框起始位置建议配置目录同级的 `HouTools/hdri`）；
   目录、缩略图大小、全局置顶、收藏都存配置目录的 `hdr_library.json`（随机器各自保存）
 - **缩略图**：后台线程池调 Houdini 自带 `$HFS/bin/hoiiotool` 按需生成（无需安装），
-  缓存在库目录 `.thumb_cache/`；打开窗口不自动扫描，点「刷新」才比对缓存目录
-  补缺失缩略图（底部有进度条，可暂停/停止），之后秒开；HDR 文件更新后旧缩略图自动失效重生成
+  缓存在库目录 `.thumb_cache/`；窗口显示时自动扫描比对补缺失缩略图（隐藏后重开也会重扫，
+  库文件被外部增删后即时跟上；可暂停/停止），之后秒开；HDR 文件更新后旧缩略图自动失效重生成
 - **贴图**：选中一个或多个灯光后**双击缩略图**，把 HDR 路径批量写入灯光环境贴图参数——
   支持 OBJ `envlight`（Karma，自动关 skymap 程序化天空）、RenderMan dome 灯、
   LOP `domelight` 全家族（Solaris）；其余灯型在状态栏给出友好提示；
@@ -215,7 +215,8 @@ Tab 菜单里的 session tool 从会话开始可用。recipe 的创建走 Houdin
   配置目录的 `recipelib.json`，缩略图存配置目录 `recipe_thumbs/`（相对路径存储，配置目录挪动不失效）；
   无文档时预览回退官方备注，文档/备注区右键「编辑文档」
 - **文档**：每条 recipe 可配 Markdown 文档（存配置目录 `recipe_docs/`），确认/取消模式编辑，
-  渲染支持 GIF 动图与视频播放
+  编辑器回车自动延续列表/勾选框/引用（Obsidian 式）；渲染支持 GIF 动图与视频播放、
+  图片可带尺寸参数、`<br>` 换行；中键点击文档区弹出独立详情面板（可钉住/拖拽/缩放/最大化）
 - **数据交换**：「设置 ▸ 数据」导出/导入 zip 交换包（元数据 + 缩略图 + 文档 + HDA + 代码块），
   打包带走、分享；导入按内部名合并，与本地同名定义的 HDA 整文件跳过
 
