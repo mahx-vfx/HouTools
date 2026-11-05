@@ -29,7 +29,7 @@ from typing import Optional
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QSpinBox, QSlider, QGroupBox, QFormLayout,
-    QFileDialog, QProgressBar, QMenu,
+    QFileDialog, QProgressBar, QMenu, QToolTip, QWidget,
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize
 
@@ -1109,6 +1109,16 @@ class _VideoToSequenceWindow(QDialog):
         self._build_ui()
         self.setStyleSheet(STYLE_SHEET)
         tool_fonts.apply(self)   # 工具统一字体（子树继承）
+        # 状态条隐藏时保留占位：sizeHint 把它算进去，高度钉死后转换中
+        # 显示状态文字不会挤压布局；空闲时这段预留藏在 stretch 空隙里
+        # 看不出来
+        _sp = self._status_label.sizePolicy()
+        _sp.setRetainSizeWhenHidden(True)
+        self._status_label.setSizePolicy(_sp)
+        # 高度钉死在内容实际需要值：布局尾部只有 stretch，竖向拉高只会
+        # 露出无意义空白（2026-11 用户反馈，禁下拉）；宽度仍可调（长路径
+        # 输入框受益）
+        self.setFixedHeight(self.sizeHint().height())
         self._apply_window_flags()
         # 整窗接收视频文件拖放（视频源分组框也单独支持，子控件未命中时兜底）
         self.setAcceptDrops(True)
@@ -1195,7 +1205,24 @@ class _VideoToSequenceWindow(QDialog):
             val = QLabel("-")
             val.setStyleSheet(value_style)
             val.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            form.addRow(lbl, val)
+            if key == "codec":
+                # ⓘ 按钮放「编码器」文字前面（2026-11 用户指定）：悬停/
+                # 点击查看当前生效的 ffmpeg / ffprobe（查找有降级序，
+                # tooltip 在每次探测/转换解析 ffmpeg 后刷新，显示即所用）。
+                # stretch 把 按钮+文字 推到标签列右缘，与其他行右对齐一致
+                label_cell = QWidget()
+                label_lay = QHBoxLayout(label_cell)
+                label_lay.setContentsMargins(0, 0, 0, 0)
+                label_lay.setSpacing(4)
+                label_lay.addStretch()
+                self._tools_info_btn = _make_icon_button(
+                    "info.svg", self._tools_tooltip_text(), "i")
+                self._tools_info_btn.clicked.connect(self._show_tools_tooltip)
+                label_lay.addWidget(self._tools_info_btn)
+                label_lay.addWidget(lbl)
+                form.addRow(label_cell, val)
+            else:
+                form.addRow(lbl, val)
             self._info_labels[key] = val
 
         parent_layout.addWidget(group)
@@ -1385,6 +1412,35 @@ class _VideoToSequenceWindow(QDialog):
         btn_row.addWidget(self._cancel_btn)
         btn_row.addStretch()
         parent_layout.addLayout(btn_row)
+
+    def _tools_tooltip_text(self, ffmpeg_path=None):
+        """运行环境详情 tooltip 文案；ffmpeg_path 传探测/转换刚解析的
+        结果（None 则自行解析一次），保证显示的就是本次实际使用的那个。"""
+        from houtools.videoseq.ffmpeg import find_ffmpeg, find_ffprobe
+        if ffmpeg_path is None:
+            ffmpeg_path = find_ffmpeg()
+        if not ffmpeg_path:
+            return ("ffmpeg: 未找到（转换不可用）\n"
+                    "可将 ffmpeg.exe 放到项目根目录，或加入系统 PATH")
+        # 8.3 短路径形态（部分环境的 HFS 是 PROGRA~1）展开成长路径，纯
+        # 展示用——探测/转换仍用原始解析结果
+        ffprobe_path = find_ffprobe(ffmpeg_path)
+        return "\n".join((
+            "ffmpeg: " + os.path.realpath(ffmpeg_path),
+            "ffprobe: " + (os.path.realpath(ffprobe_path)
+                           if ffprobe_path else "未找到"),
+        ))
+
+    def _update_tools_info(self, ffmpeg_path=None):
+        """刷新详情按钮的 tooltip（探测/转换解析 ffmpeg 后调用）。"""
+        self._tools_info_btn.setToolTip(self._tools_tooltip_text(ffmpeg_path))
+
+    def _show_tools_tooltip(self):
+        """点击同样弹出详情（悬停由 Qt 原生 tooltip 覆盖）。"""
+        QToolTip.showText(
+            self._tools_info_btn.mapToGlobal(self._tools_info_btn.rect().center()),
+            self._tools_info_btn.toolTip(),
+            self._tools_info_btn)
 
     # ── Output Preview ───────────────────────────────────────────────
 
@@ -1658,6 +1714,7 @@ class _VideoToSequenceWindow(QDialog):
 
         from houtools.videoseq.ffmpeg import find_ffmpeg
         ffmpeg_path = find_ffmpeg()
+        self._update_tools_info(ffmpeg_path)
         if not ffmpeg_path:
             dialogs.warn(
                 self, "错误",
@@ -1861,6 +1918,7 @@ class _VideoToSequenceWindow(QDialog):
     def _probe_video(self, filepath, sequence_info=None):
         from houtools.videoseq.ffmpeg import find_ffmpeg
         ffmpeg_path = find_ffmpeg()
+        self._update_tools_info(ffmpeg_path)
         if not ffmpeg_path:
             self._status_label.setVisible(True)
             self._status_label.setText("错误: 未找到 ffmpeg")
