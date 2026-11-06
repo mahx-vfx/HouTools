@@ -35,6 +35,7 @@
 import re
 
 from houtools.core.log import get_logger
+from houtools.dev import status
 
 logger = get_logger("net.paste_merge")
 
@@ -372,19 +373,8 @@ def _paste_position(editor):
 
 
 def _status(message: str, severity="important"):
-    """状态栏提示（不弹窗、不打控制台，保持操作流不被打断）。
+    """通知反馈（委托 dev.status → toast 通知；severity 语义不变）。
 
-    severity: "important" 高亮 / "warning" 预期内拒绝降级 / "error" 意外
-    失败（内部映射 hou.severityType，调用点无须 import hou）。粘贴成功
-    静默——引用节点落网并选中、结果自明，这里只报拒绝与失败。
+    粘贴成功静默——引用节点落网并选中、结果自明，这里只报拒绝与失败。
     """
-    try:
-        import hou
-        level = {
-            "important": hou.severityType.ImportantMessage,
-            "warning": hou.severityType.Warning,
-            "error": hou.severityType.Error,
-        }[severity]
-        hou.ui.setStatusMessage(message, level)
-    except Exception as exc:
-        logger.debug("setStatusMessage failed: %s", exc)
+    status(message, severity=severity)

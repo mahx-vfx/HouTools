@@ -50,6 +50,7 @@ from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from houtools.core.log import get_logger
+from houtools.dev import status
 
 logger = get_logger("dragdrop.import")
 
@@ -268,19 +269,8 @@ def _import_nodes(context, position, files, node_type, parm_name,
 
 
 def _status(message, severity="important"):
-    """状态栏提示（不弹窗，保持拖放操作流不被打断）。
+    """通知反馈（委托 dev.status → toast 通知；severity 语义不变）。
 
-    severity: "important" 高亮 / "warning" 预期内降级 / "error" 意外失败
-    （内部映射 hou.severityType，调用点无须 import hou）。导入成功一律
-    静默——节点落网自明，这里只报部分失败与异常。
+    导入成功一律静默——节点落网自明，这里只报部分失败与异常。
     """
-    try:
-        import hou
-        level = {
-            "important": hou.severityType.ImportantMessage,
-            "warning": hou.severityType.Warning,
-            "error": hou.severityType.Error,
-        }[severity]
-        hou.ui.setStatusMessage(message, level)
-    except Exception as exc:
-        logger.debug("setStatusMessage failed: %s", exc)
+    status(message, severity=severity)

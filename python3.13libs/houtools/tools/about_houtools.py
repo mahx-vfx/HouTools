@@ -11,6 +11,7 @@ import os
 
 from houtools.core.constants import PROJECT_ROOT
 from houtools.core.log import get_logger
+from houtools.dev import status
 
 log = get_logger("tools.about_houtools")
 
@@ -18,14 +19,8 @@ ABOUT_PAGE = PROJECT_ROOT / "docs" / "index.html"
 
 
 def _status(message, error=False):
-    """Status-bar feedback; silently skipped outside Houdini."""
-    try:
-        import hou
-    except ImportError:
-        return
-    hou.ui.setStatusMessage(
-        message,
-        severity=hou.severityType.Error if error else hou.severityType.Message)
+    """通知反馈（委托 dev.status → toast 通知）；无头自动降级。"""
+    status(message, error=error)
 
 
 def run(kwargs=None):

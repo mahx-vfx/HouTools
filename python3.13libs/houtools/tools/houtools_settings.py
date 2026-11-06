@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from houtools.core import constants
 from houtools.core.log import get_logger
+from houtools.dev import status
 from houtools.ui import fonts as tool_fonts
 
 logger = get_logger("tools.houtools_settings")
@@ -135,8 +136,6 @@ class _HouToolsSettingsDialog(QDialog):
         self._hint.setStyleSheet("color: {}; font-size: 11px;".format(color))
 
     def _on_apply(self):
-        import hou
-
         from houtools.core import hotkeys
 
         key = self._editor.keySequence().toString()
@@ -148,17 +147,11 @@ class _HouToolsSettingsDialog(QDialog):
             logger.warning("Houdini 拒绝了键位: %s", key)
             return
         logger.info("Paste as Object Merge 快捷键已设为: %s", key)
-        try:
-            hou.ui.setStatusMessage(
-                "Paste as Object Merge 快捷键已设为:{}".format(key),
-                hou.severityType.ImportantMessage)
-        except Exception as exc:
-            logger.debug("状态栏提示写入失败: %s", exc)
+        status("Paste as Object Merge 快捷键已设为:{}".format(key),
+               severity="important")
         self._set_hint("已应用:{}".format(key))
 
     def _on_reset(self):
-        import hou
-
         from houtools.core import hotkeys
         from houtools.ui.dialogs import question
 
@@ -171,10 +164,6 @@ class _HouToolsSettingsDialog(QDialog):
             return
         self._editor.setKeySequence(QKeySequence(default_key))
         logger.info("Paste as Object Merge 自定义键位已清除")
-        try:
-            hou.ui.setStatusMessage(
-                "Paste as Object Merge 快捷键已恢复默认:{}".format(default_key),
-                hou.severityType.ImportantMessage)
-        except Exception as exc:
-            logger.debug("状态栏提示写入失败: %s", exc)
+        status("Paste as Object Merge 快捷键已恢复默认:{}".format(default_key),
+               severity="important")
         self._set_hint("已恢复默认:{}".format(default_key))

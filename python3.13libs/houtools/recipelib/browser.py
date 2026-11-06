@@ -25,6 +25,7 @@ import time
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from houtools.core.log import get_logger
+from houtools.dev import status
 from houtools.recipelib import codeblock, metadata, store, transfer
 from houtools.recipelib.crop import ThumbCropDialog
 from houtools.recipelib.capture import HIDE_DELAY_MS, SnipOverlay
@@ -54,23 +55,12 @@ _REFRESH_TOGGLE_DELAY_MS = 150
 
 
 def _push_houdini_error(message, severity="error"):
-    """把失败/拒绝推到 Houdini 左下角状态栏。
+    """把失败/拒绝推到 Houdini 左下角（toast 通知；severity 语义不变）。
 
-    severity="error"（默认）红色 = 意外失败；"warning" 黄字 = 预期内
-    拒绝/降级（层级点错、语言错配等未写入场景）。面板自身状态栏也有
-    同款文案；这里保证用户视线留在网络编辑器时也能看到。无头/旧版
-    签名差异时静默降级。
+    面板自身状态栏也有同款文案；这里保证用户视线留在网络编辑器时
+    也能看到。无头自动降级 logger。
     """
-    try:
-        import hou
-        level = {
-            "error": hou.severityType.Error,
-            "warning": hou.severityType.Warning,
-        }[severity]
-        hou.ui.setStatusMessage("Recipe Library: {}".format(message),
-                                severity=level)
-    except Exception as exc:
-        log.debug("setStatusMessage failed: %s", exc)
+    status("Recipe Library: {}".format(message), severity=severity)
 
 
 def _cover_crop(src, w, h):

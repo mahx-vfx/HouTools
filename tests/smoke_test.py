@@ -3897,6 +3897,77 @@ def main():
         sys.modules.update(_saved_ht)
     print("python3.11libs entry shim OK")
 
+    # 通知模块（ui.notify）：时长定稿 + 等级映射 + 无头降级 + dev.status 委托
+    from houtools.ui import notify as ht_notify
+    # 时长定稿固化（2026-11 用户拍板）：error 总 4s，其余 2s；渐透恒定最后 1s
+    assert ht_notify.HOLD_MS == {"info": 1000, "success": 1000,
+                                 "warning": 1000, "error": 3000}
+    assert ht_notify.FADE_MS == 1000
+    for _lv, _hold in (("info", 1000), ("success", 1000),
+                       ("warning", 1000), ("error", 3000)):
+        assert ht_notify._hold_ms(_lv, None) == _hold
+    # duration 语义 = 总时长（含渐透）：2000 → 保持 1000；下限 500ms
+    assert ht_notify._hold_ms("info", 2000) == 1000
+    assert ht_notify._hold_ms("info", 300) == 500
+    # 旧 severity 映射表固化（dev.status 委托语义；漏接的一律落 info）
+    for _sev, _lv in (("message", "info"), ("important", "info"),
+                      ("warning", "warning"), ("error", "error")):
+        assert ht_notify._LEGACY_SEVERITY[_sev] == _lv
+    # 图标素材在盘（svg_icon 失败回退文字 glyph，不致命）
+    for _lv in ("success", "info", "warning", "error"):
+        assert (ROOT / "python3.13libs" / "houtools" / "icons"
+                / ("toast_%s.svg" % _lv)).is_file(), _lv
+    # 有 QApplication 但无 hou（本测试环境）：toast 链路在 _main_window 处
+    # 失败 → 退回原生状态栏兜底，全程不抛异常、返回 None——通知永不打断
+    # 宿主操作是硬约定，这里用"调用本身不得 raise"固化
+    assert ht_notify.success("smoke") is None
+    assert ht_notify.error("smoke", duration=4000) is None
+    assert ht_notify.show("smoke", level="warning") is None
+    assert ht_notify.show_legacy("smoke", error=True) is None
+    assert ht_notify.show_legacy("smoke", severity="important") is None
+    ht_notify.clear()
+    # 同屏上限 victim 计算（纯函数）：只数"存活"，渐透中的不参与强收——
+    # 老写法 "while _ACTIVE[0]._fadeout()" 撞上 no-op 的 closing toast 会
+    # 死循环卡死主线程（2026-11 连发"剪贴板文本失效"实测），这里固化
+    # victim 语义：新 toast 入栈后存活数 ≤ MAX_VISIBLE-1
+    class _FakeToast:
+        def __init__(self, closing=False):
+            self._closing = closing
+            self.faded = False
+        def _fadeout(self):
+            self.faded = True
+    _saved_active = ht_notify._ACTIVE[:]
+    try:
+        ht_notify._ACTIVE[:] = [_FakeToast(True), _FakeToast(),
+                                _FakeToast(True), _FakeToast()]
+        victims = ht_notify._toast_cap_victims()
+        assert victims == []   # 存活仅 2 < 上限，无需强收
+        ht_notify._ACTIVE[:] = [_FakeToast() for _ in range(4)]
+        victims = ht_notify._toast_cap_victims()
+        assert len(victims) == 1 and not victims[0]._closing, victims
+        victims[0]._fadeout()
+        assert victims[0].faded   # 名单里的对象可直接 _fadeout 收掉
+        ht_notify._ACTIVE[:] = [_FakeToast() for _ in range(6)]
+        victims = ht_notify._toast_cap_victims()
+        assert len(victims) == 3 and not any(v._closing for v in victims), \
+            victims
+        ht_notify._ACTIVE[:] = [_FakeToast(True) for _ in range(8)]
+        # 全在渐透：名单为空——即便列表长度超上限也绝不产生强收调用
+        # （老代码在这里死循环）
+        assert ht_notify._toast_cap_victims() == []
+    finally:
+        ht_notify._ACTIVE[:] = _saved_active
+    # 纯无头（无 QApplication）降级 logger：打桩 instance() 返回 None
+    with patch.object(QApplication, "instance", return_value=None):
+        assert ht_notify.info("smoke headless") is None
+    # dev.status 委托：签名不变，无头下走 notify 降级路径不抛异常
+    # （toast 样式与渐透行为由 MCP GUI 会话实测覆盖）
+    from houtools.dev import status as ht_status
+    ht_status("smoke info")
+    ht_status("smoke error", error=True)
+    ht_status("smoke legacy", severity="important")
+    print("notify module OK")
+
     print("SMOKE TEST OK")
 
 

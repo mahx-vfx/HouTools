@@ -10,14 +10,13 @@ insertion-order dependency (先被 import 的是依赖) is never violated.
 """
 
 from houtools.core.log import get_logger
+from houtools.dev import status
 
 log = get_logger("tools.delete_viewport_capture")
 
 
 def run(kwargs=None):
     """OPmenu 菜单入口；kwargs 为菜单脚本上下文（含 node）。"""
-    import hou
-
     node = (kwargs or {}).get("node")
     if node is None:
         return
@@ -26,22 +25,17 @@ def run(kwargs=None):
         removed_entry, removed_file = cve.delete_capture(node)
     except RuntimeError as exc:
         log.warning("%s", exc)
-        hou.ui.setStatusMessage(
-            "HouTools: {}".format(exc), severity=hou.severityType.Error)
+        status("HouTools: {}".format(exc), error=True)
         return
     except Exception:
         log.exception("delete_viewport_capture crashed")
-        hou.ui.setStatusMessage(
-            "HouTools: 删除截图失败（详见日志）",
-            severity=hou.severityType.Error)
+        status("HouTools: 删除截图失败（详见日志）", error=True)
         return
     if removed_entry or removed_file:
-        hou.ui.setStatusMessage("HouTools: 已删除节点截图（{}）".format(
+        status("HouTools: 已删除节点截图（{}）".format(
             "、".join(filter(None, (
                 "背景图条目" if removed_entry else None,
-                "磁盘文件" if removed_file else None)))),
-            severity=hou.severityType.ImportantMessage)
+                "磁盘文件" if removed_file else None)))))
     else:
         # 标记在但条目/文件都不在（如手动删过图）：只清标记与回调
-        hou.ui.setStatusMessage(
-            "HouTools: 未找到可删除的截图，已清理残留标记")
+        status("HouTools: 未找到可删除的截图，已清理残留标记")

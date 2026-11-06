@@ -44,6 +44,7 @@ from houtools.automation.execution_engine import ExecutionEngine
 from houtools.automation.styles import STYLE_SHEET
 
 from houtools.core.constants import PROJECT_ROOT
+from houtools.dev import status
 from houtools.core.log import get_logger
 from houtools.ui import dialogs
 from houtools.ui import fonts as tool_fonts
@@ -2257,14 +2258,8 @@ class AutomationWindow(QWidget):
         if getattr(self, "_running", False) \
                 or getattr(self, "_cancel_requested", False):
             self._refresh_config_dropdown()   # blockSignals 内回弹当前名
-            try:
-                import hou
-                hou.ui.setStatusMessage(
-                    "Automation: 执行中不能切换配置，请先停止",
-                    severity=hou.severityType.Warning,
-                )
-            except ImportError:
-                logger.debug("setStatusMessage unavailable (headless)")
+            status("Automation: 执行中不能切换配置，请先停止",
+                   severity="warning")
             return
         name = self._config_combo.itemText(index)
         if not name:
@@ -2289,14 +2284,8 @@ class AutomationWindow(QWidget):
         # (日志会中途静默停写)——此前唯独这个入口漏了守卫
         if getattr(self, "_running", False) \
                 or getattr(self, "_cancel_requested", False):
-            try:
-                import hou
-                hou.ui.setStatusMessage(
-                    "Automation: 执行中不能新建配置，请先停止",
-                    severity=hou.severityType.Warning,
-                )
-            except ImportError:
-                logger.debug("setStatusMessage unavailable (headless)")
+            status("Automation: 执行中不能新建配置，请先停止",
+                   severity="warning")
             return
         name, ok = dialogs.prompt_text(self, "新建配置", "配置名称:")
         if not ok:

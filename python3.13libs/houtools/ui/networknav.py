@@ -10,6 +10,7 @@ Video to Sequence 的「跳转到媒体来源节点」按钮需要同款行为�
 """
 
 from houtools.core.log import get_logger
+from houtools.dev import status
 
 logger = get_logger("ui.networknav")
 
@@ -64,17 +65,12 @@ def jump_to_node(node_path, *, prefix="HouTools", empty_message=None):
         return
     node_path = (node_path or "").strip()
     if not node_path:
-        hou.ui.setStatusMessage(
-            empty_message or f"{prefix}: 目标节点路径为空",
-            severity=hou.severityType.Warning,
-        )
+        status(empty_message or f"{prefix}: 目标节点路径为空",
+               severity="warning")
         return
     node = hou.node(node_path)
     if node is None:
-        hou.ui.setStatusMessage(
-            f"{prefix}: 节点不存在 {node_path}",
-            severity=hou.severityType.Warning,
-        )
+        status(f"{prefix}: 节点不存在 {node_path}", severity="warning")
         return
     editor = next(
         (p for p in hou.ui.currentPaneTabs() if isinstance(p, hou.NetworkEditor)),
@@ -83,10 +79,7 @@ def jump_to_node(node_path, *, prefix="HouTools", empty_message=None):
     if editor is None:
         editor = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
     if editor is None:
-        hou.ui.setStatusMessage(
-            f"{prefix}: 未找到网络编辑器",
-            severity=hou.severityType.Warning,
-        )
+        status(f"{prefix}: 未找到网络编辑器", severity="warning")
         return
     if node.parent() != editor.pwd():
         editor.setPwd(node.parent())

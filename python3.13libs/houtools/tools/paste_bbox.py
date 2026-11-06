@@ -33,6 +33,7 @@ all()（两个元组都是三分量）而非 any()——grid 的 size 是二向�
 """
 
 from houtools.core.log import get_logger
+from houtools.dev import status
 
 logger = get_logger("tools.paste_bbox")
 
@@ -192,19 +193,5 @@ def _eval_source(src):
 
 
 def _status(message, severity="important"):
-    """状态栏提示。
-
-    severity: "important" 高亮成功确认 / "warning" 预期内拒绝（未写入
-    任何东西，可纠正后重试）/ "error" 意外失败（内部映射
-    hou.severityType，调用点无须 import hou）。
-    """
-    try:
-        import hou
-        level = {
-            "important": hou.severityType.ImportantMessage,
-            "warning": hou.severityType.Warning,
-            "error": hou.severityType.Error,
-        }[severity]
-        hou.ui.setStatusMessage("HouTools: " + message, level)
-    except Exception as exc:
-        logger.debug("setStatusMessage failed: %s", exc)
+    """通知反馈（委托 dev.status → toast 通知；severity 语义不变）。"""
+    status("HouTools: " + message, severity=severity)

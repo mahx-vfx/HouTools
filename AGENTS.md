@@ -58,6 +58,7 @@ root/
 | 缩略图裁剪 | `houtools/recipelib/crop.py` | ThumbCropDialog 头像式框选（选框锁缩略图区比例 1:0.66），确认返回原图分辨率 QPixmap；静态图先弹裁剪再按**源图格式**存（`metadata.thumb_format_for_source`，换格式旧文件 `_clean_stale_thumbs` 清理）、GIF 跳过裁剪原样复制；**QPen 静默不可见坑/像素断言/裸 python 编解码插件坑 → `dev-notes/thumb-crop.md`（改前必读）** |
 | 截取缩略图（屏幕框选，多显示器） | `houtools/recipelib/capture.py` + browser `_snip_thumb` 系 | 多屏 SnipOverlay 会话（每屏一块遮罩铺冻结抓屏）：共享选框存**虚拟桌面坐标**、跨屏必须用 `globalPosition()`（Qt 隐式抓取下本地坐标不可信）、确认按屏 DPR 换算回物理像素（跨屏重采样拼合）；交互对齐 ThumbCropDialog + ✓/✗ 按钮条（Enter/Esc 同语义）；收尾先压 `_need_reload` 再 show、先落库再刷 UI；确认存 JPEG q90（用户指定）。**全表 → `dev-notes/thumb-snip.md`（改前必读）** |
 | 对话框按钮中文化 | `houtools/ui/dialogs.py` | `localize_buttons(dialog)` 把 QDialogButtonBox 标准按钮改中文（确认/取消/关闭）；`warn()` 是中文化版 QMessageBox.warning。Qt 按钮文字跟平台主题走（英文系统出英文按钮），必须实例化对话框调用（QInputDialog.getText / QMessageBox.question 等静态便利函数拿不到内部按钮）；QColorDialog 还要 `DontUseNativeDialog` 选项，加自定义按钮走 `findChild(QDialogButtonBox).addButton(widget, ActionRole)`（QColorDialog 没有 addButton API）；**H21（PySide6 6.5）包装类型粘连**：字体 enforcer ChildAdded 触碰过的对话框控件先被包成 QWidget、`button()` 此后只返回旧包装（无 setText）——取派生 API 前必须 `dialogs._rewrap` 按 C++ 指针重包（H22 6.8 正确解析派生类型不触发） |
+| Toast 通知 | `houtools/ui/notify.py` + `dev/__init__.py`（status 委托）+ `icons/toast_*.svg` | 全仓状态反馈统一出口：`notify.success/info/warning/error/show(message, level, duration)`（duration=总时长 ms，None 按等级：2s，error 4s；渐透恒定最后 1s）。**结构定稿（2026-11 用户逐项拍板）**：顶层 Tool 无边框窗挂 mainWindow（不进任务栏/不抢焦点/随主窗隐藏）、底色 paintEvent 手绘（半透明顶层窗 QSS background 不渲染）、渐透走 windowOpacity（QGraphicsOpacityEffect 撞 QSS 不可靠）、**渐透期间槽位保留、真正消失后才补位**（早补位=被上方 toast 盖住「瞬间消失」，实测数据）、上限 4 条（**只数存活——对渐透中 toast 强收是 no-op，老 while 写法会死循环卡死主线程，实测**）、hover 暂停/点击关闭、无头降级 logger、非主线程经 hdefereval 派发、全程兜底不打断宿主操作、**原生状态栏不是通知通道（初版镜像致双通道，已按用户拍板移除）**；**Houdini Qt 不渲染 COLR 彩色 emoji（只出单色轮廓）→ 徽标走 SVG**；toast 不进 window_manager（自灭）。**dev.status 签名不变按调用 import_module 委托**（dev 永不重载 vs notify 会重载，持引用拿旧类；映射表只活在 notify.show_legacy；notify 不可用退回原生状态栏，dev/__init__ 改动需重启）。坑表 → `dev-notes/notify.md`（改前必读） |
 | 任务栏常驻 | `houtools/ui/taskbar.py` | `apply_appwindow_flags(window)`：Win32 `WS_EX_APPWINDOW`（Get+OR，保留原扩展样式位），失败走 debug 日志；独立工具窗口（videoseq / Hdr Library）构造时调用 |
 | 项目路径 | `houtools/core/constants.py` | `PROJECT_ROOT = Path(__file__).parents[3]`，不依赖 cwd；**`SETTINGS_DIR` 解析链 `_resolve_settings_dir()`：`HOUTOOLS_SETTINGS_DIR` env（须绝对、无 `$` 字面量——`$` 说明包清单展开失败）→ `HOUDINI_USER_PREF_DIR/../HouTools/settings`（normpath 折叠版本目录，H21/H22 共享；与 Houdini 自身配置同根）→ `PROJECT_ROOT/settings`（纯 python 无头兜底，冒烟测试自己设 env 到不了这层）**；`settings_env_override()` 供设置窗口判定覆盖态；**共享盘部署配置必须走 env/默认配置目录，严禁回落插件根**（多用户互踩） |
 | 日志 | `houtools/core/log.py` | `get_logger("tools.xxx")`；handler 全局只配置一次，重载安全 |
@@ -82,7 +83,7 @@ root/
 - **线程**：QThread + Signal；任何回改 Houdini 的调用经 `hdefereval.executeDeferred` 派发主线程（参考 `execution_engine._run_deferred`）。
 - **Automation 的同步等待是有意设计，勿"修复"**：引擎对主线程调用做**无超时**阻塞等待（`execution_engine._run_deferred` 的 `ready.wait()`）。本工具本质是逐个触发 Houdini 按钮，顺序执行的唯一保证是"上一任务的主线程调用返回后再派发下一个"——主线程被解算/缓存阻塞多久就等多久（数小时是正常值），加超时会在任务实际完成前放行下一任务、破坏顺序语义；模态对话框等阻塞在本语义下同样属于"当前任务未完成，继续等"。取消是协作式，仅在任务边界生效、在途任务不可打断；因此 UI（`window._cancel_execution`）**不立即复位**：按钮保持「停止中…」并禁用，直到引擎真正发出 `all_completed` 才回空闲——否则留下"假取消"窗口，期间二次 Start 会被旧引擎迟到的 `all_completed` 打翻新引擎状态。运行中引擎由 `window._LIVE_ENGINES` 模块级留引用（引擎无 parent），防 GC 销毁运行中的 QThread。已知会弹阻塞对话框的按钮逐案消除弹框根源（`dl_Submit` 点击前强制存盘），不改等待机制。
 - **菜单结构改动**（增删菜单项）需重启 Houdini——H22 硬约束；顶栏菜单与节点右键菜单 OPmenu 实测均如此（2026-10：menurefresh 刷不出 OPmenu 改动，旧说法"menurefresh 覆盖 OPmenu/PARMmenu 等右键菜单"对 OPmenu 不成立，PARMmenu 未复验）；右键菜单条目背后的工具代码仍走 Reload 热加载。
-- **reload 语义**：`houtools/dev` 自身永不重载（改 dev 框架需重启）；重载前自动 close 所有登记窗口；状态反馈走 `hou.ui.setStatusMessage`（`houtools.dev.status`）。
+- **reload 语义**：`houtools/dev` 自身永不重载（改 dev 框架需重启）；重载前自动 close 所有登记窗口；状态反馈走 toast 通知（`houtools.ui.notify`，`houtools.dev.status` 按调用委托、无头降级 logger）。
 - **多版本单一源码**：`python3.13libs` 是唯一真身；`python3.11libs`（H21/py3.11 入口壳，随发行包分发）只含 uiready 转发与 `houtools/__init__.py` 的 `__path__` 扩展。Houdini 只加载/执行自己版本对应的 pythonX.Ylibs（两版互不可见对方目录，各跑一份 uiready 不双跑）；版本差异（如 H21 缺 `RecipeCategory.data`）一律在真身里用能力探测（`getattr(..., None)`）消化，**禁止往壳目录复制业务代码**（会漂移成第二份维护）。
 - **二进制不入库**：`*.exe` 已被 .gitignore 排除。
 - **提交**：git 仓库在 gitcode（`mahx-vfx/HouTools`，SSH 远程），main 分支；无构建步骤，纯 Python 即发布。
@@ -108,8 +109,8 @@ root/
 ## Commands
 
 ```
-# 无头回归测试（不需要打开 Houdini；解释器路径按实际安装盘，测试脚本自带 C:/D: 探测）
-"D:\Program Files\Side Effects Software\Houdini 22.0.429\python313\python.exe" tests\smoke_test.py
+# 无头回归测试（不需要打开 Houdini；解释器路径按实际安装盘，测试脚本自带 C:/D: 探测；2026-11 实测装在 C:）
+"C:\Program Files\Side Effects Software\Houdini 22.0.429\python313\python.exe" tests\smoke_test.py
 
 # 提交推送
 git add -A && git commit -m "..." && git push

@@ -36,6 +36,7 @@ import shutil
 import threading
 
 from houtools.core.log import get_logger
+from houtools.dev import status
 
 log = get_logger("tools.capture_viewport_embed")
 
@@ -531,21 +532,15 @@ def run(kwargs=None):
         _ensure_watch(node)
     except RuntimeError as exc:
         log.warning("%s", exc)
-        hou.ui.setStatusMessage(
-            "HouTools: {}".format(exc), severity=hou.severityType.Error)
+        status("HouTools: {}".format(exc), error=True)
         return
     except Exception:
         log.exception("capture_viewport_embed crashed")
-        hou.ui.setStatusMessage(
-            "HouTools: 视窗截图失败（详见日志）",
-            severity=hou.severityType.Error)
+        status("HouTools: 视窗截图失败（详见日志）", error=True)
         return
     if persisted:
-        hou.ui.setStatusMessage(
-            "HouTools: 视窗截图已嵌入 {}（{}x{}，{}）".format(
-                node.path(), pix_w, pix_h, hip_capture_path(filename)),
-            severity=hou.severityType.ImportantMessage)
+        status("HouTools: 视窗截图已嵌入 {}（{}x{}，{}）".format(
+            node.path(), pix_w, pix_h, hip_capture_path(filename)))
     else:
-        hou.ui.setStatusMessage(
-            "HouTools: 截图已落盘但背景图写入失败（网络不可写？）: {}".format(
-                file_abs), severity=hou.severityType.Warning)
+        status("HouTools: 截图已落盘但背景图写入失败（网络不可写？）: {}".format(
+            file_abs), severity="warning")

@@ -34,6 +34,7 @@ Transform、内部类型名统一是 xform，t/p 均为三分量元组（H22.0.4
 """
 
 from houtools.core.log import get_logger
+from houtools.dev import status
 
 logger = get_logger("tools.paste_center")
 
@@ -188,19 +189,5 @@ def _write_parms(xform, src, target, expression_mode):
 
 
 def _status(message, severity="important"):
-    """状态栏提示。
-
-    severity: "important" 高亮成功确认 / "warning" 预期内拒绝（未创建
-    任何东西）/ "error" 意外失败（内部映射 hou.severityType，调用点无须
-    import hou）。
-    """
-    try:
-        import hou
-        level = {
-            "important": hou.severityType.ImportantMessage,
-            "warning": hou.severityType.Warning,
-            "error": hou.severityType.Error,
-        }[severity]
-        hou.ui.setStatusMessage("HouTools: " + message, level)
-    except Exception as exc:
-        logger.debug("setStatusMessage failed: %s", exc)
+    """通知反馈（委托 dev.status → toast 通知；severity 语义不变）。"""
+    status("HouTools: " + message, severity=severity)

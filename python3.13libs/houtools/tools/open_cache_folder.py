@@ -8,6 +8,7 @@ scriptCode is dispatched via dev.dispatcher, landing at this module's run(kwargs
 import os
 
 from houtools.core.log import get_logger
+from houtools.dev import status
 
 log = get_logger("tools.open_cache_folder")
 
@@ -103,17 +104,14 @@ def run(kwargs=None):
     except RuntimeError as exc:
         log.warning("%s", exc)
         # 预检拒绝（工程未保存+相对路径），保存工程后重试可解 → Warning
-        hou.ui.setStatusMessage(
-            "HouTools: {}".format(exc), severity=hou.severityType.Warning
-        )
+        status("HouTools: {}".format(exc), severity="warning")
         return
     try:
         os.startfile(folder)
     except OSError as exc:
         # 目录被删/系统拒绝等：报状态栏而不是把异常抛回菜单分发器
         log.warning("startfile %s failed: %s", folder, exc)
-        hou.ui.setStatusMessage(
-            "HouTools: 打开 {} 失败（{}）".format(folder, exc),
-            severity=hou.severityType.Error)
+        status("HouTools: 打开 {} 失败（{}）".format(folder, exc),
+               severity="error")
         return
-    hou.ui.setStatusMessage("HouTools: 已打开 {}".format(folder))
+    status("HouTools: 已打开 {}".format(folder))
