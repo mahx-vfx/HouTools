@@ -36,6 +36,9 @@ notify.clear()                            # 立即收掉全部（各自渐透）
   `#80601E` / error `#d1283e`）+ 白字 9pt + SVG 徽标（亮色圆牌/三角）
 - 行为：hover 暂停倒计时（离开按剩余时间继续，至少再给 800ms）、点击
   立即渐透、`WA_ShowWithoutActivating` 不抢焦点
+- 动画：入场自下 8px 上滑（**无淡入**，用户拍板——全透明度出现）+
+  补位下滑 170ms OutCubic；两者共用一条可重定向 pos 动画通道，
+  `_target_y` 记账保证连发打断不丢余量（坑表 #14）
 - **原生状态栏不是通知通道**（2026-11 拍板：toast 与状态栏文本不得同时
   出现——初版的镜像导致双通道，已删）；statusbar 只剩 dev 的 notify
   不可用兜底
@@ -57,6 +60,7 @@ notify.clear()                            # 立即收掉全部（各自渐透）
 | 11 | **dev.status 委托的引用陷阱**——dev 永不重载而 notify 会被重载，模块级 import 会持旧类引用（Anti-Pattern 条款） | `status()` 内**按调用** `import_module` 取最新模块对象；notify 模块本身不可用（导入失败）时退回原生状态栏（旧实现行为，内联在 dev/__init__.py 兜底分支）。**工具侧绕过陷阱**：首版只委托了走 dev.status 的调用点，工具各自的 `_status` 包装/散点直调全在旁路（12 处，重启也不生效）——已收口，见上方「收口记录」 |
 | 12 | **字体**——toast 不在工具窗口子树内，字体 enforcer 的 ChildAdded 兜底够不到 | 构造时显式 `fonts.apply(self)`（换族保字号）；正文 9pt 在 apply **之后**用 QFont 覆写（不走 QSS font-size，避免 QSS/QFont 相互覆盖的顺序不确定性） |
 | 13 | **同屏上限死循环卡死主线程**——`while len(_ACTIVE) >= MAX_VISIBLE: _ACTIVE[0]._fadeout()` 撞上栈底已在渐透（`_fadeout` 对 `_closing` 是 no-op，槽位保留期它还在列表里）永不推进；连发"剪贴板文本失效"提示实测 Houdini 卡死 | 上限只数**存活**（未 `_closing`）的 toast：`_toast_cap_victims()` 返回强收名单（确定性列表收缩，无死循环可能）；smoke test 固化 victim 语义 |
+| 14 | **补位动画连发丢余量**——pos 动画被打断时若从"当前位置 + delta"重飞，上次没飞完的余量被吞掉，连发几次整摞悄悄上漂 | 每 toast 记**逻辑目标位 `_target_y`**：新补位先把账加上，动画停旧起新、从当前插值位置飞向记账终点（无缝续飞）；入场与补位共用同一条 pos 动画通道（`_pos_anim`）；reload 过渡期旧实例无 `_shift_down` 方法 → `getattr` 探测退瞬移，1-3s 自愈 |
 
 ## 收口记录（2026-11）
 

@@ -10,6 +10,8 @@
   补位若在渐透开始时做，上方 toast 会恰好压住正在渐透的 toast，看起来
   像"瞬间消失"（实测：不透明 toast y=1003 盖住 65% 透明的 y=1004）
 - 时长：保持 1s（error 3s）+ 渐透固定 1s；hover 暂停倒计时、点击立即渐透
+- 动画：入场自下 8px 上滑（无淡入，用户拍板）+ 补位下滑 170ms OutCubic，
+  走可重定向的 pos 动画（`_target_y` 记账，连发打断不丢余量）
 - 同屏上限 4 条；宽 min 220；文字左对齐（尾随 addStretch 收多余宽度）
 - 徽标 SVG 在 icons/toast_*.svg 走 ui.icons.svg_icon 缓存，失败回退文字
   glyph；字体走 ui.fonts.apply()（Houdini Qt 不渲染 COLR 彩色 emoji，
@@ -38,6 +40,11 @@ HOLD_MS = {"info": 1000, "success": 1000, "warning": 1000, "error": 3000}
 FADE_MS = 1000
 MAX_VISIBLE = 4
 MIN_WIDTH = 220
+
+# ---- 动画节奏（入场无淡入只上滑，用户拍板；补位可重定向）
+_ENTER_MS = 130        # 入场上滑时长
+_ENTER_SLIDE_PX = 8    # 入场上滑距离
+_SHIFT_MS = 170        # 补位下滑时长
 
 COLORS = {
     "success": "#285C43",
@@ -225,14 +232,19 @@ class _Toast(QtWidgets.QFrame):
         self.setFixedHeight(self.height())
 
         self._closing = False
+        self._target_y = None      # 逻辑目标位：位移账本（连发重定向不丢余量）
+        self._pos_anim = None      # 在飞的 pos 动画（入场/补位共用一条通道）
 
         # 同屏上限（见 _toast_cap_victims：渐透中的不参与强收）
         for t in _toast_cap_victims():
             t._fadeout()
         _ACTIVE.append(self)
         self._place()
+        # 入场：自下 8px 上滑（无淡入）；show 前先挪到起点，避免闪跳
+        self.move(self.x(), self.y() + _ENTER_SLIDE_PX)
         self.show()
         self.raise_()
+        self._slide_to(self._target_y, _ENTER_MS)
 
         self._timer = QtCore.QTimer(self)
         self._timer.setSingleShot(True)
@@ -248,12 +260,35 @@ class _Toast(QtWidgets.QFrame):
         # 右/下各收 1px：抗锯齿边不贴窗口边界被裁
         p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 3, 3)
 
-    # ---- 布局：左下角第一条贴状态栏，向上堆叠（顶层窗用全局坐标）
+    # ---- 布局：左下角第一条贴状态栏，向上堆叠（顶层窗用全局坐标）；
+    #      终点记入 _target_y（入场动画的落点、后续补位的记账基准）
     def _place(self):
         y = _main_window().height()
         for t in _ACTIVE:
             y -= t.height() + 6
-        self.move(_main_window().mapToGlobal(QtCore.QPoint(0, y + 6)))
+        self._target_y = y + 6
+        self.move(_main_window().mapToGlobal(QtCore.QPoint(0, self._target_y)))
+
+    # ---- 位移通道：入场与补位共用，可重定向。逻辑目标位先记账、动画
+    #      停旧起新从当前插值位置续飞——连发打断不丢余量（坑表 #14）
+    def _slide_to(self, end_y, duration):
+        self._target_y = end_y
+        if self._pos_anim is not None:
+            self._pos_anim.stop()
+        anim = QtCore.QPropertyAnimation(self, b"pos", self)
+        anim.setDuration(duration)
+        anim.setStartValue(self.pos())
+        anim.setEndValue(QtCore.QPoint(self.x(), end_y))
+        anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
+        anim.start()
+        self._pos_anim = anim
+
+    def _shift_down(self, delta):
+        """补位：逻辑目标位下移 delta 并平滑续飞。"""
+        if self._target_y is None:    # 无账本（理论不可达）：退瞬移
+            self.move(self.x(), self.y() + delta)
+            return
+        self._slide_to(self._target_y + delta, _SHIFT_MS)
 
     # ---- 渐透：原地淡出，不动槽位、不补位（补位在 _gone）
     def _fadeout(self):
@@ -268,14 +303,18 @@ class _Toast(QtWidgets.QFrame):
         anim.finished.connect(self._gone)
         anim.start()
 
-    # ---- 收尾：真正消失后才从登记表摘除并让上方下滑补位
+    # ---- 收尾：真正消失后才从登记表摘除，上方平滑下滑补位
     def _gone(self):
         if self in _ACTIVE:
             i, h = _ACTIVE.index(self), self.height()
             _ACTIVE.remove(self)
             for t in _ACTIVE[i:]:
-                t.move(t.x(), t.y() + h + 6)
-                t.raise_()    # move 可能压 z 序，补回来
+                t.raise_()    # 动画期间保持在顶（move/pos 动画可能压 z 序）
+                shift = getattr(t, "_shift_down", None)
+                if shift is not None:
+                    shift(h + 6)
+                else:         # reload 过渡期的旧实例无此方法：退瞬移，1-3s 自愈
+                    t.move(t.x(), t.y() + h + 6)
         self.deleteLater()
 
     # ---- hover 暂停倒计时（渐透开始后不再响应）；点击立即进入渐透
