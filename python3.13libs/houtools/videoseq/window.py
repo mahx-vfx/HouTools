@@ -1733,7 +1733,7 @@ class _VideoToSequenceWindow(QDialog):
                 self, "错误",
                 "未找到 ffmpeg。\n"
                 "可把 ffmpeg.exe 放到 HouTools 配置目录（HOUTOOLS_FFMPEG "
-                "指向处，默认 Documents/HouTools/settings）或加入系统 PATH；\n"
+                "指向处，默认 Documents/HouTools）或加入系统 PATH；\n"
                 "Houdini 自带的 $HFS/bin/hffmpeg 通常也可用。",
             )
             return

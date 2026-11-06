@@ -102,7 +102,8 @@ Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_paste_as_object_mer
 
 ffmpeg 说明：优先使用 Houdini 自带的 `$HFS/bin/hffmpeg`，**无需单独安装**；如需指定版本，
 把 `ffmpeg.exe` 放到 HouTools 配置目录即可优先使用（包清单 `HouTools.json` 里
-`HOUTOOLS_FFMPEG` 变量的默认位置，与 `HOUTOOLS_SETTINGS_DIR` 同根；值也可改成
+`HOUTOOLS_FFMPEG` 变量的默认位置，`$HOUDINI_USER_PREF_DIR/../HouTools`，即设置目录
+的上级；值也可改成
 ffmpeg.exe 完整路径或其他目录）。ffprobe 无需单独配置：视频信息探测优先借用
 ffmpeg 同目录配套的 ffprobe，缺失时自动回退 PATH / Houdini 自带的 `hffprobe`。
 

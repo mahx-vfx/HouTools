@@ -2,7 +2,8 @@
 
 查找优先级（2026-11 改版）：
 1. ``HOUTOOLS_FFMPEG`` env —— 包清单 HouTools.json 提供默认值（指向
-   HouTools 配置目录，与 HOUTOOLS_SETTINGS_DIR 同根），把 ffmpeg.exe /
+   HouTools 配置目录根 ``$HOUDINI_USER_PREF_DIR/../HouTools``，即
+   HOUTOOLS_SETTINGS_DIR 的上级），把 ffmpeg.exe /
    ffprobe.exe 放进该目录即生效；值也可以直接写成 ffmpeg 完整路径或
    其他目录。指向不存在时视为未配置、静默落下一级（默认值常驻，"设了
    没放文件"是多数用户的常态，不告警）。

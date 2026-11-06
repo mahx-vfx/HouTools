@@ -4,6 +4,6 @@
     [
         {"HOUDINI_PATH" : "$HOUDINI_PACKAGE_PATH/HouTools"},
         {"HOUTOOLS_SETTINGS_DIR" : "$HOUDINI_USER_PREF_DIR/../HouTools/settings"},
-        {"HOUTOOLS_FFMPEG" : "$HOUDINI_USER_PREF_DIR/../HouTools/settings"}
+        {"HOUTOOLS_FFMPEG" : "$HOUDINI_USER_PREF_DIR/../HouTools"}
     ]
 }
