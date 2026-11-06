@@ -40,6 +40,7 @@ import os
 import shutil
 import threading
 import zipfile
+import zlib
 from datetime import datetime
 from pathlib import Path
 
@@ -142,6 +143,13 @@ def _extract_member(zf, info, dst, budget=None):
             shutil.copyfileobj(src, out, 1024 * 1024)
         _assert_image_dimensions(tmp)
         os.replace(tmp, dst)
+    except (zipfile.BadZipFile, zlib.error) as exc:
+        # 中央目录能读、成员数据损坏——典型是下载/传输截断的分享包。
+        # BadZipFile/zlib.error 都不是 OSError 子类，不收进 TransferError
+        # 会逃出调用侧 (TransferError, OSError) 的捕获，用户看不到
+        # "导入失败"只留控制台 traceback（本模块契约见 _read_manifest）
+        raise TransferError("包内成员损坏（包可能传输不完整）: {} ({})"
+                            .format(info.filename, exc))
     finally:
         if os.path.exists(tmp):
             try:
@@ -347,6 +355,8 @@ def _read_manifest(zf):
         raw = zf.read(MANIFEST)
     except KeyError:
         raise TransferError("不是本工具导出的包（缺少 manifest.json）")
+    except (zipfile.BadZipFile, zlib.error) as exc:
+        raise TransferError("manifest.json 数据损坏: {}".format(exc))
     try:
         m = json.loads(raw)
     except (ValueError, RecursionError) as exc:
@@ -370,6 +380,8 @@ def _read_packaged_metadata(zf):
         raw = zf.read(METADATA)
     except KeyError:
         raise TransferError("包缺少 recipelib.json，可能已损坏")
+    except (zipfile.BadZipFile, zlib.error) as exc:
+        raise TransferError("recipelib.json 数据损坏: {}".format(exc))
     try:
         data = json.loads(raw)
     except (ValueError, RecursionError) as exc:
@@ -490,6 +502,9 @@ def inspect_package(zip_path, existing_names=()):
         members = {i.filename for i in zf.infolist() if not i.is_dir()}
         hda_import, hda_skip = _hda_plan(manifest, members, existing)
         thumb_plan = _thumb_plan(meta, members)   # 非法缩略图在确认对话框处即被拒
+        # 包内代码路径同批校验（docstring 承诺"非法包在确认对话框处即被
+        # 拒"——不跑这条会推迟到导入中途才报错，用户已确认过一次）
+        _code_file_plan(members)
     names = [str(n) for n in manifest.get("recipes") or []]
     try:
         size = os.path.getsize(zip_path)
@@ -634,6 +649,16 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
             doc_map = _doc_target_map(doc_dirs, manifest)
             docs_root = Path(metadata.DOCS_DIR)
             root_abs = os.path.realpath(str(docs_root)) + os.sep
+            # 包内成员按文档目录分桶一次：逐目录全量扫描 members 是
+            # O(目录数×成员数)（成员上限 10000），全程主线程，目录一多
+            # 进度框两次 setValue 之间都会卡顿
+            doc_members = {}
+            for arc in members:
+                if not arc.startswith(_DOC_ARC_DIR):
+                    continue
+                safe, sep, _rest = arc[len(_DOC_ARC_DIR):].partition("/")
+                if sep:   # 只收目录下的文件（"docs/safe" 无斜杠形态无主）
+                    doc_members.setdefault(safe, []).append(arc)
             for safe in doc_dirs:
                 if _report(progress, done, total, "导入文档 {}".format(safe)):
                     raise TransferCancelled()
@@ -648,15 +673,14 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
                 shutil.rmtree(str(incoming), ignore_errors=True)
                 incoming.mkdir(parents=True)
                 try:
-                    for arc in members:
-                        if arc.startswith(prefix):
-                            rel = arc[len(prefix):]
-                            if not _doc_member_ok(rel):
-                                log.warning("import: skip non-media doc "
-                                            "member %s", arc)
-                                continue
-                            member_dst = incoming / _safe_rel(rel)
-                            _extract_member(zf, members[arc], member_dst, budget)
+                    for arc in doc_members.get(safe, ()):
+                        rel = arc[len(prefix):]
+                        if not _doc_member_ok(rel):
+                            log.warning("import: skip non-media doc "
+                                        "member %s", arc)
+                            continue
+                        member_dst = incoming / _safe_rel(rel)
+                        _extract_member(zf, members[arc], member_dst, budget)
                 except Exception:
                     shutil.rmtree(str(incoming), ignore_errors=True)
                     raise

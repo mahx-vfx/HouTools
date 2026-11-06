@@ -152,11 +152,13 @@ class _CropCanvas(QtWidgets.QWidget):
                                  self._disp.height() - s.height())))
             self._sel = s
         elif self._mode == "new":
-            # 以按下点为角，宽随横向拖动、方向随象限
+            # 以按下点为角，方向随象限；宽取两轴中更大的需求（拖横/拖竖
+            # 都有反馈，纵向拖拽不再被钳到最小框——capture 改进后同款口径）
             sign_x = 1 if pos.x() >= self._press.x() else -1
             sign_y = 1 if pos.y() >= self._press.y() else -1
-            self._sel = self._fit_ratio_rect(
-                self._press, abs(pos.x() - self._press.x()), sign_x, sign_y)
+            w = max(abs(pos.x() - self._press.x()),
+                    int(abs(pos.y() - self._press.y()) * self._ratio))
+            self._sel = self._fit_ratio_rect(self._press, w, sign_x, sign_y)
         elif self._mode == "resize":
             # sign = 框相对锚点的方向：tl 角的框在锚（右下）的左上方
             anchor = self._anchor_point()

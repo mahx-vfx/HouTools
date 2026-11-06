@@ -118,8 +118,16 @@ def find_ffprobe(ffmpeg_path: str) -> Optional[str]:
 
 
 def get_startup_kwargs() -> dict:
-    """Windows 下隐藏 ffmpeg 子进程的控制台窗口。"""
-    kwargs = {}
+    """ffmpeg/ffprobe 子进程的统一启动参数。
+
+    - Windows 隐藏控制台窗口（CREATE_NO_WINDOW）。
+    - stdin 接 DEVNULL：ffmpeg 默认开 stdin 交互命令线程，从终端/控制台
+      启动 Houdini 时子进程继承其 stdin，转换进行中控制台出现 `q`（误触/
+      粘贴/其他程序输出残留）会立即杀掉转码，returncode≠0 还会被当成
+      "视频损坏"误报；官方文档明确脚本场景应加 -nostdin，stdin=DEVNULL
+      对所有调用点（含 ffprobe，不读 stdin 无副作用）一处收口。
+    """
+    kwargs = {"stdin": subprocess.DEVNULL}
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     return kwargs

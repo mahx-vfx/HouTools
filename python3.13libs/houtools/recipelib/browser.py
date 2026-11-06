@@ -489,13 +489,21 @@ class _ClickableImage(QtWidgets.QLabel):
 
 
 class _PreviewImageLabel(_ClickableImage):
-    """预览缩略图标签：宽度随面板拉伸（高度固定），尺寸变化发信号
-    让窗口按新宽度重渲染预览图。"""
+    """预览缩略图标签：宽度随面板拉伸（高度固定），尺寸变化防抖后发信号
+    让窗口按新宽度重渲染预览图（分割条拖动是连续 resize 事件流，每事件
+    全量重采样/同步解码一帧 GIF 纯浪费且可感知卡顿——只渲染最后一帧）。"""
 
     resized = QtCore.Signal()
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._resize_timer = QtCore.QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(80)
+        self._resize_timer.timeout.connect(self.resized.emit)
+
     def resizeEvent(self, event):
-        self.resized.emit()
+        self._resize_timer.start()   # 连续 resize 停止后才渲染一次
         super().resizeEvent(event)
 
 
@@ -1034,6 +1042,10 @@ class _ImportConfirmDialog(QtWidgets.QDialog):
         self.setMinimumWidth(540)
 
         text = QtWidgets.QLabel(summary_text)
+        # 包内 .hda 成员名等原样拼进摘要（不可信输入）：QLabel 默认
+        # AutoText，"<img ..." 之类标记会被当富文本解释——与文本类
+        # QLabel 一律钉 PlainText 的既有约定对齐
+        text.setTextFormat(QtCore.Qt.PlainText)
         text.setWordWrap(True)
 
         lay = QtWidgets.QVBoxLayout(self)
@@ -1205,6 +1217,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self._preview_info = None
         self._drag_state = None     # 拖拽中: {name, ghost}
         self._snip_overlay = None   # 截取缩略图的多屏遮罩会话（非 None 即截取中）
+        self._snip_pending = False  # singleShot 延时窗口的占位（真会话 _snip_begin 才建）
         self._placeholder = self._placeholder_icon()
         self._badge = FavoriteBadge()   # 收藏角标（共享组件，见 ui.badge；
                                         # delegate 画在卡片右上角，非合成进图标）
@@ -1620,8 +1633,12 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self._info_by_name.update(code_by_name)
         self._rebuild_sidebar()
         if self._recipes or self._code_infos:
+            # 与侧栏行计数/网格 total 同一口径：按显示开关过滤（代码块
+            # 开关关闭时状态栏总数不能把它原样计入）
             visible = sum(1 for r in self._recipes if self._type_visible(r))
-            note = "，共 {} 个".format(visible + len(self._code_infos))
+            visible += sum(1 for c in self._code_infos
+                           if self._type_visible(c))
+            note = "，共 {} 个".format(visible)
         else:
             note = "；请先在「设置 ▸ 库目录」配置库文件夹"
         self._apply_filter(note=note)
@@ -2166,7 +2183,12 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             # 焦点只显示节点名末段（"Sop/attribwrangle" → "attribwrangle"）
             lines.append("焦点: " + ", ".join(
                 p.rsplit("/", 1)[-1] for p in info.patterns))
-        return "\n".join(lines)
+        # 整段富文本信封：tooltip 按 Qt 的 mightBeRichText 启发式渲染，
+        # 共享库的备注/名称里出现 "<img ..." 之类标记就会被当 HTML 解释
+        # （可把本地文件读进 UI、伪造排版）——全部字段过 html.escape 后
+        # 包进 white-space:pre，所见即原文（与 _show_tags 同一防线）
+        return "<span style='white-space:pre'>{}</span>".format(
+            html.escape("\n".join(lines)))
 
     # ---------------- 图标与预览 ----------------
 
@@ -2426,10 +2448,12 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             movie.setCacheMode(QtGui.QMovie.CacheAll)
             movie.jumpToFrame(0)
             self._preview_pm = movie.currentPixmap()   # 原始尺寸首帧
+            # 与大图查看器同一手法：不 setMovie、不依赖 setScaledSize
+            # （GIF 解码器不支持 QImageReader 缩放，帧按原始尺寸交付
+            # ），frameChanged 时按当前预览框手动缩放交付帧
+            movie.frameChanged.connect(self._show_preview_movie_frame)
             if not self._preview_pm.isNull():
-                movie.setScaledSize(self._preview_pm.size().scaled(
-                    self._preview_box(), QtCore.Qt.KeepAspectRatio))
-            self.preview_label.setMovie(movie)
+                self._show_preview_movie_frame()
             movie.start()
             self._preview_movie = movie
         elif thumb:
@@ -2463,6 +2487,23 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         return QtCore.QSize(max(1, self.preview_label.width() - 8),
                             self.PREVIEW_H - 8)
 
+    def _show_preview_movie_frame(self):
+        """预览 GIF 的当前帧按预览框手动缩放后显示（与大图查看器的
+        _show_movie_frame 同一手法，对"setScaledSize 是否有效"两种现实
+        都正确）。"""
+        movie = self._preview_movie
+        if movie is None:
+            return
+        pm = movie.currentPixmap()
+        if pm.isNull():
+            return
+        box = self._preview_box()
+        fitted = pm.size().scaled(box, QtCore.Qt.KeepAspectRatio)
+        if pm.width() != fitted.width() or pm.height() != fitted.height():
+            pm = pm.scaled(fitted, QtCore.Qt.KeepAspectRatio,
+                           QtCore.Qt.SmoothTransformation)
+        self.preview_label.setPixmap(pm)
+
     def _refresh_preview_image(self):
         """预览标签宽度变化（面板拉伸）后按新宽度重渲染当前预览图。"""
         if self._preview_info is None:
@@ -2472,13 +2513,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             return
         if thumb.lower().endswith(".gif"):
             movie = self._preview_movie
-            if movie is not None and self._preview_pm is not None \
-                    and not self._preview_pm.isNull():
-                # 从原始首帧的尺寸重算目标框（setScaledSize 后的
-                # currentPixmap 已是缩放帧，不能作缩放源）
-                movie.setScaledSize(self._preview_pm.size().scaled(
-                    self._preview_box(), QtCore.Qt.KeepAspectRatio))
-                # 强制按新尺寸立即重投当前帧（不等下一帧播放）
+            if movie is not None:
+                # 帧经 _show_preview_movie_frame 按当前预览框手动缩放：
+                # 强制重投当前帧即按新宽度重渲染（不等下一帧播放）
                 movie.jumpToFrame(max(0, movie.currentFrameNumber()))
         elif self._preview_pm is not None and not self._preview_pm.isNull():
             self.preview_label.setPixmap(self._preview_pm.scaled(
@@ -2837,16 +2874,20 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self._code_drag_active = False
             QtWidgets.QApplication.instance().removeEventFilter(self)
         drag.deleteLater()
+        pane = store.network_editor_under_cursor()
         # 拖拽落网后紧跟的平台级 DblClick 会再跑一次 _apply_recipe（闪烁
         # 中途二次高亮 + 选中节点被误追加），与 _finish_drag 同款：先盖
-        # 去重时间戳，让紧跟的第二发被 _apply_gated 吞掉
-        self._last_apply = (info.name, time.monotonic())
+        # 去重时间戳，让紧跟的第二发被 _apply_gated 吞掉。中途取消（落点
+        # 无效且不在任何网络编辑器上）没有落网、没有尾巴——盖了闸反而把
+        # 随后 1.2s 内的正常双击吞掉且不刷时间戳
+        if self._code_drag_vetoed or result != QtCore.Qt.IgnoreAction \
+                or pane is not None:
+            self._last_apply = (info.name, time.monotonic())
         if self._code_drag_vetoed:
             return   # Drop 已被吞掉，什么都没写入，提示已在过滤器里给出
         if result != QtCore.Qt.IgnoreAction:
             self._refresh_dropped_editor_display(language=info.language)
             return
-        pane = store.network_editor_under_cursor()
         if pane is None:
             self.status.setText("已取消拖拽")
             return
@@ -3631,8 +3672,12 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         压掉（本次隐藏由截图引发，恢复时不做全量 reload，同 _toggle_pin
         的豁免手法）。异步序列经 singleShot 续上，info 走闭包携带。
         """
-        if self._snip_overlay is not None:
+        # 占位须在排 singleShot 前置位：_snip_overlay 要等 HIDE_DELAY_MS
+        # 后 _snip_begin 才被赋值，只查它挡不住 200ms 窗口内的重入——
+        # 连点两次会建两个 SnipOverlay，先建的失去唯一引用只能等 GC
+        if self._snip_overlay is not None or self._snip_pending:
             return
+        self._snip_pending = True
         self.hide()
         self._need_reload = False
         QtCore.QTimer.singleShot(HIDE_DELAY_MS,
@@ -3661,6 +3706,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             warn(self, "截取缩略图", "抓取屏幕失败，无法截取缩略图")
             return
         self._snip_overlay = SnipOverlay(grabs)
+        self._snip_pending = False   # 已换真会话，占位退役
         self._snip_overlay.confirmed.connect(
             lambda pm: self._on_snip_confirmed(info, pm))
         self._snip_overlay.cancelled.connect(self._on_snip_cancelled)
@@ -3705,6 +3751,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
     def _teardown_snip_overlay(self):
         ov, self._snip_overlay = self._snip_overlay, None
+        self._snip_pending = False
         if ov is not None:
             try:
                 ov.close()   # 会话逐屏关闭；遮罩 WA_DeleteOnClose 自行释放

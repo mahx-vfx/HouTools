@@ -390,7 +390,10 @@ class _DocPreview(QtWidgets.QTextBrowser):
             MediaDialog.open_media(self, path)
             return
         if os.path.exists(path):
-            QtGui.QDesktopServices.openUrl(url)
+            # 打开解析后的绝对路径而非原始 url：相对链接经 QDesktopServices
+            # 会按进程 CWD 解析，等于丢弃上面 _resolve 的校验结果（校验了
+            # A 打开 B）；图片分支与上方 GIF/视频分支的口径对齐
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path))
 
 
 class _MovieLabel(QtWidgets.QLabel):
@@ -900,6 +903,13 @@ class DocInfoPopup(QtWidgets.QFrame):
         head_lay.addWidget(self._max_btn)
         head_lay.addWidget(self._close_btn)
 
+        # ⚠ 不能在构造期传 parent=self（孤儿防线改走下方 deleteLater）：
+        # 构造期挂进工具窗口子树，字体 enforcer 的 ChildAdded 过滤器会在
+        # QTextBrowser 构造期间触碰内部滚动条，其 Python 包装被提前粘成
+        # QWidget（dialogs.py 记录的包装类型粘连，H21 实测）——随后
+        # _DocPreview.__init__ 读 sb.minimum() 即 AttributeError。无 parent
+        # 构造、稍后由布局收养与既有路径一致（enforcer 触碰发生在子类
+        # 绑定完成后，不粘连）
         self._view = MarkdownMediaView(metadata.doc_dir(info.name))
         self._view.setStyleSheet(
             "color: #cccccc; background: transparent; border: none;")
@@ -907,7 +917,11 @@ class DocInfoPopup(QtWidgets.QFrame):
         if metadata.doc_exists(info.name):
             self._view.set_markdown_with_media(metadata.read_doc(info.name))
         else:
+            # 无文档：视图不进布局，就地销毁——不挂 parent 也不 deleteLater
+            # 会成为孤儿顶层窗体（popup 是 WA_DeleteOnClose，析构后只能
+            # 等 GC 回收）
             self._view.hide()
+            self._view.deleteLater()
             hint = QtWidgets.QLabel("未创建文档（右键 → 编辑文档）")
             hint.setStyleSheet(
                 "color: #9a9aa2; background: transparent; border: none;")
@@ -1127,6 +1141,11 @@ class MediaDialog(QtWidgets.QDialog):
 
     def __init__(self, parent, path):
         super().__init__(parent)
+        # ✕ 关闭即析构：dialog 有 C++ parent，Python 引用丢弃后对象会随
+        # parent 永久滞留（QMediaPlayer/QVideoWidget，GIF 还有 CacheAll
+        # 全帧缓存的 _MovieLabel）；closeEvent 已清掉单例引用，open_media
+        # 的 prev.deleteLater() 够不到它——关闭本身必须完成回收
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         self.setWindowTitle("预览 - {}".format(os.path.basename(path)))
         self.setModal(False)
         self.resize(680, 480)
@@ -1423,6 +1442,13 @@ class DocEditorDialog(QtWidgets.QDialog):
 
     def _render_preview(self):
         self.preview.set_markdown_with_media(self.editor.toPlainText())
+
+    def done(self, result):
+        # 关闭出口统一停播：QMovie 由计时器驱动、与可见性无关，窗体隐藏
+        # 后仍在逐帧解码并对隐藏 viewport 触发刷新，持续烧 CPU（主面板
+        # 预览已修过同款问题）。确认/取消/✕ 三条路都经 done()，一处收口
+        self.preview.stop_media()
+        super().done(result)
 
     def closeEvent(self, event):
         # X 关闭等同取消：有未保存修改先确认丢弃（拒绝则不关窗）

@@ -11,7 +11,7 @@ Recipe Library 与 Hdr Library 共用；两枚素材都在仓库
   渲染（高斯模糊从源 alpha 生成），画布四周留 pad 容纳溢出
 - composite(base_icon, request_size)：底图按 request_size 取像素图
   （QIcon 不放大，返回实际可用尺寸），画布取该实际尺寸——角标大小
-  随底图等比（24%，14-44px 夹档），贴缩略图右上角而非槽位角
+  随底图等比（12%，12-24px 夹档），贴缩略图右上角而非槽位角
 """
 
 from pathlib import Path

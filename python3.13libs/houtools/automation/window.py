@@ -48,6 +48,7 @@ from houtools.dev import status
 from houtools.core.log import get_logger
 from houtools.ui import dialogs
 from houtools.ui import fonts as tool_fonts
+from houtools.ui.icons import svg_icon
 from houtools.ui.networknav import (
     frame_node as _networknav_frame,
     jump_to_node as _networknav_jump,
@@ -254,14 +255,17 @@ def _jump_icon_cached():
     return _SLOT_ICON_CACHE["jump"]
 
 
-def _folder_icon_cached() -> QIcon:
-    """打开文件夹按钮图标（构建一次，复用）。"""
-    icon = _SLOT_ICON_CACHE.get("folder")
-    if icon is None:
-        icon = QIcon(str(Path(__file__).resolve().parent.parent
-                         / "icons" / "folder.svg"))
-        _SLOT_ICON_CACHE["folder"] = icon
-    return icon
+def _folder_icon_cached() -> QIcon | None:
+    """打开文件夹按钮图标（构建一次，复用）。
+
+    经 ui.icons.svg_icon（QSvgRenderer 离屏渲染，**不依赖 Qt 的 svg icon
+    插件**）：本文件 _render_jump_icon 的 docstring 已认定该插件不可靠，
+    同窗口两枚 SVG 图标必须走同一套机制——QIcon(path) 在插件缺失时无声
+    空白，svg_icon 渲染失败返回 None，调用方按 jump 图标同款回退。
+    """
+    if "folder" not in _SLOT_ICON_CACHE:
+        _SLOT_ICON_CACHE["folder"] = svg_icon("folder.svg")
+    return _SLOT_ICON_CACHE["folder"]
 
 
 def _render_jump_icon() -> QIcon | None:
@@ -1304,7 +1308,9 @@ class AutomationWindow(QWidget):
         open_folder_btn.setObjectName("flipbookOpenFolder")
         open_folder_btn.setFixedSize(22, 22)
         open_folder_btn.setToolTip("打开输出路径文件夹")
-        open_folder_btn.setIcon(_folder_icon_cached())
+        folder_icon = _folder_icon_cached()
+        if folder_icon is not None:
+            open_folder_btn.setIcon(folder_icon)
         open_folder_btn.setIconSize(QSize(18, 18))
         open_folder_btn.setStyleSheet(
             "QPushButton { border: none; padding: 0px; background: transparent; }"
@@ -2836,8 +2842,8 @@ class AutomationWindow(QWidget):
         ``RuntimeError: Internal C++ object (_SlotHandle) already deleted``。
         与 ``_remove_slot``(双 pop)同款契约。
         """
-        # 有内容先确认：清空不可逆（磁盘配置要到 Start 才被覆盖，但误点
-        # 后重填成本高）
+        # 有内容先确认：清空不可逆——自动保存改版后磁盘配置在防抖窗口
+        # （600ms）内即被覆盖，这个确认弹窗是唯一防线（误点后重填成本高）
         if self._slots_have_content() and not dialogs.question(
             self, "清空任务",
             f"当前有 {len(self._slot_widgets)} 个任务槽，确定全部清空？",

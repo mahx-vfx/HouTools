@@ -186,18 +186,19 @@ def migrate_legacy_thumb_paths():
     只改能相对化（settings 目录内）的条目；目录外的跨盘绝对路径原样保留。
     """
     thumbs = dict(_SETTINGS.get("thumbs") or {})
-    changed = False
+    migrated = 0
     for name, stored in list(thumbs.items()):
         if not stored or not os.path.isabs(stored):
             continue
         rel = _to_stored(stored)
         if not os.path.isabs(rel) and rel != stored:
             thumbs[name] = rel
-            changed = True
-    if changed:
+            migrated += 1
+    if migrated:
         _SETTINGS.set("thumbs", thumbs)
-        log.info("migrated %d thumb paths to relative", len(thumbs))
-    return changed
+        # 日志报真实迁移条数（原版打字典总长，未迁移的也被计入）
+        log.info("migrated %d thumb paths to relative", migrated)
+    return migrated > 0
 
 
 def migrate_colliding_doc_dirs():
@@ -210,6 +211,10 @@ def migrate_colliding_doc_dirs():
     推导）无需迁移，照旧可用。
     """
     moved = 0
+    # 先整批登记名册再逐个迁：直接调 unique_safe_name 会对每个未登记名
+    # 各做一次全文件原子写（存量配置升级后首次 reload，数百名字 = 数百
+    # 次 tmp+replace 串行落盘）——register_names 整批一次落盘
+    register_names(sorted(_iter_metadata_names()))
     for name in sorted(_iter_metadata_names()):
         unique = unique_safe_name(name)
         plain = safe_name(name)
@@ -859,5 +864,10 @@ def delete_doc_dir(name):
             return
     d = doc_dir(name)
     if os.path.isdir(d):
-        shutil.rmtree(d, ignore_errors=True)
+        try:
+            shutil.rmtree(d)
+        except OSError as exc:
+            # 杀软/同步盘占用等删除失败留痕：ignore_errors=True 会连
+            # OSError 都不发，孤儿目录与"已无文档"登记状态悄悄分叉
+            log.warning("cannot remove doc dir %s: %s", d, exc)
     unregister_doc_name(name)

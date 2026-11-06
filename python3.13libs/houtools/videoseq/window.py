@@ -603,8 +603,14 @@ class _ProbeWorker(QThread):
             if stream.get("codec_type") != "video":
                 continue
 
-            info.width = int(stream.get("width", 0))
-            info.height = int(stream.get("height", 0))
+            # width/height 遇异常元数据（损坏容器的非数值）可能 ValueError：
+            # 与下方 fps 同款兜底，别让整条探测链打成"分析失败"
+            try:
+                info.width = int(stream.get("width", 0))
+                info.height = int(stream.get("height", 0))
+            except (ValueError, TypeError) as e:
+                logger.debug("分辨率解析失败 %r/%r: %s",
+                             stream.get("width"), stream.get("height"), e)
             info.codec = stream.get("codec_name", "unknown")
 
             # FPS
@@ -1010,10 +1016,16 @@ class _ExtractWorker(QThread):
             self.ffmpeg_path, "-loglevel", "info",
             "-i", self.video_path, "-f", "null", "-",
         ]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=120, **startup
-        )
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=120, **startup
+            )
+        except subprocess.TimeoutExpired as e:
+            # 网络盘/大文件超时：与 _probe_ffprobe 的超时降级同款——保留
+            # 已解析字段返回；TimeoutExpired 裸穿出去只会以英文异常串上 UI
+            logger.warning("ffmpeg -i 探测超时，保留已解析字段: %s", e)
+            return info
         output = result.stderr
 
         # 同 _probe_ffmpeg：分辨率锚定 Video: 流行，防文件名里的 NxM 抢先
@@ -1783,12 +1795,17 @@ class _VideoToSequenceWindow(QDialog):
             dialogs.warn(self, "前缀不合法", f"{err}。\n请修改文件名前缀后重试。")
             return
 
-        # 起始帧位数超过帧号位数：文件名位数不统一，背景路径 $F{padding}
-        # 的宽度语义也会与实际文件名失配
-        if len(str(start_frame)) > padding:
+        # 帧号位数超过帧号位宽：文件名位数不统一，背景路径 $F{padding}
+        # 的宽度语义也会与实际文件名失配。起始与末帧都查——start=1001、
+        # padding=4、总帧 9000+ 时末帧 10001 同样溢出 $F4
+        total = self._video_info.total_frames
+        end_frame = start_frame + max(1, total) - 1
+        overflow = [n for n in (start_frame, end_frame)
+                    if len(str(n)) > padding]
+        if overflow:
             if not dialogs.question(
                 self, "帧号位数不足",
-                f"起始帧号 {start_frame} 共 {len(str(start_frame))} 位，"
+                f"帧号 {overflow[0]} 共 {len(str(overflow[0]))} 位，"
                 f"超过帧号位数 {padding}，输出文件名位数将不统一，"
                 f"背景路径 $F{padding} 也会与实际文件名失配。\n是否继续？",
             ):
@@ -1834,12 +1851,13 @@ class _VideoToSequenceWindow(QDialog):
                 except OSError as e:
                     logger.warning("旧序列让位失败 %s: %s", path, e)
 
-        # 保存转换上下文快照，供完成回调使用（完成后不读用户可能已改动的 UI）
+        # 保存转换上下文快照，供完成回调使用（完成后不读用户可能已改动
+        # 的 UI）——相机一并入快照：转换耗时较长时用户可能已切换相机，
+        # 背景路径要落在开工时选的那个上
         self._last_output_dir = raw_output_dir
         self._last_prefix = prefix
         self._last_padding = padding
-
-        total = self._video_info.total_frames
+        self._last_camera = self._camera_edit.text().strip()
 
         # 切换到转换中状态
         self._convert_btn.hide()
@@ -2013,8 +2031,10 @@ class _VideoToSequenceWindow(QDialog):
         )
         self._status_label.setStyleSheet("color: #87cc8e; font-size: 12px;")
 
-        # 若选择了相机，设置其 Background Image 参数
-        cam_path = self._camera_edit.text().strip()
+        # 若选择了相机，设置其 Background Image 参数（读开工快照：转换
+        # 期间用户可能已切换相机，不能把上一轮的背景路径写到新选的相机
+        # 上——与目录/前缀快照同一契约）
+        cam_path = getattr(self, "_last_camera", "")
         if cam_path:
             self._set_camera_background(cam_path, output_dir)
 
@@ -2047,12 +2067,15 @@ class _VideoToSequenceWindow(QDialog):
             # 设置 background 参数
             bg_parm = cam.parm("vm_background")
             if bg_parm:
-                bg_parm.set(bg_path)
+                # 显式 follow_parm_reference=False：Parm.set 默认沿 channel
+                # reference 链写穿到被引用参数头上（HOM 文档，同
+                # hdrlight 赋灯手法）——复制相机带引用等场景必须直改本参数
+                bg_parm.set(bg_path, follow_parm_reference=False)
 
             # 确保 vm_bgenable 为 1（启用背景图）
             use_bg_parm = cam.parm("vm_bgenable")
             if use_bg_parm:
-                use_bg_parm.set(1)
+                use_bg_parm.set(1, follow_parm_reference=False)
 
         except ImportError:
             logger.debug("hou unavailable, skip camera background (headless)")

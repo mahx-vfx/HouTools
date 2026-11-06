@@ -122,6 +122,15 @@ class AutomationDataManager:
                     raise ValueError(
                         "顶层必须是对象，实际为 " + type(loaded).__name__)
                 data = loaded
+            except OSError as exc:
+                # 读不了 ≠ 文件坏了（杀软/同步盘瞬时占用等）：不动原文件，
+                # 本次以默认值返回并跳过补写——继续走补写会把可能完好的
+                # 文件 os.replace 覆盖掉，用户的 dw_exe_path 丢回默认
+                # （save()/save_settings 的 OSError 分支同语义）
+                logger.warning(
+                    "读取应用配置失败（文件未动，跳过补写）: %s (%s)",
+                    path, exc)
+                return data
             except Exception as exc:
                 logger.warning("读取应用配置失败，将按默认值补建: %s (%s)", path, exc)
                 # 与 load() 同语义：先留底再补建，原内容不随覆盖丢失

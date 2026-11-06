@@ -98,7 +98,12 @@ def stem_exists(stem):
         ext = FILE_EXT[language]
         try:
             names = os.listdir(str(code_dir(language)))
-        except OSError:
+        except FileNotFoundError:
+            continue   # 目录还没建（尚无任何代码块）属正常
+        except OSError as exc:
+            # 权限类失败也静默 continue 会把该语言的查重整个无声禁用，
+            # 撞名后患无从排查（违反仓内"捕获后至少 log.warning"）
+            log.warning("cannot list %s: %s", code_dir(language), exc)
             continue
         for fn in names:
             if fn.lower() == (stem + ext).lower():
@@ -112,7 +117,19 @@ def free_stem(stem):
     unique = sanitize_stem(stem)
     if not _STEM_RE.match(unique):
         unique = metadata.sanitize_code_name(stem) or "vex_code"
-    base, i = unique, 2
+    if not _STEM_RE.match(unique):
+        # sanitize 之后仍非法只剩超长（字符集已保证）：截到 60——既避
+        # 64 上限，又给 "_NNN" 让名后缀留余量
+        unique = unique[:60]
+        if not _STEM_RE.match(unique):
+            raise RuntimeError(
+                "无法为代码块生成合法内部名: {!r}".format(stem))
+    if not stem_exists(unique):
+        return unique   # 未撞名直接用（合法原名不截断，保真）
+    # 撞名让位：base 先截到 60——62-64 字符的 base 加 "_2" 会溢出
+    # _STEM_RE，save_code 随即 RuntimeError，而迁移循环只捕 OSError，
+    # 该条目永远卡住、排在后面的条目迁不完（旧包导入同样裸异常）
+    base, i = unique[:60], 2
     while stem_exists(unique):
         unique = "{}_{}".format(base, i)
         i += 1
@@ -196,7 +213,12 @@ def list_code_infos():
         d = code_dir(language)
         try:
             names = sorted(os.listdir(str(d)))
-        except OSError:
+        except FileNotFoundError:
+            continue   # 目录还没建（尚无任何代码块）属正常
+        except OSError as exc:
+            # 权限类失败静默 continue 会让该语言全部代码块从 UI 无声
+            # 消失、排查无迹——留痕
+            log.warning("cannot list %s: %s", d, exc)
             continue
         for fn in names:
             path = d / fn
