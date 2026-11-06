@@ -266,8 +266,12 @@ class _Toast(QtWidgets.QFrame):
         y = _main_window().height()
         for t in _ACTIVE:
             y -= t.height() + 6
-        self._target_y = y + 6
-        self.move(_main_window().mapToGlobal(QtCore.QPoint(0, self._target_y)))
+        # 全局坐标记账：move 后取实际 pos 作 _target_y——pos()/move() 对
+        # 窗口型 widget 是全局坐标，与 WIN 相对偏移差一个主窗屏幕原点
+        # （实测 QRect(0,29,…) 机器上差 29px，整摞会悬在状态栏上方）；
+        # 后续补位 delta 全在全局坐标上累计
+        self.move(_main_window().mapToGlobal(QtCore.QPoint(0, y + 6)))
+        self._target_y = self.y()
 
     # ---- 位移通道：入场与补位共用，可重定向。逻辑目标位先记账、动画
     #      停旧起新从当前插值位置续飞——连发打断不丢余量（坑表 #14）

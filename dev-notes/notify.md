@@ -61,6 +61,7 @@ notify.clear()                            # 立即收掉全部（各自渐透）
 | 12 | **字体**——toast 不在工具窗口子树内，字体 enforcer 的 ChildAdded 兜底够不到 | 构造时显式 `fonts.apply(self)`（换族保字号）；正文 9pt 在 apply **之后**用 QFont 覆写（不走 QSS font-size，避免 QSS/QFont 相互覆盖的顺序不确定性） |
 | 13 | **同屏上限死循环卡死主线程**——`while len(_ACTIVE) >= MAX_VISIBLE: _ACTIVE[0]._fadeout()` 撞上栈底已在渐透（`_fadeout` 对 `_closing` 是 no-op，槽位保留期它还在列表里）永不推进；连发"剪贴板文本失效"提示实测 Houdini 卡死 | 上限只数**存活**（未 `_closing`）的 toast：`_toast_cap_victims()` 返回强收名单（确定性列表收缩，无死循环可能）；smoke test 固化 victim 语义 |
 | 14 | **补位动画连发丢余量**——pos 动画被打断时若从"当前位置 + delta"重飞，上次没飞完的余量被吞掉，连发几次整摞悄悄上漂 | 每 toast 记**逻辑目标位 `_target_y`**：新补位先把账加上，动画停旧起新、从当前插值位置飞向记账终点（无缝续飞）；入场与补位共用同一条 pos 动画通道（`_pos_anim`）；reload 过渡期旧实例无 `_shift_down` 方法 → `getattr` 探测退瞬移，1-3s 自愈 |
+| 15 | **`_target_y` 坐标系混用**——窗口型 widget 的 `pos()`/`move()` 是**全局屏幕坐标**（有 parent 也一样，实测 readback 证实），而初版 `_place` 把 WIN 相对偏移存进 `_target_y`：入场/补位动画终点比实际位置**高一个主窗屏幕原点**（QRect(0,29,…) 机器上悬高 29px；主窗 y 偏移为 0 的机器不可见，极易溜过验证） | `_place` 在 `move(mapToGlobal(...))` 之后取 `self._target_y = self.y()`（全局实际值），后续补位 delta 全在全局坐标上累计；MCP 探针数字比对（入场落点/补位终点 == mapToGlobal 理论值）固化 |
 
 ## 收口记录（2026-11）
 
