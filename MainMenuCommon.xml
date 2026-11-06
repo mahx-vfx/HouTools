@@ -51,6 +51,15 @@ _houtools_dispatcher.run("recipe_library")
         ]]></scriptCode>
       </scriptItem>
 
+      <!-- 打开当前工程文件所在的文件夹（资源管理器） -->
+      <scriptItem id="houtools.open_hip_folder">
+        <label>Open Hip Folder</label>
+        <scriptCode><![CDATA[
+import houtools.dev.dispatcher as _houtools_dispatcher
+_houtools_dispatcher.run("open_hip_folder")
+        ]]></scriptCode>
+      </scriptItem>
+
       <separatorItem/>
 
       <!-- 设置窗口:配置目录展示 + 快捷键设置(原 Paste Hotkey Settings

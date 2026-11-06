@@ -59,6 +59,30 @@ def _pick_output_path(node):
         where, "/".join(_OUTPUT_PARMS)))
 
 
+def expanded_output_path(node):
+    """取节点的输出路径并展开成绝对路径（normpath 归一）。
+
+    Open Cache Folder 与 Copy Output Path（Ctrl+Shift+C）的公共取值层：
+    _pick_output_path 的候选序 + 变量展开 + 相对路径按 $HIP 拼接。
+    Raises RuntimeError when no usable output path is found.
+    """
+    path = _pick_output_path(node)
+    if "$" in path:
+        # 参数值是表达式：先整体展开（$HIP/$OS/$F4 等），否则 "$HIP/..." 形态
+        # 会被 isabs 判否、再 join 出 "工程/$HIP/..." 的错路径（渲染参数默认值
+        # 几乎全是该形态）。帧号等变量被展开成具体值不影响取目录。
+        # 实测（H22.0.429）evalAsString 对普通字符串值已做全展开（含节点局部
+        # 变量 $OS），这步兜的是"表达式结果带原文"的形态（如 chs() 读回的
+        # 未展开文本）。
+        import hou
+        path = hou.text.expandString(path)
+    if not os.path.isabs(path):
+        # 相对路径按 $HIP 解析，与 Houdini 读文件参数的语义一致
+        import hou
+        path = os.path.join(hou.text.expandString("$HIP"), path)
+    return os.path.normpath(path)
+
+
 def resolve_folder(node):
     """Take the evaluated output path and return the folder to open.
 
@@ -67,18 +91,8 @@ def resolve_folder(node):
     directory (drive root always exists, so this always returns).
     Raises RuntimeError when the node has no usable output path.
     """
-    path = _pick_output_path(node)
-    if "$" in path:
-        # 参数值是表达式：先整体展开（$HIP/$OS/$F4 等），否则 "$HIP/..." 形态
-        # 会被 isabs 判否、再 join 出 "工程/$HIP/..." 的错路径（渲染参数默认值
-        # 几乎全是该形态）。帧号等变量被展开成具体值不影响取目录。
-        import hou
-        path = hou.text.expandString(path)
-    if not os.path.isabs(path):
-        # 相对路径按 $HIP 解析，与 Houdini 读文件参数的语义一致
-        import hou
-        path = os.path.join(hou.text.expandString("$HIP"), path)
-    folder = os.path.dirname(os.path.normpath(path))
+    path = expanded_output_path(node)
+    folder = os.path.dirname(path)
     while folder and not os.path.isdir(folder):
         parent = os.path.dirname(folder)
         if parent == folder:  # 已到盘根

@@ -45,6 +45,8 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings�
 |------|--------|------|
 | Automation | `HouTools → Automation`（Python Panel） | 自动化批处理：节点按钮点击 / Flipbook 拍屏 / HomeAssistant Webhook / 打开DW |
 | 粘贴为 Object Merge | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+V` | 复制节点后，按"目标上下文 × 源类别"在鼠标位置粘贴引用节点；键位在 `HouTools → HouTools Settings…` 修改 |
+| 复制输出路径 | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+C` | 选中 filecache / mantra / usdrender 节点，把输出文件**所在的文件夹**（展开后的绝对路径，不含文件名）复制到系统剪贴板；目录未落盘时不复制并红色报错；多选时去重逐行合并 |
+| 打开工程文件夹 | `HouTools → Open Hip Folder`（主菜单与网络编辑器菜单） | 用资源管理器打开当前 hip 文件所在的文件夹；工程尚未保存时打开默认的 `$HIP` 文件夹（`untitled.hip` 所在目录） |
 | 拖放导入 Alembic / FBX / USD | 拖 `.abc`/`.fbx`/`.usd` 等文件到网络编辑器 | 松手即在鼠标位置创建导入节点：obj 层级 = Alembic Archive（自动构建层级）/ FBX 子网（官方导入器），SOP 层级 = alembic / file 节点，LOP 层级（`.usd`/`.usda`/`.usdc`/`.usdz`）= sublayer 节点；支持多文件混拖（基于 Houdini 官方 externaldragdrop 钩子） |
 | 视窗截图嵌入 | 节点右键 `Capture Viewport to Node [HT]` | 截取当前 3D 视窗存为 JPG（`$HIP/HouTools_cfg/captures/`），作为网络编辑器背景图钉在节点旁，随节点移动/改名跟随；只存路径引用不进 hip；右键 `Delete Viewport Capture [HT]` 删除截图 |
 | 粘贴边界框 | 节点右键 `Paste Bounding Box [HT]` | Ctrl+C 复制源节点后，右键带三分量 `size`/`t` 参数的目标节点（如 box），把源节点包围盒尺寸/中心粘贴到其 `size`/`t`——绝对值或 `bbox()`/`centroid()` 表达式（同网络相对路径、跨层级绝对路径）两种模式 |
@@ -52,7 +54,7 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings�
 | 视频转序列图 | `HouTools → Video to Sequence` | ffmpeg 提取视频为 JPG 序列（帧级进度，质量/起始帧/位数/前缀可调），EXR/PNG/TIF 静帧序列同样支持（浏览时同一序列折叠为一个选项，EXR 自动转 sRGB），相机支持在 Houdini 节点选择器中直接选取 + 一键跳转定位，分辨率可读取/编辑（宽/高双框 + 预设），「编码器」行 ⓘ 按钮悬停/点击查看实际生效的 ffmpeg/ffprobe，可选自动设置相机 Background Image |
 | Hdr Library | `HouTools → Hdr Library` | HDR 环境贴图库浏览器：缩略图网格（后台生成）、子文件夹分类 + 收藏，选中灯光后双击即贴图 |
 | Recipe Library | `HouTools → Recipe Library` | recipes 资产库浏览器：官方 recipes 卡片网格浏览（缩略图/标签/主题色），树形侧栏过滤，双击/拖拽应用到网络，VEX/Python 代码块卡片（双击追加到选中节点），Markdown 文档，数据导入/导出 |
-| HouTools Settings | `HouTools → HouTools Settings…` | 设置窗口：配置目录展示（含修改方法）+ 快捷键设置（原 Paste Hotkey Settings 迁入） |
+| HouTools Settings | `HouTools → HouTools Settings…` | 设置窗口：配置目录展示（含修改方法）+ 快捷键设置（Paste as Object Merge / Copy Output Path，捕获式改键，会话即时生效） |
 | About HouTools | `HouTools → About HouTools` | 用默认浏览器打开离线使用手册（`docs/index.html` + 本地截图，零外部网络资源）：全部工具的功能与用法 |
 
 ### Automation
@@ -93,6 +95,10 @@ Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_paste_as_object_mer
 未列出的组合一律跳过；路径参数细则见 `houtools/tools/paste_as_object_merge.py` 模块 docstring。
 源路径取 OS 剪贴板文本（引用语义必须有"原件路径"），文本失效时直接拒绝并在状态栏
 按原因提示重新复制（不粘贴副本，避免目标网络多出副本节点）。整次操作占用单个 undo 槽。
+
+### 复制输出路径
+
+网络编辑器里选中节点按 `Ctrl+Shift+C`（或点网络编辑器的 `HouTools` 菜单），把该节点输出文件**所在的文件夹**复制到系统剪贴板（如 `C:\...\render\TTT`，不含文件名），直接粘进文件对话框或其他软件。只对 **filecache / mantra / usdrender** 三族节点生效（usdrender 含 `/out` 与 LOP 内两种；karma、rop geometry 等不响应），取值与节点右键 `Open Cache Folder [HT]` 同源——`$HIP`/`$OS` 等变量展开后的绝对路径。目录尚未写出（缓存未落盘）时**不复制**，左下角红色错误通知；各类失败反馈只走通知模块、不刷控制台。多选时把命中节点的目录去重后逐行合并复制；键位在 `HouTools → HouTools Settings…` 修改（捕获式输入，保存到配置目录的 `hotkeys.json`，每次启动自动应用），也可在 Houdini 自带 Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_copy_output_path`。
 
 ffmpeg 说明：优先使用 Houdini 自带的 `$HFS/bin/hffmpeg`，**无需单独安装**；如需指定版本，
 把 `ffmpeg.exe` 放到 HouTools 配置目录即可优先使用（包清单 `HouTools.json` 里

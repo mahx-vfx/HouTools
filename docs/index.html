@@ -716,6 +716,7 @@
   <div class="nav-title">工具目录</div>
   <a href="#automation">Automation</a>
   <a href="#paste-as-object-merge">粘贴为 Object Merge</a>
+  <a href="#copy-output-path">复制输出路径</a>
   <a href="#dragdrop-import">拖放导入 .abc/.fbx/.usd</a>
   <a href="#capture-viewport">视窗截图嵌入</a>
   <a href="#paste-bounding-box">粘贴边界框</a>
@@ -724,6 +725,7 @@
   <a href="#hdr-library">Hdr Library</a>
   <a href="#recipe-library">Recipe Library</a>
   <a href="#houtools-settings">HouTools Settings</a>
+  <a href="#open-hip-folder">打开工程文件夹</a>
   <a href="#open-cache-folder">Open Cache Folder</a>
   <a href="#reload-dev">Reload Modules (Dev)</a>
   <a href="#install">安装</a>
@@ -777,6 +779,20 @@
     <li>整次操作占用单个 undo 槽,<code>Ctrl+Z</code> 一步撤回。</li>
     <li>源路径取 OS 剪贴板文本;文本失效时状态栏按原因提示重新复制(不粘贴副本)。</li>
     <li>键位在 <code>HouTools → HouTools Settings…</code> 修改,也可用 Houdini 自带 Hotkey Manager(符号 <code>h.pane.wsheet.houtools_paste_as_object_merge</code>)。</li>
+  </ul>
+</section>
+
+<!-- ============ 复制输出路径 ============ -->
+<section id="copy-output-path">
+  <h2>Copy Output Path<span class="zh">复制输出路径</span></h2>
+  <p class="entry">入口:网络编辑器 <code>HouTools</code> 菜单 / 快捷键 <code>Ctrl+Shift+C</code></p>
+  <p>网络编辑器里选中节点按 <code>Ctrl+Shift+C</code>,把该节点输出文件<strong>所在的文件夹</strong>复制到系统剪贴板(如 <code>C:\...\render\TTT</code>,不含文件名),直接粘进文件对话框或其他软件。</p>
+  <ul>
+    <li>只对 <strong>filecache / mantra / usdrender</strong> 三族节点生效(usdrender 含 <code>/out</code> 与 LOP 内两种;karma、rop geometry 等不响应),选中其他节点时通知提示。</li>
+    <li>取值与节点右键 <code>Open Cache Folder [HT]</code> 同源:<code>$HIP</code>/<code>$OS</code> 等变量展开后的绝对路径。</li>
+    <li>目录尚未写出(缓存未落盘)时<strong>不复制</strong>,左下角红色错误通知;各类失败反馈只走通知模块、不刷控制台。</li>
+    <li>多选时把命中节点的目录去重后逐行合并复制,清单外节点忽略。</li>
+    <li>键位在 <code>HouTools → HouTools Settings…</code> 修改,也可用 Houdini 自带 Hotkey Manager(符号 <code>h.pane.wsheet.houtools_copy_output_path</code>)。</li>
   </ul>
 </section>
 
@@ -939,13 +955,24 @@
       窗口内附修改方法:编辑 <code>HouTools.json</code> 包清单的
       <code>HOUTOOLS_SETTINGS_DIR</code> 为目标目录绝对路径,重启 Houdini 生效。
       团队把插件放共享盘时,配置保持各自本机默认即可,永不落共享盘。</li>
-    <li><strong>快捷键 · Paste as Object Merge</strong>:点捕获框按下键位组合,
-      点「应用」<strong>会话即时生效</strong>并持久化到配置目录的
-      <code>hotkeys.json</code>,每次启动自动应用;「恢复默认」清除自定义键位。</li>
+    <li><strong>快捷键</strong>:每条可改键一行(Paste as Object Merge、Copy Output Path)——
+      点捕获框按下键位组合,点「应用」<strong>会话即时生效</strong>并持久化到配置目录的
+      <code>hotkeys.json</code>,每次启动自动应用;「恢复默认」清除该条自定义键位。</li>
   </ul>
   <ul>
-    <li>自定义键优先;其次尊重 Hotkey Manager 中已有的键位;最后落默认值 <code>Ctrl+Shift+V</code>。</li>
+    <li>自定义键优先;其次尊重 Hotkey Manager 中已有的键位;最后落默认值(Paste as Object Merge <code>Ctrl+Shift+V</code>、Copy Output Path <code>Ctrl+Shift+C</code>)。</li>
     <li>设置保存在本机配置目录下,换电脑或重装后重新设置一次即可。</li>
+  </ul>
+</section>
+
+<!-- ============ 打开工程文件夹 ============ -->
+<section id="open-hip-folder">
+  <h2>Open Hip Folder<span class="zh">打开工程文件夹</span></h2>
+  <p class="entry">入口:<code>HouTools → Open Hip Folder</code>(主菜单与网络编辑器菜单均有)</p>
+  <p>用资源管理器直接打开当前 hip 文件所在的文件夹——找工程目录里的缓存、贴图、版本文件不用再翻 File 菜单看路径。</p>
+  <ul>
+    <li>打开的是 hip 文件<strong>所在文件夹</strong>(等价 <code>$HIP</code> 的实际目录)。</li>
+    <li>工程尚未保存时打开默认的 <code>$HIP</code> 文件夹(<code>untitled.hip</code> 所在目录)。</li>
   </ul>
 </section>
 

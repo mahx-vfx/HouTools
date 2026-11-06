@@ -119,6 +119,10 @@ def main():
     assert '<label>HouTools Settings...</label>' in main_xml
     nv_xml = (ROOT / "NetworkViewMenu.xml").read_text(encoding="utf-8")
     assert 'id="pane.wsheet.houtools_paste_as_object_merge"' in nv_xml
+    # 复制输出路径：同为 pane.wsheet.* 前缀（热键符号 h.pane.wsheet.*），
+    # 默认键位 Ctrl+Shift+C 由 uiready install_defaults 分配
+    assert 'id="pane.wsheet.houtools_copy_output_path"' in nv_xml
+    assert '_houtools_dispatcher.run("copy_output_path", **kwargs)' in nv_xml
     for _hook in ("python3.13libs/uiready.py",
                   "python3.11libs/uiready.py",
                   "python3.11libs/houtools/__init__.py"):
@@ -134,6 +138,13 @@ def main():
     assert 'id="houtools.recipe_library"' in main_xml
     assert 'id="houtools.networkview.recipe_library"' in nv_xml
     print("recipe_library menu wiring: consistent")
+
+    # Open Hip Folder:两份菜单均注册薄分发器入口
+    assert 'id="houtools.open_hip_folder"' in main_xml
+    assert '_houtools_dispatcher.run("open_hip_folder")' in main_xml
+    assert 'id="houtools.networkview.open_hip_folder"' in nv_xml
+    assert '_houtools_dispatcher.run("open_hip_folder")' in nv_xml
+    print("open_hip_folder menu wiring: consistent")
 
     # About 页面:仅主菜单注册（全局性条目，不进网络编辑器菜单）；
     # 手册离线可用（无互联网工作站）：样式内联、不加载任何外部资源
@@ -296,6 +307,182 @@ def main():
     assert eval(ocf_expr, {"kwargs": {"node": None}}) is False  # 无节点
     print("open_cache_folder context: consistent")
 
+    # Copy Output Path (Ctrl+Shift+C)：白名单判定（type().name() 去 ::版本
+    # 后缀的基名）——filecache/ifd/usdrender(/out)+usdrender_rop(LOP) 命中，
+    # karma / rop geometry / 普通 SOP 不命中（用户指定只对三族生效）
+    from houtools.tools.copy_output_path import is_copy_target
+
+    class _FakeTName:
+        def __init__(self, name):
+            self._name = name
+
+        def name(self):
+            return self._name
+
+    class _FakeTypedNode:
+        def __init__(self, name):
+            self._tname = _FakeTName(name)
+
+        def type(self):
+            return self._tname
+
+    for _name in ("filecache::2.0", "filecache", "ifd",
+                  "usdrender", "usdrender::2.0", "usdrender_rop"):
+        assert is_copy_target(_FakeTypedNode(_name)) is True, _name
+    for _name in ("karma", "karma::2.0", "rop_geometry", "geometry", "box"):
+        assert is_copy_target(_FakeTypedNode(_name)) is False, _name
+    assert is_copy_target(None) is False
+    print("copy_output_path whitelist OK")
+
+    # 取值层：open_cache_folder.expanded_output_path（与 Open Cache Folder
+    # 同源，本工具不重复实现展开逻辑）——变量展开 + 相对路径按 $HIP 拼接 +
+    # normpath。注入假 hou 模块隔离真实 Houdini，用完恢复现场
+    class _FakeParm:
+        def __init__(self, value):
+            self._value = value
+
+        def evalAsString(self):
+            return self._value
+
+    class _FakeOcfNode:
+        def __init__(self, parms):
+            self._parms = parms
+
+        def path(self):
+            return "/obj/geo1/fc1"
+
+        def parm(self, name):
+            value = self._parms.get(name)
+            return _FakeParm(value) if value is not None else None
+
+    class _FakeHouForCopy:
+        class text:
+            @staticmethod
+            def expandString(text):
+                return (text.replace("$HIP", "C:/proj")
+                            .replace("$F4", "1001"))
+
+    _saved_hou_copy = sys.modules.get("hou")
+    try:
+        sys.modules["hou"] = _FakeHouForCopy
+        from houtools.tools.open_cache_folder import expanded_output_path
+        node = _FakeOcfNode({"sopoutput": "$HIP/geo/cache.$F4.bgeo"})
+        assert expanded_output_path(node) == \
+            os.path.normpath("C:/proj/geo/cache.1001.bgeo")
+        # 相对路径按 $HIP 拼接（与 Houdini 读文件参数语义一致）
+        node = _FakeOcfNode({"sopoutput": "geo/cache.bgeo"})
+        assert expanded_output_path(node) == \
+            os.path.normpath("C:/proj/geo/cache.bgeo")
+        # 已是绝对路径原样 normpath，不再二次拼接
+        node = _FakeOcfNode({"sopoutput": "D:/caches/a.bgeo"})
+        assert expanded_output_path(node) == \
+            os.path.normpath("D:/caches/a.bgeo")
+        # 空值 / 无候选参数 = 取值层报错（RuntimeError，文案含节点路径）
+        for _empty in ({"sopoutput": ""}, {}):
+            try:
+                expanded_output_path(_FakeOcfNode(_empty))
+                raise AssertionError("empty output parm should fail: %r" % _empty)
+            except RuntimeError:
+                pass
+    finally:
+        if _saved_hou_copy is None:
+            sys.modules.pop("hou", None)
+        else:
+            sys.modules["hou"] = _saved_hou_copy
+    print("copy_output_path path resolution OK")
+
+    # 复制值 = 输出文件所在文件夹（dirname），且目录必须已落盘——不做
+    # resolve_folder 的上溯兜底（用户指定：不存在 → 红色错误、不复制）。
+    # _output_folder 用真实临时目录验证存在/缺失两个分支
+    from houtools.tools.copy_output_path import _output_folder
+
+    _folder_root = tempfile.mkdtemp(prefix="houtools_copy_folder.")
+    atexit.register(lambda: shutil.rmtree(_folder_root, ignore_errors=True))
+    os.makedirs(os.path.join(_folder_root, "geo"))
+
+    class _FakeHouFolder:
+        class text:
+            @staticmethod
+            def expandString(text):
+                return (text.replace("$HIP", _folder_root.replace("\\", "/"))
+                            .replace("$F4", "1001"))
+
+    _saved_hou_folder = sys.modules.get("hou")
+    try:
+        sys.modules["hou"] = _FakeHouFolder
+        # 目录已存在 → 返回 dirname（不含文件名）
+        node = _FakeOcfNode({"sopoutput": "$HIP/geo/cache.$F4.bgeo"})
+        assert _output_folder(node) == os.path.normpath(
+            os.path.join(_folder_root, "geo"))
+        # 目录未落盘 → FileNotFoundError（红色错误、不复制的前提）
+        node = _FakeOcfNode({"sopoutput": "$HIP/geo2/cache.$F4.bgeo"})
+        try:
+            _output_folder(node)
+            raise AssertionError("missing folder should fail")
+        except FileNotFoundError as exc:
+            assert exc.args[0] == os.path.normpath(
+                os.path.join(_folder_root, "geo2")), exc.args[0]
+    finally:
+        if _saved_hou_folder is None:
+            sys.modules.pop("hou", None)
+        else:
+            sys.modules["hou"] = _saved_hou_folder
+    print("copy_output_path folder semantics OK")
+
+    # 选区解析：H22 的 HOM 各节点包装类都没有 selectedNodes()（/out 的
+    # pwd 包装没有该方法，曾直接 AttributeError 崩溃）——只能取全局
+    # hou.selectedNodes() 按"父级路径 == 编辑器 pwd 路径"过滤出该网络
+    # 编辑器里的选区。打桩固化父级过滤语义（跨网络选区不串、pwd 为空
+    # 安全返回）
+    class _FakeParent:
+        def __init__(self, path):
+            self._path = path
+
+        def path(self):
+            return self._path
+
+    class _FakeSelNode:
+        def __init__(self, parent_path):
+            self._parent = _FakeParent(parent_path)
+
+        def parent(self):
+            return self._parent
+
+    class _FakeHouSel:
+        @staticmethod
+        def selectedNodes():
+            return [_FakeSelNode("/out"), _FakeSelNode("/obj/geo1"),
+                    _FakeSelNode("/obj/geo1")]
+
+    class _FakeSelEditor:
+        def __init__(self, pwd_path):
+            self._pwd_path = pwd_path
+
+        def pwd(self):
+            return _FakeParent(self._pwd_path)
+
+    _saved_hou_sel = sys.modules.get("hou")
+    try:
+        sys.modules["hou"] = _FakeHouSel
+        from houtools.tools.copy_output_path import _selected_nodes
+        assert [n.parent().path()
+                for n in _selected_nodes(_FakeSelEditor("/out"))] == ["/out"]
+        assert len(_selected_nodes(_FakeSelEditor("/obj/geo1"))) == 2
+        assert _selected_nodes(_FakeSelEditor("/obj")) == []
+        assert _selected_nodes(_FakeSelEditor("/obj/geo2")) == []
+
+        class _NoPwdEditor:
+            def pwd(self):
+                return None
+
+        assert _selected_nodes(_NoPwdEditor()) == []
+    finally:
+        if _saved_hou_sel is None:
+            sys.modules.pop("hou", None)
+        else:
+            sys.modules["hou"] = _saved_hou_sel
+    print("copy_output_path selection filter OK")
+
     ET.parse(ROOT / "python_panels" / "Automation.pypanel")
     print("Automation.pypanel: well-formed")
 
@@ -307,6 +494,8 @@ def main():
     import houtools.tools.paste_as_object_merge
     import houtools.tools.houtools_settings  # noqa: F401
     import houtools.tools.open_cache_folder  # noqa: F401
+    import houtools.tools.copy_output_path  # noqa: F401
+    import houtools.tools.open_hip_folder  # noqa: F401
     import houtools.tools.capture_viewport_embed  # noqa: F401
     import houtools.tools.delete_viewport_capture  # noqa: F401
     import houtools.tools.paste_bbox  # noqa: F401
@@ -525,6 +714,58 @@ def main():
         about_mod.run()
         fake_start.assert_not_called()
     print("about_houtools run OK")
+
+    # Open Hip Folder run():打桩 hipFile 与 os.startfile 验证三种分支——
+    # 已保存开目录、未保存同样打开（默认 $HIP 文件夹 = path() 的 dirname，
+    # 2026-11 用户指定翻案）、目录不存在拒绝（无头不开真资源管理器）
+    from houtools.tools import open_hip_folder as ohf
+
+    class _FakeHipFile:
+        def __init__(self, path, new):
+            self._path, self._new = path, new
+
+        def path(self):
+            return self._path
+
+        def isNewFile(self):
+            return self._new
+
+    class _FakeHouHip:
+        def __init__(self, path, new):
+            self.hipFile = _FakeHipFile(path, new)
+
+    _saved_hou_hip = sys.modules.get("hou")
+    # saved 分支的 hip 目录必须真实存在（工具有 isdir 守卫，假路径会被
+    # 正确拒绝、startfile 不会发生）
+    _hip_root = tempfile.mkdtemp(prefix="houtools_hip_folder.")
+    atexit.register(lambda: shutil.rmtree(_hip_root, ignore_errors=True))
+    try:
+        with patch("os.startfile") as fake_start:
+            # 已保存：打开 hip 所在目录（normpath 后的 dirname）
+            sys.modules["hou"] = _FakeHouHip(
+                os.path.join(_hip_root, "scene_a.hip").replace("\\", "/"),
+                False)
+            ohf.run()
+            fake_start.assert_called_once_with(os.path.normpath(_hip_root))
+            # 未保存：path() 是绝对路径（cwd + untitled.hip），照样打开
+            # 其 dirname = 默认 $HIP 文件夹
+            fake_start.reset_mock()
+            sys.modules["hou"] = _FakeHouHip(
+                os.path.join(_hip_root, "untitled.hip").replace("\\", "/"),
+                True)
+            ohf.run()
+            fake_start.assert_called_once_with(os.path.normpath(_hip_root))
+            # 所在目录已不存在：拒绝
+            fake_start.reset_mock()
+            sys.modules["hou"] = _FakeHouHip("Z:/nope/scene.hip", False)
+            ohf.run()
+            fake_start.assert_not_called()
+    finally:
+        if _saved_hou_hip is None:
+            sys.modules.pop("hou", None)
+        else:
+            sys.modules["hou"] = _saved_hou_hip
+    print("open_hip_folder run OK")
 
     # 打开DW：任务序列化 + 应用级配置文件读写
     dw_item = task_types.TaskItem.from_dict(
@@ -3547,13 +3788,18 @@ def main():
         _ver_win.close()
     print("recipe version filter OK")
 
-    # HouTools Settings 窗口可实例化：配置目录信息行显示生效路径
+    # HouTools Settings 窗口可实例化：配置目录信息行显示生效路径；
+    # 快捷键区按 hotkeys.ASSIGNABLE 渲染（两条可改键各一行捕获框）
     import houtools.tools.houtools_settings as _hts
     _set_win = _hts._HouToolsSettingsDialog()
     assert _set_win.windowTitle() == "HouTools Settings"
     assert str(houtools.core.constants.SETTINGS_DIR) \
         in _set_win._dir_label.text()
-    assert hasattr(_set_win, "_editor")
+    assert set(_set_win._rows) == {"paste_merge", "copy_output_path"}, \
+        set(_set_win._rows)
+    from houtools.core import hotkeys as _hk_assert
+    assert _set_win._rows["copy_output_path"].keySequence().toString() \
+        == _hk_assert.COPY_OUTPUT_DEFAULT_KEY, "捕获框应显示当前生效键位"
     _set_win.close()
     print("houtools settings window OK")
 
@@ -3859,8 +4105,19 @@ def main():
     _track_rm(_hotkey_store.path)
     with patch.object(hotkeys, "_STORE", _hotkey_store):
         assert hotkeys.PASTE_MERGE_SYMBOL == _sym
-        assert hotkeys.paste_merge_current_key() == \
+        assert hotkeys.hotkey_current_key("paste_merge") == \
             hotkeys.PASTE_MERGE_DEFAULT_KEY, "无 hou 应回退默认键位"
+        assert hotkeys.hotkey_current_key("copy_output_path") == \
+            hotkeys.COPY_OUTPUT_DEFAULT_KEY, "无 hou 应回退默认键位"
+        # 复制输出路径的默认键位清单（uiready install_defaults 逐条应用）
+        assert ("h.pane.wsheet", "h.pane.wsheet.houtools_copy_output_path",
+                "Ctrl+Shift+C") in hotkeys.DEFAULT_ASSIGNMENTS, \
+            hotkeys.DEFAULT_ASSIGNMENTS
+        # 可改键登记表与默认键位清单对齐：ASSIGNABLE 里每条都必须会被
+        # uiready 安装（漏登记 = 设置窗口能改但启动不应用）
+        assert {row[2] for row in hotkeys.ASSIGNABLE.values()} \
+            <= {row[1] for row in hotkeys.DEFAULT_ASSIGNMENTS}, \
+            (hotkeys.DEFAULT_ASSIGNMENTS, hotkeys.ASSIGNABLE)
         hotkeys.set_custom_key(_sym, "Ctrl+Alt+P")
         assert hotkeys.get_custom_key(_sym) == "Ctrl+Alt+P"
         assert hotkeys.get_custom_key("h.houtools.nonexistent") is None

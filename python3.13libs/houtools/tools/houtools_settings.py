@@ -4,9 +4,9 @@
 - 配置目录：只读展示当前生效的 settings 目录与修改方法（HouTools.json
   包清单 env 条目 HOUTOOLS_SETTINGS_DIR，改后重启 Houdini 生效；
   constants.settings_env_override 判定是否处于显式覆盖态）；
-- 快捷键：Paste as Object Merge 的捕获式改键（原独立菜单项
-  Paste Hotkey Settings 迁入；逻辑在 houtools.core.hotkeys，自定义键位
-  持久化 settings/hotkeys.json，uiready 每次启动应用）。
+- 快捷键：可改键捕获式设置（按 houtools.core.hotkeys.ASSIGNABLE 登记
+  表渲染，每条一行：名称 + 捕获框 + 应用/恢复默认；自定义键位持久化
+  settings/hotkeys.json，uiready 每次启动应用）。
 """
 
 from PySide6.QtCore import Qt
@@ -42,16 +42,16 @@ def run():
 
 
 class _HouToolsSettingsDialog(QDialog):
-    """配置目录（只读）+ Paste as Object Merge 快捷键捕获，单窗口两段。
+    """配置目录（只读）+ 可改键快捷键区（ASSIGNABLE 驱动），单窗口两段。
 
-    与旧独立改键对话框的差异：设置窗口常驻（应用后不自动关闭），
-    「恢复默认」是显式按钮（旧版空序列=确认清除的暗语义不再需要）。
+    快捷键区按 hotkeys.ASSIGNABLE 登记表渲染，新增可改键无需改本窗口；
+    反馈走共享的 _hint 标签（最近一次应用/恢复的结果，带错误色分支）。
     """
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Window)
         self.setWindowTitle("HouTools Settings")
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(520)
         self.setStyleSheet(
             "QDialog { background-color: #1D1D20; }"
             "QLabel { color: #e0e0e0; background: transparent; }"
@@ -100,15 +100,32 @@ class _HouToolsSettingsDialog(QDialog):
         line.setStyleSheet("color: #3d3d3d;")
         layout.addWidget(line)
 
-        # ---- 快捷键（原 Paste Hotkey Settings 迁入） ----
-        sec2 = QLabel("快捷键 · Paste as Object Merge")
+        # ---- 快捷键（ASSIGNABLE 登记，每条一行） ----
+        sec2 = QLabel("快捷键")
         sec2.setStyleSheet("font-weight: bold; font-size: 13px;")
         layout.addWidget(sec2)
 
         from houtools.core import hotkeys
 
-        self._editor = QKeySequenceEdit(hotkeys.paste_merge_current_key())
-        layout.addWidget(self._editor)
+        self._rows = {}  # name -> QKeySequenceEdit（smoke test 断言登记齐全）
+        for name, (display, _ctx, _symbol, _default) in \
+                hotkeys.ASSIGNABLE.items():
+            row = QHBoxLayout()
+            label = QLabel(display)
+            row.addWidget(label)
+            editor = QKeySequenceEdit(hotkeys.hotkey_current_key(name))
+            row.addWidget(editor, 1)
+            apply_btn = QPushButton("应用")
+            apply_btn.setObjectName("okBtn")
+            apply_btn.clicked.connect(
+                lambda checked=False, n=name: self._on_apply(n))
+            row.addWidget(apply_btn)
+            reset_btn = QPushButton("恢复默认")
+            reset_btn.clicked.connect(
+                lambda checked=False, n=name: self._on_reset(n))
+            row.addWidget(reset_btn)
+            layout.addLayout(row)
+            self._rows[name] = editor
 
         self._hint = QLabel(
             "捕获按键后点「应用」立即生效并持久化；「恢复默认」清除自定义键位。")
@@ -117,17 +134,10 @@ class _HouToolsSettingsDialog(QDialog):
         layout.addWidget(self._hint)
 
         btn_row = QHBoxLayout()
-        reset_btn = QPushButton("恢复默认")
-        reset_btn.clicked.connect(self._on_reset)
-        btn_row.addWidget(reset_btn)
         btn_row.addStretch()
         close_btn = QPushButton("关闭")
         close_btn.clicked.connect(self.close)
-        apply_btn = QPushButton("应用")
-        apply_btn.setObjectName("okBtn")
-        apply_btn.clicked.connect(self._on_apply)
         btn_row.addWidget(close_btn)
-        btn_row.addWidget(apply_btn)
         layout.addLayout(btn_row)
 
     def _set_hint(self, text, error=False):
@@ -135,35 +145,37 @@ class _HouToolsSettingsDialog(QDialog):
         self._hint.setText(text)
         self._hint.setStyleSheet("color: {}; font-size: 11px;".format(color))
 
-    def _on_apply(self):
+    def _on_apply(self, name):
         from houtools.core import hotkeys
 
-        key = self._editor.keySequence().toString()
+        key = self._rows[name].keySequence().toString()
         if not key:
             self._set_hint("未捕获到按键。要清除自定义键位请点「恢复默认」。")
             return
-        if not hotkeys.paste_merge_apply_key(key):
+        if not hotkeys.hotkey_apply_key(name, key):
             self._set_hint("Houdini 拒绝了该键位:{}".format(key), error=True)
             logger.warning("Houdini 拒绝了键位: %s", key)
             return
-        logger.info("Paste as Object Merge 快捷键已设为: %s", key)
-        status("Paste as Object Merge 快捷键已设为:{}".format(key),
+        display = hotkeys.ASSIGNABLE[name][0]
+        logger.info("%s 快捷键已设为: %s", display, key)
+        status("{} 快捷键已设为:{}".format(display, key),
                severity="important")
-        self._set_hint("已应用:{}".format(key))
+        self._set_hint("已应用:{} → {}".format(display, key))
 
-    def _on_reset(self):
+    def _on_reset(self, name):
         from houtools.core import hotkeys
         from houtools.ui.dialogs import question
 
-        default_key = hotkeys.PASTE_MERGE_DEFAULT_KEY
+        display, _ctx, _sym, default_key = hotkeys.ASSIGNABLE[name]
         if not question(self, "恢复默认",
-                        "清除自定义键位、恢复默认（{}）？".format(default_key)):
+                        "清除 {} 的自定义键位、恢复默认（{}）？".format(
+                            display, default_key)):
             return
-        if not hotkeys.paste_merge_clear_custom():
+        if not hotkeys.hotkey_reset_default(name):
             self._set_hint("Houdini 拒绝了默认键位。", error=True)
             return
-        self._editor.setKeySequence(QKeySequence(default_key))
-        logger.info("Paste as Object Merge 自定义键位已清除")
-        status("Paste as Object Merge 快捷键已恢复默认:{}".format(default_key),
+        self._rows[name].setKeySequence(QKeySequence(default_key))
+        logger.info("%s 自定义键位已清除", display)
+        status("{} 快捷键已恢复默认:{}".format(display, default_key),
                severity="important")
-        self._set_hint("已恢复默认:{}".format(default_key))
+        self._set_hint("已恢复默认:{} → {}".format(display, default_key))

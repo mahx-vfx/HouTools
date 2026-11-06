@@ -11,46 +11,60 @@ HouTools 菜单项的键位写进 Houdini 热键系统。
 
 符号约定:NetworkViewMenu.xml 里 id 为 ``pane.wsheet.<name>`` 的
 scriptItem,其热键符号为 ``h.pane.wsheet.<name>``(网络编辑器上下文)。
+
+新增可改键三处同步:加常量 → 登记 DEFAULT_ASSIGNMENTS（uiready 安装）
+→ 登记 ASSIGNABLE（设置窗口快捷键区按此渲染，smoke test 校验两者对齐）。
 """
 
 from houtools.core.log import get_logger
 
 logger = get_logger("core.hotkeys")
 
-# (context, hotkey_symbol, default_key)
-DEFAULT_ASSIGNMENTS = (
-    ("h.pane.wsheet", "h.pane.wsheet.houtools_paste_as_object_merge",
-     "Ctrl+Shift+V"),
-)
-
-# Paste as Object Merge 键位的编辑入口数据（HouTools Settings 窗口的
-# 快捷键区；逻辑自旧 tools/paste_hotkey_settings.py 迁入）
+# ---- 各快捷键的 (context, 符号, 默认键) 常量 ----
 PASTE_MERGE_CONTEXT = "h.pane.wsheet"
 PASTE_MERGE_SYMBOL = "h.pane.wsheet.houtools_paste_as_object_merge"
 PASTE_MERGE_DEFAULT_KEY = "Ctrl+Shift+V"
 
+COPY_OUTPUT_CONTEXT = "h.pane.wsheet"
+COPY_OUTPUT_SYMBOL = "h.pane.wsheet.houtools_copy_output_path"
+COPY_OUTPUT_DEFAULT_KEY = "Ctrl+Shift+C"
 
-def paste_merge_current_key() -> str:
+# (context, hotkey_symbol, default_key) —— uiready install_defaults 逐条应用
+DEFAULT_ASSIGNMENTS = (
+    (PASTE_MERGE_CONTEXT, PASTE_MERGE_SYMBOL, PASTE_MERGE_DEFAULT_KEY),
+    (COPY_OUTPUT_CONTEXT, COPY_OUTPUT_SYMBOL, COPY_OUTPUT_DEFAULT_KEY),
+)
+
+# HouTools Settings 窗口可改键登记表:名称 -> (显示名, context, 符号, 默认键)
+ASSIGNABLE = {
+    "paste_merge": ("Paste as Object Merge", PASTE_MERGE_CONTEXT,
+                    PASTE_MERGE_SYMBOL, PASTE_MERGE_DEFAULT_KEY),
+    "copy_output_path": ("Copy Output Path", COPY_OUTPUT_CONTEXT,
+                         COPY_OUTPUT_SYMBOL, COPY_OUTPUT_DEFAULT_KEY),
+}
+
+
+def hotkey_current_key(name: str) -> str:
     """当前生效的键位描述(自定义 > 会话内分配 > 默认)。
 
     import hou 在 try 内：无头（smoke test）直接回退默认键位。
     """
-    custom = get_custom_key(PASTE_MERGE_SYMBOL)
+    _display, context, symbol, default = ASSIGNABLE[name]
+    custom = get_custom_key(symbol)
     if custom:
         return custom
     try:
         import hou
 
-        assigned = hou.hotkeys.assignments(PASTE_MERGE_CONTEXT,
-                                           PASTE_MERGE_SYMBOL)
+        assigned = hou.hotkeys.assignments(context, symbol)
         if assigned:
             return assigned[0]
     except Exception as exc:
         logger.debug("查询当前键位失败: %s", exc)
-    return PASTE_MERGE_DEFAULT_KEY
+    return default
 
 
-def _apply_sole_assignment(key: str) -> bool:
+def _sole_assignment(context: str, symbol: str, key: str) -> bool:
     """把 key 设为该符号的唯一键位，返回是否成功。
 
     hou.hotkeys.addAssignment 是**追加**语义（HOM 文档示例对同一符号连
@@ -60,12 +74,10 @@ def _apply_sole_assignment(key: str) -> bool:
     """
     import hou
 
-    if not hou.hotkeys.addAssignment(PASTE_MERGE_CONTEXT,
-                                     PASTE_MERGE_SYMBOL, key):
+    if not hou.hotkeys.addAssignment(context, symbol, key):
         return False
     try:
-        current = hou.hotkeys.assignments(PASTE_MERGE_CONTEXT,
-                                          PASTE_MERGE_SYMBOL)
+        current = hou.hotkeys.assignments(context, symbol)
     except Exception as exc:
         logger.debug("查询键位失败，跳过旧绑定清理: %s", exc)
         return True
@@ -74,31 +86,33 @@ def _apply_sole_assignment(key: str) -> bool:
         if str(old).lower() == key.lower():
             continue
         try:
-            hou.hotkeys.removeAssignment(PASTE_MERGE_CONTEXT,
-                                         PASTE_MERGE_SYMBOL, old)
+            hou.hotkeys.removeAssignment(context, symbol, old)
         except Exception as exc:
             logger.debug("摘除旧键位 %s 失败: %s", old, exc)
     return True
 
 
-def paste_merge_apply_key(key: str) -> bool:
+def hotkey_apply_key(name: str, key: str) -> bool:
     """把键位写入 Houdini 会话并持久化;返回是否成功。"""
-    if not _apply_sole_assignment(key):
+    _display, context, symbol, _default = ASSIGNABLE[name]
+    if not _sole_assignment(context, symbol, key):
         return False
-    set_custom_key(PASTE_MERGE_SYMBOL, key)
+    set_custom_key(symbol, key)
     return True
 
 
-def paste_merge_clear_custom() -> bool:
+def hotkey_reset_default(name: str) -> bool:
     """清除自定义键位、恢复默认(会话内即时生效 + 删除持久化记录)。
 
     返回是否成功。注意:直接应用默认值(不走 install_defaults 的
     "已有键位不覆盖"分支)——用户明确要求恢复默认。
     """
-    if not _apply_sole_assignment(PASTE_MERGE_DEFAULT_KEY):
+    _display, context, symbol, default = ASSIGNABLE[name]
+    if not _sole_assignment(context, symbol, default):
         return False
-    clear_custom_key(PASTE_MERGE_SYMBOL)
+    clear_custom_key(symbol)
     return True
+
 
 _STORE = None
 
