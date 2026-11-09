@@ -41,3 +41,7 @@
 - **flush 四点**：Start（取消挂起防抖后 `_save_data` 全量写）、`_on_config_changed`/`_on_new_config` 切走前、`closeEvent` 开头。**自动保存只写 `_current_config_name`，绝不走 `_save_data`**——那会按下拉当前文本决定落盘名（可能创建新文件），输入到一半的名字会被当文件名。失败只记 warning 不弹窗（后台动作不打断编辑，下次改动再试）。
 - **容器级编辑显式标记**：增/删槽（非批量分支）、右键插入、数量调整、拖动实际换位（`_on_handle_moved` 里 mark——仅点击不换位不写盘）；批量重建由调用方统一标记。槽参数值编辑走创建期接线，无需逐点调用。
 - **运行中编辑照常落盘**：引擎持有的是 Start 时的 TaskItem 列表，运行中的编辑不影响当前 run，落盘内容即下一轮草稿。运行中切配置/新建配置仍被既有守卫拒绝（与自动保存无关）。
+- **destroyed 兜底取消引擎（2026-11 复审修复）**：pane 直接销毁收不到 closeEvent，旧版 destroyed 只恢复 stdout——引擎被 `_LIVE_ENGINES` 持引用继续跑剩余队列且无法再取消。新增模块级 `_cancel_engine_on_destroy` 连接 destroyed（只碰 `owner._engine`，不触摸已销毁控件）；取消仍协作式（在途任务收尾后停，后续任务不再启动）。
+- **flush 返回 bool（同批）**：`_flush_dirty_tasks` 失败时脏标记保持置位；`_on_config_changed`/`_on_new_config` 检查返回值，失败阻止切换/新建（下拉回弹+提示）——旧版失败仍继续重建槽，编辑既未保存又从界面消失。
+- **Webhook URL 脱敏（同批）**：`_mask_webhook_url` 只留 scheme://host；日志头与 Timeout/Connection/HTTP 异常全部走脱敏版（HA 的 `/api/webhook/<id>` 路径即凭证，requests.HTTPError 的 str 带完整 URL 必须重抛）。
+- **留底失败拒绝写入（同批）**：`AutomationDataManager._backup_corrupt` 返回 bool；留底失败（权限/占用）时 save/save_settings/ensure_dw_config 拒绝写入——原件还在原位，继续覆盖会把唯一可抢救副本冲掉。

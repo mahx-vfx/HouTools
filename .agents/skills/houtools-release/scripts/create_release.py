@@ -188,6 +188,34 @@ def asset_names(release: dict) -> list[str]:
     return [a.get("name") or a.get("file_name") or "" for a in release.get("assets") or []]
 
 
+def _verify_zip(zip_path: Path, version: str) -> None:
+    """上传前校验本地 zip：完整性 + 顶层结构 + 版本与 tag 一致。
+
+    pack_zip.py 已做过全套校验，但下载目录可能残留上一版 HouTools.zip、
+    或包在打包后被替换/损坏——只检查 is_file() 会把旧包/坏包当附件挂
+    到新 release 上（且"附件已存在"的幂等早退会阻止修复重传）。
+    """
+    import zipfile
+    try:
+        with zipfile.ZipFile(zip_path) as z:
+            if z.testzip() is not None:
+                raise SystemExit("zip corrupt entry: %s" % zip_path)
+            names = z.namelist()
+            manifest = "HouTools.json"
+            if manifest not in names:
+                raise SystemExit("zip missing manifest at top level: %s" % zip_path)
+            init_name = "HouTools/python3.13libs/houtools/__init__.py"
+            if init_name not in names:
+                raise SystemExit("zip missing %s: %s" % (init_name, zip_path))
+            init_src = z.read(init_name).decode("utf-8")
+            if '__version__ = "%s"' % version not in init_src:
+                raise SystemExit(
+                    "zip __init__.py is not version %s (stale package?) - "
+                    "re-run pack_zip.py" % version)
+    except zipfile.BadZipFile as exc:
+        raise SystemExit("zip unreadable %s: %s" % (zip_path, exc))
+
+
 def _flag_value(args: list[str], name: str) -> str | None:
     """取 --flag 的值；不在参数里返回 None，在末尾缺值直接报错——
     args[index+1] 裸取在 flag 是最后一个参数时抛 IndexError，报错
@@ -205,6 +233,7 @@ def main(argv: list[str]) -> None:
     if not args:
         raise SystemExit(__doc__)
     tag = "v" + args[0].lstrip("vV")
+    version = args[0].lstrip("vV")
     root = find_repo_root(_flag_value(args, "--root"))
 
     # 先验 annotated：轻量 tag 上 %(contents) 回退为所指 commit 的完整
@@ -229,6 +258,8 @@ def main(argv: list[str]) -> None:
                 else downloads_dir() / FILE_NAME)
     if not zip_path.is_file():
         raise SystemExit("attachment not found: %s (run pack_zip.py first)" % zip_path)
+    # 任何 API 写操作之前先验本地包：完整性/结构/版本与 tag 一致
+    _verify_zip(zip_path, version)
     owner, repo = parse_owner_repo(git_output(root, "remote", "get-url", "origin"))
 
     token, src = read_token()
@@ -276,13 +307,28 @@ def main(argv: list[str]) -> None:
                                            "body": notes}).encode("utf-8"))
             print("[3] patch empty body:", s2)
             if s2 not in (200, 201):
+                # PATCH 失败仍继续上传会把"说明没发出去"包装成 RELEASE OK
+                # ——发行说明是发布契约的一部分，失败必须终止
                 print(jtext(b2)[:300])
+                raise SystemExit(1)
+            # PATCH 成功后回读验证：确认服务端真的落了 notes 再继续
+            s3, b3 = call("GET", BASE + "/repos/%s/%s/releases/tags/%s"
+                          % (owner, repo, tag), token)
+            if s3 != 200 or (json.loads(jtext(b3)).get("body") or "").strip() != notes:
+                print("[3] body verification FAILED after patch")
+                raise SystemExit(1)
+            print("[3] body verified after patch")
         else:
             print("[3] existing body differs from tag notes, kept as-is")
 
     # 4-5. attachment
     if FILE_NAME in asset_names(release):
-        print("[4] attachment already present")
+        # 幂等早退：附件已存在时不会重传（GitCode 无替换接口的既有约束）。
+        # 本地 zip 已通过 _verify_zip（完整性/版本与 tag 一致），但远端
+        # 附件内容无法回读比对——显式提醒"已存在 = 旧包不会被替换"，
+        # 需要修复版本必须删掉旧附件/新开 tag 再发
+        print("[4] attachment already present (NOT replaced; remote content "
+              "not verified - delete the asset or cut a new tag to fix)")
         print("RELEASE OK", release_url(owner, repo, tag))
         return
 

@@ -52,6 +52,7 @@ import glob
 import hashlib
 import os
 import re
+import stat
 import subprocess
 import threading
 import time
@@ -561,6 +562,24 @@ def scan_hdrs(lib_dir):
             for rel, category, _m, _s in records]
 
 
+def _cache_dir_is_link(cache):
+    """`.thumb_cache` 是否为符号链接 / Windows junction（reparse point）。
+
+    Python 3.12+ 才有 ``os.path.isjunction``，H21（3.11）没有——统一走
+    lstat：Windows 用 FILE_ATTRIBUTE_REPARSE_POINT（symlink 与 junction
+    都带该位），POSIX 用 S_ISLNK。链接目标可能是任意目录，跟随清理会把
+    目标里所有"不认识"的 JPG 物理删掉。
+    """
+    try:
+        st = os.lstat(str(cache))
+    except OSError:
+        return False
+    if os.name == "nt":
+        return bool(getattr(st, "st_file_attributes", 0)
+                    & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    return stat.S_ISLNK(st.st_mode)
+
+
 def clean_stale_thumbs(lib_dir, expected_names=None):
     """删除已无对应 HDR 的残留缩略图（含历史 .part 残片），返回删除数量。
 
@@ -569,9 +588,16 @@ def clean_stale_thumbs(lib_dir, expected_names=None):
     wait(1000) 未必等到线程真正退出——把顺序防护升级为内容防护，旧线程
     随后的 os.replace 才不会对着被删的临时名失败（单张有兜底但那张白
     生成）。.part 是历史版本残片、新代码不产，仍照删。
+
+    ⚠ `.thumb_cache` 本身是 junction/symlink 时跳过清理：isdir/scandir
+    会跟随链接，把目标目录里的非工具 JPG 当"无主缓存"整批物理删除。
     """
     cache = thumb_cache_dir(lib_dir)
     if not os.path.isdir(cache):
+        return 0
+    if _cache_dir_is_link(cache):
+        log.warning("thumb cache is a symlink/junction, skip stale thumb "
+                    "cleanup: %s", cache)
         return 0
     if expected_names is None:
         records, _dirs, _thumbs, complete = _scan_library(lib_dir)

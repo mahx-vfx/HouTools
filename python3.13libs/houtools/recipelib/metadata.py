@@ -664,17 +664,48 @@ def set_thumb_from_pixmap(name, pixmap, fmt="PNG"):
     return dst
 
 
+def _inside_thumbs(path):
+    """路径是否收敛在 THUMBS_DIR 之内（realpath + normcase，含符号链接）。"""
+    try:
+        root = os.path.normcase(os.path.realpath(str(THUMBS_DIR))) + os.sep
+        return os.path.normcase(os.path.realpath(path)).startswith(root)
+    except OSError:
+        return False
+
+
+def _protected_thumb_paths(exclude_name):
+    """其他内部名仍引用的缩略图绝对路径集合（normcase）——删除共享文件
+    前的保护名单，语义同 _clean_stale_thumbs 的 protected。"""
+    protected = set()
+    for other, stored in _thumbs_segment().items():
+        if stored and other != exclude_name:
+            protected.add(os.path.normcase(
+                os.path.abspath(_to_abs(stored))))
+    return protected
+
+
 def clear_thumb(name):
+    protected = _protected_thumb_paths(name)
     thumbs = dict(_thumbs_segment())
     old = thumbs.pop(name, None)
     _SETTINGS.set("thumbs", thumbs)
     if old:
         old_abs = _to_abs(old)
         if os.path.exists(old_abs):
-            try:
-                os.remove(old_abs)
-            except OSError as exc:
-                log.warning("cannot remove thumb %s: %s", old_abs, exc)
+            if not _inside_thumbs(old_abs):
+                # 旧配置可能存了目录外绝对路径（历史版本/手改）。UI 承诺
+                # "只删工具内副本、原图不受影响"——外部路径只摘引用不删
+                # 文件，防 clear/删除配方把用户原图或任意可达文件毁掉
+                log.warning("thumb path outside THUMBS_DIR, only clearing "
+                            "reference: %s", old_abs)
+            elif os.path.normcase(os.path.abspath(old_abs)) in protected:
+                log.warning("keep shared thumb %s: still referenced by "
+                            "another recipe", old_abs)
+            else:
+                try:
+                    os.remove(old_abs)
+                except OSError as exc:
+                    log.warning("cannot remove thumb %s: %s", old_abs, exc)
     # 引用已清，再按前缀扫一遍滞留文件（GIF→PNG 等换扩展名的孤儿）
     _clean_stale_thumbs(name)
 

@@ -950,6 +950,22 @@ class _ExtractWorker(QThread):
             )
             return
 
+        # 序列输入缺帧：image2 不做 glob、在第一个缺口静默断流且 rc=0
+        # （dev-notes 已记录）。若当"成功"收尾，完成回调会把全部旧序列
+        # .bak 清掉——缺口后的原始帧不可恢复。把提前结束判为失败走
+        # error 路径：_on_extract_error 还原旧序列备份，缺口前已写的帧
+        # 留在输出目录由提示说明
+        if info.is_sequence and info.frame_numbers:
+            expected_full = (info.frame_numbers[-1]
+                             - info.frame_numbers[0] + 1)
+            if frames_done < expected_full:
+                self.error.emit(
+                    "序列在缺帧处提前结束：仅生成 {} 帧（完整范围 {} 帧）。"
+                    "缺口前的帧已写入输出目录；旧序列备份已还原保留"
+                    .format(frames_done, expected_full),
+                )
+                return
+
         # 完成帧数只报 ffmpeg progress 的 frames_done：目录扫描会把同前缀
         # 的旧序列文件（开工前未删/删除失败）数进去，虚报帧数
         self.done.emit(frames_done, self.output_dir)
@@ -1855,16 +1871,17 @@ class _VideoToSequenceWindow(QDialog):
             "是否移开以避免新旧帧混杂？（转换成功后自动删除，"
             "取消/失败自动还原）",
         ):
+            move_failed = []
             for path in stale:
                 bak = path + ".bak"
                 if os.path.exists(bak):
                     # 上次进程崩溃遗留的 .bak 是那轮旧序列的唯一副本：
                     # 无条件 os.replace 覆盖会把它永久丢掉。先按时间戳
                     # 改名保底（不进 _stale_baks，不参与还原/清理，留给
-                    # 用户手动处置）。保底改名失败必须跳过该 path——
-                    # 继续执行下面的 os.replace(path, bak) 会把这份唯一
-                    # 副本顶掉（keep 比 bak 长 15 字符，深层目录逼近
-                    # MAX_PATH 时正是"保底失败、让位反而成功"的组合）
+                    # 用户手动处置）。保底改名失败必须中止——继续执行
+                    # 下面的 os.replace(path, bak) 会把这份唯一副本顶掉
+                    # （keep 比 bak 长 15 字符，深层目录逼近 MAX_PATH 时
+                    # 正是"保底失败、让位反而成功"的组合）
                     keep = "{}.{}".format(
                         bak, time.strftime("%Y%m%d%H%M%S"))
                     try:
@@ -1874,14 +1891,30 @@ class _VideoToSequenceWindow(QDialog):
                             keep)
                     except OSError as e:
                         logger.warning(
-                            "旧序列备份保底改名失败，跳过该文件让位 "
-                            "%s -> %s: %s", bak, keep, e)
+                            "旧序列备份保底改名失败: %s -> %s: %s",
+                            bak, keep, e)
+                        move_failed.append(path)
                         continue
                 try:
                     os.replace(path, bak)
                     self._stale_baks.append((bak, path))
                 except OSError as e:
+                    # 让位失败的文件没有备份：ffmpeg -y 会直接覆盖它。
+                    # 旧版只记日志继续开工，取消/失败时这份旧帧不可恢复
+                    # ——此处与保底失败同口径，中止整次转换
                     logger.warning("旧序列让位失败 %s: %s", path, e)
+                    move_failed.append(path)
+            if move_failed:
+                self._restore_stale_baks()   # 已让位的文件原样还原
+                dialogs.warn(
+                    self, "旧序列让位失败",
+                    "有 {} 个旧序列文件无法安全移开（无备份，继续转换会"
+                    "被直接覆盖），已还原已让位的文件并中止转换：\n{}"
+                    .format(len(move_failed),
+                            "\n".join(move_failed[:8])
+                            + ("\n…" if len(move_failed) > 8 else "")),
+                )
+                return
 
         # 保存转换上下文快照，供完成回调使用（完成后不读用户可能已改动
         # 的 UI）——相机一并入快照：转换耗时较长时用户可能已切换相机，

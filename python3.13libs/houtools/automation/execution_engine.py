@@ -47,6 +47,23 @@ from houtools.core.log import get_logger
 logger = get_logger("automation.engine")
 
 
+def _mask_webhook_url(url) -> str:
+    """Webhook URL 脱敏：只保留 scheme://host，路径与 query 全部遮蔽。
+
+    HA 的 webhook 路径（/api/webhook/<id>）本身就是调用凭证——日志头、
+    异常消息里出现完整 URL 会把凭证从配置扩散到 $HIP 日志/控制台，随
+    工程或日志分享即泄露。实际请求仍用原始 URL，脱敏只用于展示。
+    """
+    try:
+        from urllib.parse import urlsplit
+        parts = urlsplit(str(url))
+        if parts.netloc:
+            return "{}://{}/***".format(parts.scheme or "http", parts.netloc)
+    except Exception:
+        pass
+    return "***"
+
+
 def _hip_never_saved() -> bool:
     """当前工程是否从未保存过（dl_Submit 前置保存的守卫判据）。
 
@@ -316,10 +333,19 @@ class ExecutionEngine(QThread):
             with requests.post(params.webhook_url, timeout=5) as resp:
                 # 底层连接随 with 块退出即归还连接池,不再依赖 GC 兜底
                 resp.raise_for_status()
+        except requests.HTTPError as exc:
+            # HTTPError 的 str 带完整 URL（含 webhook 凭证路径）——重抛
+            # 脱敏版，任务完成回调打印的异常不再泄露凭证
+            raise RuntimeError(
+                "请求失败（HTTP {}）: {}".format(
+                    getattr(exc.response, "status_code", "?"),
+                    _mask_webhook_url(params.webhook_url)))
         except requests.Timeout:
-            raise TimeoutError(f"请求超时: {params.webhook_url}")
+            raise TimeoutError(
+                "请求超时: {}".format(_mask_webhook_url(params.webhook_url)))
         except requests.ConnectionError:
-            raise ConnectionError(f"连接失败: {params.webhook_url}")
+            raise ConnectionError(
+                "连接失败: {}".format(_mask_webhook_url(params.webhook_url)))
 
     def _execute_open_dw(self, params: OpenDWParams):
         """执行打开DW：启动 Deadline Worker。

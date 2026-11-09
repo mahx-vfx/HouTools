@@ -38,8 +38,16 @@ def reload_all():
     One failing module does not block the rest; a failed module is
     dropped from sys.modules so the next reload (or the next menu click
     through the dispatcher) re-imports it fresh from disk.
+
+    有窗口拒绝关闭且未走延迟关闭协议（如文档编辑器里用户选择保留草稿）
+    时整体中止重载：此时继续 reload 会让旧窗口持有旧类引用、新窗口由
+    新代码重建，两套代码并存。
     """
-    _close_windows()
+    if not _close_windows():
+        message = "HouTools reload 取消：有窗口拒绝关闭（未保存的编辑等），已保留现场"
+        status(message, error=True)
+        log.info(message)
+        return message
 
     reloaded = []
     failures = []
@@ -72,12 +80,16 @@ def _close_windows():
 
     Deliberately imports the *currently loaded* window_manager (not a
     fresh import): its registry holds the live windows.
+
+    返回 False 表示有窗口拒绝关闭且未走延迟关闭协议——reload_all 据
+    此中止本次重载，保留窗口现场。
     """
     try:
         import houtools.ui.window_manager as window_manager
     except Exception:
-        return
+        return True
     try:
-        window_manager.close_all()
+        return window_manager.close_all()
     except Exception as exc:
         log.warning("closing windows failed: %s", exc)
+        return False

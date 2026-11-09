@@ -1479,6 +1479,12 @@ class DocEditorDialog(QtWidgets.QDialog):
 
     def closeEvent(self, event):
         # X 关闭等同取消：有未保存修改先确认丢弃（拒绝则不关窗）
+        # Reload Modules 触发的关闭不弹模态（模态会卡住 reload 流程）：
+        # 直接拒绝关闭——window_manager 据此中止重载，草稿与窗口都保留
+        from houtools.ui import window_manager as _wm
+        if getattr(_wm, "_closing_all", False):
+            event.ignore()
+            return
         if self._confirm_discard():
             self._discard_inserted_assets()
             super().closeEvent(event)

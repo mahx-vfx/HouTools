@@ -36,6 +36,8 @@ Behavior:
 import ctypes
 import os
 import shutil
+import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -90,6 +92,50 @@ def _flag_value(args: list[str], name: str) -> str | None:
     return args[i + 1]
 
 
+def _tracked_files(root: Path) -> set[str]:
+    """git ls-files 白名单（仓库相对 POSIX 路径）。打包只收这里面的文件，
+    本地未提交的草稿/密钥/临时文件不会混进发行包。"""
+    out = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z"],
+        capture_output=True, check=True)
+    return {p for p in out.stdout.decode("utf-8").split("\x00") if p}
+
+
+def _pick_release_files(root: Path, tracked: set[str]) -> list[Path]:
+    """收集 FILES+DIRS 内需要打包的文件白名单。
+
+    - 只收 git 已跟踪文件：copytree 会把本地未跟踪文件（备份、密钥、
+      临时文件）整目录带进包
+    - 拒绝符号链接：copytree 默认跟随链接，可能把包外目录内容打进 zip
+    - `__pycache__`/`*.pyc` 维持旧行为排除（开发机原位运行会产生）
+    """
+    picked = []
+    for entry in FILES + DIRS:
+        p = root / entry
+        if p.is_file():
+            picked.append(p)
+        elif p.is_dir():
+            # 开发机原位运行会产生 __pycache__：收集阶段即排除（旧版
+            # copytree ignore_patterns 的同语义），漏进白名单会让最终
+            # 校验"pycache leaked"失败
+            picked.extend(q for q in sorted(p.rglob("*"))
+                          if q.is_file()
+                          and "__pycache__" not in q.parts
+                          and q.suffix != ".pyc")
+        else:
+            raise SystemExit("missing release path: %s" % p)
+    for p in picked:
+        rel = p.relative_to(root).as_posix()
+        st = os.lstat(str(p))
+        if stat.S_ISLNK(st.st_mode):
+            raise SystemExit("symlink in release tree: %s" % rel)
+        if rel not in tracked:
+            raise SystemExit(
+                "untracked file in release tree: %s (commit it or remove it)"
+                % rel)
+    return picked
+
+
 def main(argv: list[str]) -> None:
     args = [a for a in argv[1:]]
     if not args:
@@ -115,11 +161,11 @@ def main(argv: list[str]) -> None:
     try:
         stage = tmp / PACKAGE_DIR
         stage.mkdir()
-        for f in FILES:
-            shutil.copy2(root / f, stage / f)
-        for d in DIRS:
-            shutil.copytree(root / d, stage / d,
-                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        tracked = _tracked_files(root)
+        for p in _pick_release_files(root, tracked):
+            dst = stage / p.relative_to(root)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p, dst)
         shutil.copy2(root / MANIFEST, tmp / MANIFEST)
 
         out.parent.mkdir(parents=True, exist_ok=True)

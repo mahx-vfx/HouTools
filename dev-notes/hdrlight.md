@@ -66,3 +66,4 @@
 - ~~「刷新」的全量 os.walk + 逐文件 stat 在主线程~~ **已解决**（2026-11）：扫描换 scandir 单趟（免费 stat）+ 快照跳扫后，真重扫只剩每目录一次列表往返；跳扫路径连网格重建都跳过。见「扫描快照与打开秒开」节。
 - 共享盘 SMB 短暂失联时 scandir 在主线程阻塞（与旧 os.walk 同暴露面，未引入新风险）；库目录数极多（上千分类）时跳扫检查本身可达秒级——用户实际结构为两级浅层、几十个分类，不处理。
 - 重建网格（N 个 QListWidgetItem 构造）在数千张时约百 ms 级，重启后首开仍有此成本；会话内重开已完全跳过。暂不 model/view 化（改动大收益小，与刚体网格实现冲突）。
+- **`.thumb_cache` 为 junction/symlink 时跳过清理（2026-11 复审修复）**：`clean_stale_thumbs` 的 isdir/scandir 跟随链接，会把目标目录里所有不匹配 expected_names 的 JPG/.part 当"无主缓存"物理删除（隔离探针实测删掉两张外部文件）。新增 `_cache_dir_is_link`：lstat + `FILE_ATTRIBUTE_REPARSE_POINT`（symlink 与 junction 同判；Python 3.12 才有 `os.path.isjunction`，H21/3.11 不可用），命中即跳过清理并告警。扫描闸（complete=False）防不住这条——HDR 扫描本身可以是完整的。

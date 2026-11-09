@@ -141,7 +141,9 @@ def _extract_member(zf, info, dst, budget=None):
     try:
         with zf.open(info) as src, open(tmp, "wb") as out:
             shutil.copyfileobj(src, out, 1024 * 1024)
-        _assert_image_dimensions(tmp)
+        # 扩展名判定必须用正式名 dst：tmp 后缀是 .~part*，不在图片白名单，
+        # 会让 50MP 像素护栏对所有图片静默跳过（历史缺陷）
+        _assert_image_dimensions(tmp, ext_name=dst)
         os.replace(tmp, dst)
     except (zipfile.BadZipFile, zlib.error) as exc:
         # 中央目录能读、成员数据损坏——典型是下载/传输截断的分享包。
@@ -166,13 +168,15 @@ def _extract_member(zf, info, dst, budget=None):
 MAX_IMAGE_PIXELS = 50 * 1000 * 1000
 
 
-def _assert_image_dimensions(path):
+def _assert_image_dimensions(path, ext_name=None):
     """图片类成员的像素维度护栏；超限抛 TransferError（导入即拒收）。
 
     由 _extract_member 在 os.replace 之前对临时文件调用——检查放在
     落位后会让超限图片已经以正式名留在 thumbs/docs 目录（元数据未
-    引用、也没有清理路径），成为永久垃圾。"""
-    if os.path.splitext(str(path))[1].lower() not in metadata.IMAGE_EXTS:
+    引用、也没有清理路径），成为永久垃圾。ext_name 提供扩展名判定
+    依据（临时文件后缀是 .~part*，必须按正式名判图片类型）。"""
+    name_for_ext = str(ext_name) if ext_name is not None else str(path)
+    if os.path.splitext(name_for_ext)[1].lower() not in metadata.IMAGE_EXTS:
         return
     from PySide6 import QtGui
     size = QtGui.QImageReader(str(path)).size()
@@ -482,10 +486,17 @@ def _doc_dirs_of(members):
     """
     dirs = set()
     for m in members:
-        if not (m.startswith(_DOC_ARC_DIR) and m.endswith("/doc.md")
-                and "/" in m[len(_DOC_ARC_DIR):]):
+        if not m.startswith(_DOC_ARC_DIR):
             continue
-        safe = m.split("/")[1]
+        rest = m[len(_DOC_ARC_DIR):]
+        # 只认 docs/<safe>/doc.md 的**精确两段**结构：更深层成员（如
+        # assets/doc.md）不是根文档——旧写法 endswith("/doc.md") 会把
+        # "X/assets/doc.md" 判成文档目录 X，而 _doc_member_ok 又拒绝解出
+        # 该成员，落一个空 incoming 整目录换入，把本地原文档顶掉
+        parts = rest.split("/")
+        if len(parts) != 2 or parts[1] != "doc.md":
+            continue
+        safe = parts[0]
         if "\\" in safe:
             # 反斜杠不是 zip 成员名的合法分隔符（zipfile 一律写 /）：
             # "docs/a\b/doc.md" 会被 _safe_rel 折成 a/b 两段过检，落盘
@@ -694,12 +705,22 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
 
         stems_before = metadata.stems_snapshot()
         committed = False
-        # 缩略图暂存目录：先解到 .~incoming，元数据提交点之后再统一换入
-        # 正式名——直落正式名会在"缩略图步之后取消/失败"时静默覆盖本地
-        # 同名缩略图且不随 finally 回滚（元数据回滚了、文件回不去，本地
-        # 原图丢失），与文档目录的 .~incoming 保护拉齐强度
+        # ---- 暂存/回滚账本：提交点（bulk_set 成功）之前不覆盖任何本地
+        # 正式文件。缩略图/文档/代码/HDA 全部走暂存 + 旧文件备份，任何
+        # 阶段取消/失败都在 finally 整体回滚——旧版文档在文档步就地换入、
+        # 代码直接写正式名，后续阶段取消会让"导入已取消"的报告与磁盘
+        # 状态劈叉且旧内容不可恢复
         pending_thumbs = []   # (暂存路径, 正式路径)
         thumb_staging = None
+        doc_plans = []        # (incoming目录, 本地目标目录, 旧目录备份路径)
+        code_plans = []       # (暂存文件, 正式目标文件)
+        legacy_plans = []     # (stem, rec)——提交点才 save_code，防孤儿卡片
+        code_staging = None   # 提交段创建；finally 清理按 None 守卫
+        hda_copied = []       # 外层账本：后续阶段失败也要清掉本次复制的 hda
+        doc_swaps = []        # 提交段换入成功后的回滚登记 (备份, 目标)
+        thumb_swaps = []      # (旧文件备份, 目标, 是否有旧文件)
+        code_swaps = []       # (旧文件备份, 目标, 是否有旧文件)
+        legacy_created = []   # 提交段 save_code 新建的文件（回滚时删除）
         if thumb_plan:
             thumb_staging = (Path(metadata.THUMBS_DIR)
                              / (".~incoming%d_%d"
@@ -778,29 +799,18 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
                 except Exception:
                     shutil.rmtree(str(incoming), ignore_errors=True)
                     raise
-                backup = docs_root / (local + ".~old")
-                shutil.rmtree(str(backup), ignore_errors=True)
-                swapped = False
-                try:
-                    if target.exists():
-                        os.rename(str(target), str(backup))
-                    os.rename(str(incoming), str(target))
-                    swapped = True
-                finally:
-                    if swapped:
-                        shutil.rmtree(str(backup), ignore_errors=True)
-                    else:
-                        # 换入失败：旧目录原样还原，本地文档不受影响
-                        if backup.exists() and not target.exists():
-                            os.rename(str(backup), str(target))
-                        shutil.rmtree(str(incoming), ignore_errors=True)
+                # 只解暂存，不换入：文档换入挪到提交段（bulk_set 附近），
+                # 旧目录备份到提交段才建——此段取消/失败本地文档零改动
+                backup = docs_root / (local + ".~old%d_%d"
+                                      % (os.getpid(), threading.get_ident()))
+                doc_plans.append((incoming, target, backup))
                 done += 1
 
             # ---- 3) .hda 库文件（导入后由浏览器 reload 自动安装） ----
-            # 逐文件检查取消；取消/失败时删除本次已复制的文件——它们尚未
-            # 安装（安装走 reload），留着会让"取消后重跑"因目标名被占生成
-            # _2 重复文件（同名定义装两份，行为不可预期）
-            hda_copied = []
+            # 逐文件检查取消。复制清单挂在外层账本 hda_copied：后续代码/
+            # 提交段取消/失败时由 finally 统一清除——它们尚未安装（安装
+            # 走 reload），留着会让"取消后重跑"因目标名被占生成 _2 重复
+            # 文件（同名定义装两份，行为不可预期）
             if hda_import:
                 if not lib_dir:
                     raise TransferError("未指定 .hda 的导入目标文件夹")
@@ -808,58 +818,116 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
                     raise TransferCancelled()
                 os.makedirs(lib_dir, exist_ok=True)
                 taken = {n.lower() for n in os.listdir(lib_dir)}
-                try:
-                    for arc, original in hda_import:
-                        if _report(progress, done, total,
-                                   "复制库文件 {}".format(original)):
-                            raise TransferCancelled()
-                        stem, ext = os.path.splitext(original)
-                        dst, i = original, 2
-                        while dst.lower() in taken:   # 与盘上已有文件重名
-                            dst = "{}_{}{}".format(stem, i, ext)
-                            i += 1
-                        taken.add(dst.lower())
-                        _extract_member(zf, members[arc], Path(lib_dir) / dst,
-                                        budget)
-                        hda_copied.append(dst)
-                        done += 1
-                except BaseException:
-                    for dst in hda_copied:
-                        try:
-                            os.remove(str(Path(lib_dir) / dst))
-                        except OSError as exc:
-                            log.warning("cannot clean up copied hda %s: %s",
-                                        dst, exc)
-                    raise
+                for arc, original in hda_import:
+                    if _report(progress, done, total,
+                               "复制库文件 {}".format(original)):
+                        raise TransferCancelled()
+                    stem, ext = os.path.splitext(original)
+                    dst, i = original, 2
+                    while dst.lower() in taken:   # 与盘上已有文件重名
+                        dst = "{}_{}{}".format(stem, i, ext)
+                        i += 1
+                    taken.add(dst.lower())
+                    _extract_member(zf, members[arc], Path(lib_dir) / dst,
+                                    budget)
+                    hda_copied.append(dst)
+                    done += 1
 
-            # ---- 4) 代码块：文件解回 vex_python_lib/（同名覆盖）+ 旧包
-            # json 段落成文件并改挂元数据键（落盘目标只取 basename，包内
-            # 成员名不可信） ----
+            # ---- 4) 代码块：文件解到暂存目录（提交点才覆盖正式名）+ 旧包
+            # json 段记账（提交点才 save_code，防取消留孤儿卡片）。落盘
+            # 目标只取 basename，包内成员名不可信 ----
             code_done = 0
-            pending_rekeys = []   # 旧包 htcode::X 的元数据改挂，攒到第 5 步
+            pending_rekeys = []   # 旧包 htcode::X 的元数据改挂，攒到提交段
             root_abs = os.path.realpath(str(codeblock.CODELIB_ROOT)) + os.sep
+            code_staging = (Path(codeblock.CODELIB_ROOT)
+                            / (".~incoming%d_%d"
+                               % (os.getpid(), threading.get_ident())))
+            shutil.rmtree(str(code_staging), ignore_errors=True)
             for rel, lang in code_plan:
                 if _report(progress, done, total, "导入代码块 {}".format(rel)):
                     raise TransferCancelled()
                 target = codeblock.code_dir(lang) / os.path.basename(rel)
                 if not (os.path.realpath(str(target)) + os.sep).startswith(root_abs):
                     raise TransferError("包内代码路径不合法: {}".format(rel))
-                _extract_member(zf, members[_CODE_ARC_DIR + rel], target, budget)
+                staged = code_staging / lang / os.path.basename(rel)
+                _extract_member(zf, members[_CODE_ARC_DIR + rel], staged,
+                                budget)
+                code_plans.append((staged, target))
                 code_done += 1
                 done += 1
             for name, rec in legacy_blocks.items():
                 if _report(progress, done, total, "导入代码块 {}".format(name)):
                     raise TransferCancelled()
                 stem = codeblock.free_stem(name.split("::")[-1] or name)
-                codeblock.save_code(stem, rec.get("language", "vex"),
-                                    rec.get("code", ""))
+                legacy_plans.append((stem, rec))
                 if stem != name:
                     pending_rekeys.append((name, stem))
                 code_done += 1
                 done += 1
 
-            # ---- 5) 元数据合并，一次落盘（不可取消点：文件已就位） ----
-            _report(progress, done, total, "合并元数据...")
+            # ---- 5) 提交段（不可取消，无 _report）：文件换入 → 元数据
+            # 落盘为真正提交点。任何换入失败都带着下面的回滚账本整体还原，
+            # "导入已取消/失败"的报告与磁盘状态保持一致 ----
+            # 5a. 文档换入（旧目录先备份）
+            for incoming, target, backup in doc_plans:
+                swapped = False
+                try:
+                    if target.exists():
+                        os.rename(str(target), str(backup))
+                    os.rename(str(incoming), str(target))
+                    swapped = True
+                finally:
+                    if not swapped:
+                        # 换入失败：旧目录原样还原，本地文档不受影响
+                        if backup.exists() and not target.exists():
+                            os.rename(str(backup), str(target))
+                if swapped:
+                    doc_swaps.append((backup, target))
+            # 5b. 缩略图换入（旧文件先备份；单张失败回滚该张并继续——
+            # 元数据尚未落盘，该名留空即旧版"导入缺图"语义）
+            for tmp, dst in pending_thumbs:
+                dst_path = Path(dst)
+                dst_backup = dst_path.with_name(
+                    dst_path.name + ".~old%d_%d"
+                    % (os.getpid(), threading.get_ident()))
+                had_old = dst_path.exists()
+                if had_old:
+                    os.replace(str(dst_path), str(dst_backup))
+                try:
+                    os.replace(tmp, dst)
+                except OSError as exc:
+                    if had_old:
+                        os.replace(str(dst_backup), str(dst_path))
+                    log.warning("import: cannot move thumb to %s: %s",
+                                dst, exc)
+                    continue
+                thumb_swaps.append((dst_backup, dst_path, had_old))
+            # 5c. 代码块换入（旧文件先备份；失败即整体中止走回滚）
+            for staged, target in code_plans:
+                # 全新安装首次导入时 vex/python 目录还不存在：旧版直接
+                # _extract_member 会顺带建父目录，staging 换入路径必须
+                # 自建
+                target.parent.mkdir(parents=True, exist_ok=True)
+                tbackup = target.with_name(
+                    target.name + ".~old%d_%d"
+                    % (os.getpid(), threading.get_ident()))
+                had_old = target.exists()
+                if had_old:
+                    os.replace(str(target), str(tbackup))
+                try:
+                    os.replace(str(staged), str(target))
+                except OSError:
+                    if had_old:
+                        os.replace(str(tbackup), str(target))
+                    raise
+                code_swaps.append((tbackup, target, had_old))
+            # 5d. 旧包 json 代码块落盘（free_stem 新名，无覆盖；登记建档
+            # 供回滚删除，防"取消后留下无元数据的孤儿卡片"）
+            for stem, rec in legacy_plans:
+                path = codeblock.save_code(
+                    stem, rec.get("language", "vex"), rec.get("code", ""))
+                legacy_created.append(Path(path))
+            # 5e. 元数据合并，一次落盘——真正的提交点
             local = metadata.all_metadata()
             favs = list(local["favorites"])
             for n in meta["favorites"]:
@@ -878,17 +946,21 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
             committed = True   # 不可取消点已过：此后失败不再回滚 stems
                                # （register_doc_names/rekey 还会继续改设置，
                                # 此时回滚反与已合并的元数据失步）
-            # ---- 提交点：元数据已落盘，暂存缩略图统一换入正式名 ----
-            # 放在 bulk_set 之后：此前任何取消/失败都只动暂存目录，本地
-            # 缩略图不受影响；提交后覆盖同名即"包内覆盖同名"的文档化
-            # 语义。单张失败不回滚（元数据已指向正式名，原图此时也还没
-            # 被覆盖——os.replace 失败即目标原样），逐张告警留空缩略图
-            for tmp, dst in pending_thumbs:
+            # ---- 已提交：清备份/暂存残件，登记文档与改挂元数据键 ----
+            for backup, _target in doc_swaps:
+                shutil.rmtree(str(backup), ignore_errors=True)
+            for backup, _dst, _had in thumb_swaps:
                 try:
-                    os.replace(tmp, dst)
+                    backup.unlink(missing_ok=True)
                 except OSError as exc:
-                    log.warning("import: cannot move thumb to %s: %s",
-                                dst, exc)
+                    log.warning("cannot remove thumb backup %s: %s",
+                                backup, exc)
+            for backup, _target, _had in code_swaps:
+                try:
+                    backup.unlink(missing_ok=True)
+                except OSError as exc:
+                    log.warning("cannot remove code backup %s: %s",
+                                backup, exc)
             # 登记本次导入产生文档的名字（unique_safe_name 撞名检测的数据源；
             # 按 manifest 里的 recipe 名反查，导出端的包内目录名与本地
             # doc_dir 在非撞名场景下天然一致）
@@ -903,16 +975,60 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
             for old, new in pending_rekeys:
                 metadata.rekey_metadata_name(old, new)
         finally:
+            # 暂存目录无论成败都清掉：成功路径文件已全部换入（目录已空），
+            # 取消/失败路径残件不能留成缩略图/代码垃圾
             if thumb_staging is not None:
-                # 暂存目录无论成败都清掉：成功路径文件已全部换入（目录
-                # 已空），取消/失败路径残件不能留成缩略图垃圾
                 shutil.rmtree(str(thumb_staging), ignore_errors=True)
+            if code_staging is not None:
+                shutil.rmtree(str(code_staging), ignore_errors=True)
+            for incoming, _target, _backup in doc_plans:
+                shutil.rmtree(str(incoming), ignore_errors=True)
             if not committed:
-                # 失败/取消回滚本次登记增量：导入的取消契约是"元数据落盘
-                # 前不改任何设置"，而登记发生在文件搬运之前（缩略图落盘
-                # 要靠它定名）。committed 之后（bulk_set 已过的不可取消
-                # 点）不回滚——rekey 等后续动作可能已改过设置，回滚反而
-                # 制造不一致
+                # 失败/取消：把提交段已换入的文件整体还原到导入前状态
+                # （尽力而为，单项失败留痕不抛——回滚中断比原始异常更难排）
+                for backup, target in reversed(doc_swaps):
+                    shutil.rmtree(str(target), ignore_errors=True)
+                    if backup.exists():
+                        try:
+                            os.rename(str(backup), str(target))
+                        except OSError as exc:
+                            log.warning("cannot restore doc dir %s: %s",
+                                        target, exc)
+                for backup, dst, had_old in reversed(thumb_swaps):
+                    try:
+                        if had_old and backup.exists():
+                            os.replace(str(backup), str(dst))
+                        elif not had_old and dst.exists():
+                            os.remove(str(dst))
+                    except OSError as exc:
+                        log.warning("cannot restore thumb %s: %s", dst, exc)
+                for backup, target, had_old in reversed(code_swaps):
+                    try:
+                        if had_old and backup.exists():
+                            os.replace(str(backup), str(target))
+                        elif not had_old and target.exists():
+                            os.remove(str(target))
+                    except OSError as exc:
+                        log.warning("cannot restore code file %s: %s",
+                                    target, exc)
+                for path in legacy_created:
+                    try:
+                        if path.exists():
+                            os.remove(str(path))
+                    except OSError as exc:
+                        log.warning("cannot remove legacy code %s: %s",
+                                    path, exc)
+                if lib_dir:
+                    for dst in hda_copied:
+                        try:
+                            p = Path(lib_dir) / dst
+                            if p.exists():
+                                os.remove(str(p))
+                        except OSError as exc:
+                            log.warning("cannot clean up copied hda %s: %s",
+                                        dst, exc)
+                # 回滚本次登记增量：导入的取消契约是"元数据落盘前不改任何
+                # 设置"，而登记发生在文件搬运之前（缩略图落盘要靠它定名）
                 metadata.restore_stems(stems_before)
     return {
         "metadata_names": len(set(meta["tags"]) | set(meta["display_names"])

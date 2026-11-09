@@ -59,34 +59,46 @@ def open_window(tool_id, factory):
 def close_all():
     """Close and delete every registered window (used before hot reload).
 
+    返回 False = 有窗口拒绝关闭且未声明延迟关闭协议（如 Recipe 文档
+    编辑器里用户在"放弃修改"确认框选了取消）——此类窗口**不得**
+    deleteLater（会销毁窗口与用户明确选择保留的草稿），留在登记表里；
+    调用方（reload_all）应据此中止本次重载。
+
     close() 返回 False = closeEvent 被 ignore。仅当窗口显式声明
     ``is_close_deferred()``（自己安排了延迟关闭，如 videoseq 转换进行中
-    先隐藏再轮询线程退出）时才跳过 deleteLater——直接删会穿透延迟关闭、
-    析构运行中的 QThread（Qt6 下 qFatal 崩溃）。此类窗口移入 _closing
-    持引用，由其延迟关闭收尾时自行 deleteLater。
+    先隐藏再轮询线程退出）时才移出登记表并转入 _closing——直接删会
+    穿透延迟关闭、析构运行中的 QThread（Qt6 下 qFatal 崩溃）。此类
+    窗口移入 _closing 持引用，由其延迟关闭收尾时自行 deleteLater。
     """
     global _closing_all
     _closing_all = True
+    refused = False
     try:
         for tool_id, window in list(_windows.items()):
             try:
                 if window.close():
                     window.deleteLater()
+                    _windows.pop(tool_id, None)
                 else:
                     deferred = getattr(window, "is_close_deferred", None)
                     if callable(deferred) and deferred():
                         _closing.add(window)
                         window.destroyed.connect(
                             partial(_closing.discard, window))
+                        _windows.pop(tool_id, None)
                     else:
-                        window.deleteLater()
+                        # 拒绝关闭且无延迟协议：保留窗口与登记表条目，
+                        # 由 reload_all 中止重载（旧代码继续可用）
+                        refused = True
             except RuntimeError:
                 _closing.discard(window)
+                _windows.pop(tool_id, None)
             except Exception as exc:
                 log.warning("cannot close window %r: %s", tool_id, exc)
+                refused = True
     finally:
         _closing_all = False
-    _windows.clear()
+    return not refused
 
 
 def _show(window):

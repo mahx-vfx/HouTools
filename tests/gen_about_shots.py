@@ -10,6 +10,7 @@ Usage:
     "C:/.../python313/python.exe" tests/gen_about_shots.py
 """
 
+import atexit
 import json
 import os
 import shutil
@@ -28,6 +29,15 @@ os.environ.setdefault("QT_QPA_FONTDIR",
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python3.13libs"))
+
+# settings 目录隔离：必须在首个 houtools import 之前设置（同 smoke_test
+# 的约定，constants 在 import 期定值）。此前只有窗口级 _SETTINGS 打了桩，
+# 模块级 JsonStore（如 HDR 的 _SCAN_INDEX）会写进真实配置目录——演示库
+# 快照覆盖真实 hdr_scan_index.json 后下次打开要全量重扫；异常退出还会
+# 留下 _about_shots_*.json 残件
+_TMP_SETTINGS = Path(tempfile.mkdtemp(prefix="about_shots_cfg."))
+os.environ["HOUTOOLS_SETTINGS_DIR"] = str(_TMP_SETTINGS)
+atexit.register(lambda: shutil.rmtree(_TMP_SETTINGS, ignore_errors=True))
 
 
 def _find_houdini_root() -> Path:
@@ -183,6 +193,10 @@ def shot_hdr(tmp: Path):
     store = JsonStore("_about_shots_hdr.json", defaults={
         "lib_dir": str(lib), "favorites": [], "thumb_size": 151,
         "pin_on_top": False})
+    # 扫描快照 Store 同样打桩：模块级 _SCAN_INDEX 不隔离会写真实配置
+    # 目录（env 隔离后落到临时目录，双保险）
+    scan_index = JsonStore("_about_shots_scan.json", defaults={
+        "lib_dir": "", "dirs": {}, "files": {}, "thumbs": {}})
     # offscreen 裸环境缺 qjpeg 插件(与 smoke_test 同一已知限制),
     # 让缩略图缓存改走 PNG——OIIO 按扩展名选输出写入器,Qt 原生可读
     _orig_thumb_path = hdr_browser.thumb_path
@@ -193,7 +207,8 @@ def shot_hdr(tmp: Path):
     with patch.object(hdr_browser, "_houdini_bin",
                       lambda: str(HOUDINI_ROOT / "bin")), \
          patch.object(hdr_browser, "thumb_path", _png_thumb), \
-         patch.object(hdr_browser, "_SETTINGS", store):
+         patch.object(hdr_browser, "_SETTINGS", store), \
+         patch.object(hdr_browser, "_SCAN_INDEX", scan_index):
         win = hdr_browser._HdrLibraryWindow(str(lib))
         win.resize(SHOT_W, SHOT_H)
         win.show()
@@ -343,6 +358,11 @@ def main():
             shot_recipe(tmp),
         ]
     print("done:", ["ok" if r else "MISS" for r in results])
+    # 截图缺失/保存失败必须让自动化感知：此前正常返回退出码 0，发布流程
+    # 会拿着旧截图或缺图继续
+    if not all(results):
+        raise SystemExit("about shots incomplete: %d/%d ok" % (
+            sum(1 for r in results if r), len(results)))
 
 
 if __name__ == "__main__":

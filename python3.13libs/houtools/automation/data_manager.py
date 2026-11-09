@@ -133,8 +133,12 @@ class AutomationDataManager:
                 return data
             except Exception as exc:
                 logger.warning("读取应用配置失败，将按默认值补建: %s (%s)", path, exc)
-                # 与 load() 同语义：先留底再补建，原内容不随覆盖丢失
-                cls._backup_corrupt(path)
+                # 与 load() 同语义：先留底再补建，原内容不随覆盖丢失。
+                # 留底失败（权限/占用）时原件还在原位——跳过补写，防唯一
+                # 可抢救副本被默认值冲掉
+                if not cls._backup_corrupt(path):
+                    logger.warning("留底失败，跳过应用配置补写: %s", path)
+                    return data
 
         # 空字符串/纯空白视同"未配置"——补写默认(与 load_dw_exe_path
         # 的"空值回默认"同语义)。tmp+os.replace 原子落位（同 save/）：
@@ -184,18 +188,22 @@ class AutomationDataManager:
     # ── 核心 IO ──────────────────────────────────────────
 
     @classmethod
-    def _backup_corrupt(cls, path: str) -> None:
+    def _backup_corrupt(cls, path: str) -> bool:
         """把解析失败的配置文件改名 ``.bak`` 留底（与 core/settings.py 的
         JsonStore 同语义）：配置读不出来时先留原件，防止后续 ``save()`` 按
-        "读取失败 → 覆盖写"把尚可抢救的内容直接冲掉。改名失败（权限等）
-        只告警，不阻塞调用方返回空数据。
+        "读取失败 → 覆盖写"把尚可抢救的内容直接冲掉。
+
+        返回是否留底成功。**写入方必须检查返回值**：留底失败（权限/占用
+        等）时继续覆盖会把唯一原件冲掉——拒绝本次写入，原件留待用户处理。
         """
         bak = path + ".bak"
         try:
             os.replace(path, bak)
             logger.warning("损坏的配置文件已留底: %s", bak)
+            return True
         except OSError as exc:
             logger.warning("无法留底损坏的配置文件 %s: %s", path, exc)
+            return False
 
     @classmethod
     def load(cls, filename: Optional[str] = None) -> list[dict]:
@@ -306,9 +314,13 @@ class AutomationDataManager:
                     return False
                 except Exception as exc:
                     # 解析失败/顶层不是对象：留底再覆盖，尚可抢救的内容
-                    # 不随本次写入直接丢失
+                    # 不随本次写入直接丢失。留底失败（权限/占用）时原件
+                    # 还在原位——拒绝本次写入，防唯一可抢救副本被冲掉
                     logger.warning("现有配置损坏，先留底: %s (%s)", path, exc)
-                    cls._backup_corrupt(path)
+                    if not cls._backup_corrupt(path):
+                        logger.warning(
+                            "留底失败，本次拒绝写入: %s", path)
+                        return False
             # 合并数据
             existing_data["tasks"] = tasks_data
             # 临时文件 + 原子替换：写盘中途崩溃/断电不会截断原文件
@@ -403,9 +415,13 @@ class AutomationDataManager:
                                    path, exc)
                     return False
                 except Exception as exc:
-                    # 解析失败/顶层不是对象：留底再覆盖
+                    # 解析失败/顶层不是对象：留底再覆盖；留底失败拒绝写入
+                    # （同 save() 的语义）
                     logger.warning("现有配置损坏，先留底: %s (%s)", path, exc)
-                    cls._backup_corrupt(path)
+                    if not cls._backup_corrupt(path):
+                        logger.warning(
+                            "留底失败，本次拒绝写入: %s", path)
+                        return False
             # 合并数据
             existing_data["settings"] = settings_data
             # 临时文件 + 原子替换：写盘中途崩溃/断电不会截断原文件

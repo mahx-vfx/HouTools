@@ -40,7 +40,10 @@ from houtools.automation.task_types import (
     OpenDWParams,
     as_bool,
 )
-from houtools.automation.execution_engine import ExecutionEngine
+from houtools.automation.execution_engine import (
+    ExecutionEngine,
+    _mask_webhook_url,
+)
 from houtools.automation.styles import STYLE_SHEET
 
 from houtools.core.constants import PROJECT_ROOT
@@ -214,6 +217,28 @@ def _force_restore_stdout(owner=None):
     """
     sys.stdout = _strip_owned_tees(sys.stdout, owner)
     sys.stderr = _strip_owned_tees(sys.stderr, owner)
+
+
+def _cancel_engine_on_destroy(owner=None):
+    """模块级兜底：面板被直接销毁（pane 关闭收不到 closeEvent）时请求
+    取消执行中的引擎。
+
+    closeEvent 路径已调用 engine.cancel()，但 destroyed 信号此前只恢复
+    stdout——引擎由 _LIVE_ENGINES 持引用不会随面板销毁而停止，剩余队列
+    （按钮点击/Webhook/DW）会在无界面的情况下继续执行且无法再从 UI 取
+    消。这里只碰 owner._engine（destroyed 时 Python 属性仍可读），不触
+    摸任何已销毁的控件；取消仍是协作式的（在途任务收尾后才停），但对
+    后续任务生效。
+    """
+    try:
+        engine = getattr(owner, "_engine", None)
+    except Exception:
+        return
+    if engine is not None:
+        try:
+            engine.cancel()
+        except RuntimeError:
+            logger.debug("cancel engine on destroy failed: engine deleted")
 
 
 # ── 运行中引擎留痕 ───────────────────────────────────────────
@@ -894,9 +919,11 @@ class AutomationWindow(QWidget):
         self._log_lock = threading.RLock()
         # stdout 重定向兜底与日志句柄释放（进程级重定向不依赖面板存活）：
         # destroyed 销毁时必触发，只连一次——原先每次 Start 追加两条连接，
-        # N 次执行挂 2N 条（幂等但连接表持续增长）
+        # N 次执行挂 2N 条（幂等但连接表持续增长）。第三条兜底：引擎
+        # 运行中面板被直接销毁时请求取消（closeEvent 之外的销毁路径）
         self.destroyed.connect(_force_restore_stdout)
         self.destroyed.connect(self._close_log_file)
+        self.destroyed.connect(_cancel_engine_on_destroy)
 
         # Delete 用 QShortcut 认领（WidgetWithChildren 上下文优先于
         # Houdini 的全局快捷键）；焦点在输入框内时 QLineEdit 自己会
@@ -2179,7 +2206,8 @@ class AutomationWindow(QWidget):
                     lines.append(f"  保存到磁盘: {'是' if sd else '否'}")
                 elif task_type == "HOME_ASSISTANT":
                     webhook_url = params.get("webhook_url", "")
-                    lines.append(f"  Webhook: {webhook_url}")
+                    lines.append("  Webhook: {}".format(
+                        _mask_webhook_url(webhook_url)))
                 elif task_type == "OPEN_DW":
                     lines.append(f"  DW 软件路径: {AutomationDataManager.load_dw_exe_path()}")
                 lines.append("")
@@ -2281,8 +2309,14 @@ class AutomationWindow(QWidget):
         if not name:
             return
         # 切走前把防抖窗口内未落盘的编辑写进旧配置（自动保存语义：
-        # 草稿不因切换丢失；运行中已在上方守卫拦下，不会走到这）
-        self._flush_dirty_tasks()
+        # 草稿不因切换丢失；运行中已在上方守卫拦下，不会走到这）。
+        # 保存失败必须中止切换：继续会重建槽清掉编辑——既没保存又从
+        # 界面消失
+        if not self._flush_dirty_tasks():
+            self._refresh_config_dropdown()   # blockSignals 内回弹当前名
+            status("Automation: 当前配置保存失败，已取消切换",
+                   severity="warning")
+            return
         self._current_config_name = name
         self._load_data()  # 重新加载,内部会再 refresh 一次(无副作用)
         self._load_settings()  # 同步加载新配置的设置项
@@ -2315,9 +2349,12 @@ class AutomationWindow(QWidget):
             )
             return
 
-        # 切走前先落盘当前配置的防抖内容（同 _on_config_changed；
-        # 运行中已在上方守卫拦下）
-        self._flush_dirty_tasks()
+        # 切走前先落盘当前配置的防抖内容（同 _on_config_changed；运行中
+        # 已在上方守卫拦下）。保存失败中止新建：继续会清空旧槽丢编辑
+        if not self._flush_dirty_tasks():
+            dialogs.warn(self, "保存失败",
+                         "当前配置的未保存编辑落盘失败，已取消新建配置。")
+            return
         path = AutomationDataManager.get_data_path(sanitized)
         if os.path.exists(path):
             dialogs.info(
@@ -2496,22 +2533,30 @@ class AutomationWindow(QWidget):
         self._dirty_pending = True
         self._dirty_timer.start()
 
-    def _flush_dirty_tasks(self) -> None:
+    def _flush_dirty_tasks(self) -> bool:
         """防抖到点/强制收尾：把当前任务写进当前配置。
 
         落盘目标只认 ``_current_config_name`` —— 自动保存绝不走
         ``_save_data``（那会按下拉当前文本创建新文件，输入到一半的
         名字会被当文件名）。失败只记日志不弹窗：自动保存是后台动作，
-        打断编辑反而糟糕，下次改动会再试。"""
+        打断编辑反而糟糕，下次改动会再试。
+
+        返回 True = 无未落盘改动或保存成功；False = 有改动但落盘失败
+        （脏标记保持置位，下次编辑/收尾重试）。切配置/新建配置等破坏性
+        重建入口必须检查返回值——失败仍继续会清空旧槽，编辑既没保存
+        又从界面消失。"""
         self._dirty_timer.stop()
         if not self._dirty_pending:
-            return
+            return True
         self._dirty_pending = False
-        if not AutomationDataManager.save(
+        if AutomationDataManager.save(
                 self._collect_data(),
                 filename=self._current_config_name):
-            logger.warning("Automation: 自动保存失败 filename=%s",
-                           self._current_config_name)
+            return True
+        self._dirty_pending = True
+        logger.warning("Automation: 自动保存失败 filename=%s",
+                       self._current_config_name)
+        return False
 
     # ── 执行集成 ───────────────────────────────────────────
 

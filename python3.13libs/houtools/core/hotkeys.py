@@ -71,25 +71,33 @@ def _sole_assignment(context: str, symbol: str, key: str) -> bool:
     绑 alt+k 与 shift+del 两键），只 add 不摘会让旧键残留生效——改键后
     默认键仍触发、「恢复默认」清不掉自定义键。先加新键（失败不动原状），
     再沿 assignments() 把其余键逐个 removeAssignment。
+
+    查询/摘除失败一律返回 False：调用方据此回滚，不能虚报成功——旧键
+    摘除失败时新键与旧键并存，UI 与持久化都显示新键，实际却有两个键
+    都能触发。
     """
     import hou
 
     if not hou.hotkeys.addAssignment(context, symbol, key):
         return False
     try:
-        current = hou.hotkeys.assignments(context, symbol)
+        current = list(hou.hotkeys.assignments(context, symbol))
     except Exception as exc:
-        logger.debug("查询键位失败，跳过旧绑定清理: %s", exc)
-        return True
+        logger.debug("查询键位失败: %s", exc)
+        return False
+    ok = True
     for old in current:
         # 大小写不敏感比较：addAssignment 可能归一化键名大小写
         if str(old).lower() == key.lower():
             continue
         try:
-            hou.hotkeys.removeAssignment(context, symbol, old)
+            if not hou.hotkeys.removeAssignment(context, symbol, old):
+                logger.debug("摘除旧键位 %s 返回失败", old)
+                ok = False
         except Exception as exc:
             logger.debug("摘除旧键位 %s 失败: %s", old, exc)
-    return True
+            ok = False
+    return ok
 
 
 def hotkey_apply_key(name: str, key: str) -> bool:
@@ -98,13 +106,32 @@ def hotkey_apply_key(name: str, key: str) -> bool:
     先落盘再改会话：持久化失败（配置目录不可建/只读共享盘等）直接
     False、会话不被改动——反过来的顺序曾让"会话已生效但 hotkeys.json
     没落盘"，重启回退、用户以为没生效且 UI 零反馈（save() 抛的异常
-    从 Qt 槽穿出）。落盘成功但会话装失败时撤掉刚写的持久化记录。
+    从 Qt 槽穿出）。落盘成功但会话装失败时回滚为事务：恢复 previous
+    自定义键（有的话），否则清掉记录；无 previous 不得清空——旧版
+    无条件 clear_custom_key 会把用户原有的自定义配置删掉。
+
+    注意 JsonStore 的 set 失败仍会保留内存改动（改动即存语义），所以
+    previous 必须在改动前快照，恢复走显式 set，而不是依赖 store 自动
+    回滚。
     """
     _display, context, symbol, _default = ASSIGNABLE[name]
+    previous = get_custom_key(symbol)
     if not set_custom_key(symbol, key):
         return False
     if not _sole_assignment(context, symbol, key):
-        clear_custom_key(symbol)
+        # 会话里新键可能已半装上：尽力摘掉，再恢复持久化与键位的旧值
+        try:
+            import hou
+            hou.hotkeys.removeAssignment(context, symbol, key)
+        except Exception as exc:
+            logger.debug("回滚新键位 %s 失败: %s", key, exc)
+        if previous:
+            if not set_custom_key(symbol, previous):
+                logger.error(
+                    "恢复旧自定义键位失败 symbol=%s previous=%s",
+                    symbol, previous)
+        else:
+            clear_custom_key(symbol)
         return False
     return True
 
