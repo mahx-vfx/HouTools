@@ -68,8 +68,9 @@ class JsonStore:
             log.warning("cannot back up corrupt %s: %s", self.path, exc)
 
     def save(self):
+        """落盘；返回是否成功（目录不可建/盘满等只告警不抛——调用方拿
+        bool 决定会话态是否可信，异常逃出去会让 Qt 槽零反馈）。"""
         with self._lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
             # 临时名带 PID/线程 id：固定名在并发写时会互踩（两个 Houdini
             # 开同一 settings 目录、或 reload 后同文件的新旧 JsonStore
             # 实例并存），os.replace 可能把对方半写的文件搬上正式名
@@ -77,18 +78,24 @@ class JsonStore:
                 self.path.name + ".~tmp%d_%d"
                 % (os.getpid(), threading.get_ident()))
             try:
+                # mkdir 也在保护内：配置目录被删/只读共享盘时 OSError
+                # 不能逃出 save()（曾在 try 外，会把热键会话态与持久化
+                # 态劈叉且 UI 零反馈）
+                self.path.parent.mkdir(parents=True, exist_ok=True)
                 # 临时文件 + 原子替换：写盘中途崩溃/断电不会截断原文件
                 tmp.write_text(
                     json.dumps(self._data, indent=2, ensure_ascii=False),
                     encoding="utf-8",
                 )
                 os.replace(tmp, self.path)
+                return True
             except Exception as exc:
                 log.error("cannot save %s: %s", self.path, exc)
                 try:
                     tmp.unlink(missing_ok=True)
                 except OSError as unlink_exc:
                     log.debug("cannot remove tmp %s: %s", tmp, unlink_exc)
+                return False
 
     def get(self, key, default=None):
         with self._lock:
@@ -98,13 +105,15 @@ class JsonStore:
         with self._lock:
             self._data[key] = value
             if save:
-                self.save()
+                return self.save()
+            return True
 
     def remove(self, key, save=True):
         with self._lock:
             self._data.pop(key, None)
             if save:
-                self.save()
+                return self.save()
+            return True
 
     def as_dict(self):
         with self._lock:

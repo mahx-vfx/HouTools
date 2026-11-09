@@ -370,7 +370,43 @@ def _read_manifest(zf):
     if not isinstance(ver, int) or ver > FORMAT_VERSION:
         raise TransferError("导出包格式过新（v{}），请先升级 HouTools"
                             .format(ver))
+    # 段级类型契约：recipes/hda_files 驱动导入决策，手改包写成数组/数字
+    # 时不能让 TypeError 逃出"预期内失败一律 TransferError"（调用侧
+    # 只捕 TransferError/OSError）
+    if m.get("recipes") is not None \
+            and not isinstance(m["recipes"], list):
+        raise TransferError("manifest.json 的 recipes 段类型异常")
+    if m.get("hda_files") is not None \
+            and not isinstance(m["hda_files"], dict):
+        raise TransferError("manifest.json 的 hda_files 段类型异常")
     return m
+
+
+def _seg_dict(value, what):
+    """元数据段级类型收敛：非 dict（手改/损坏包）按空处理并告警。
+
+    `or {}` 只兜 falsy——非空 list/str 会让 .items() 抛 AttributeError
+    逃出"预期内失败一律 TransferError"的本模块契约（调用侧只捕
+    TransferError/OSError，异常从 Qt 槽穿出 = 用户看不到导入失败弹窗）。
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        log.warning("import: 包元数据段 %s 类型异常（%s），按空处理",
+                    what, type(value).__name__)
+        return {}
+    return value
+
+
+def _seg_list(value, what):
+    """同 _seg_dict 的 list 版（favorites/recipes 等列表段）。"""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        log.warning("import: 包元数据段 %s 类型异常（%s），按空处理",
+                    what, type(value).__name__)
+        return []
+    return value
 
 
 def _read_packaged_metadata(zf):
@@ -391,7 +427,7 @@ def _read_packaged_metadata(zf):
     # 代码块条目收紧：只收"有非空代码、语言可识别"的记录（v1 旧包没有
     # 该键，按空处理）；语言不认识一律按 vex 收敛（metadata 同款容错）
     code_blocks = {}
-    for k, v in (data.get("code_blocks") or {}).items():
+    for k, v in _seg_dict(data.get("code_blocks"), "code_blocks").items():
         if not isinstance(v, dict):
             continue
         code = str(v.get("code") or "")
@@ -406,17 +442,30 @@ def _read_packaged_metadata(zf):
             "created": str(v.get("created") or ""),
             "modified": str(v.get("modified") or ""),
         }
+    # tags 的值必须是 list：裸迭代会把字符串拆成逐字符标签（"abc" →
+    # ["a","b","c"]）静默入库，数字直接 TypeError——一律跳过该键并告警
+    tags_seg = {}
+    for k, v in _seg_dict(data.get("tags"), "tags").items():
+        if not isinstance(v, list):
+            log.warning("import: tags[%r] 类型异常（%s），跳过该键",
+                        k, type(v).__name__)
+            continue
+        if v:
+            tags_seg[str(k)] = [str(t) for t in v]
     return {
-        "favorites": [str(x) for x in (data.get("favorites") or []) if x],
+        "favorites": [str(x) for x in _seg_list(data.get("favorites"),
+                                                "favorites") if x],
         # 空列表条目不收：导入按"包内覆盖同名"合并，空标签会误删本地内容
-        "tags": {str(k): [str(t) for t in (v or [])]
-                 for k, v in (data.get("tags") or {}).items() if v},
+        "tags": tags_seg,
         "thumbs": {str(k): str(v).replace("\\", "/")
-                   for k, v in (data.get("thumbs") or {}).items() if v},
+                   for k, v in _seg_dict(data.get("thumbs"),
+                                         "thumbs").items()
+                   if v and isinstance(v, str)},
         "display_names": {str(k): str(v) for k, v in
-                          (data.get("display_names") or {}).items() if v},
+                          _seg_dict(data.get("display_names"),
+                                    "display_names").items() if v},
         "colors": {str(k): str(v) for k, v in
-                   (data.get("colors") or {}).items() if v},
+                   _seg_dict(data.get("colors"), "colors").items() if v},
         "code_blocks": code_blocks,
     }
 
@@ -437,6 +486,12 @@ def _doc_dirs_of(members):
                 and "/" in m[len(_DOC_ARC_DIR):]):
             continue
         safe = m.split("/")[1]
+        if "\\" in safe:
+            # 反斜杠不是 zip 成员名的合法分隔符（zipfile 一律写 /）：
+            # "docs/a\b/doc.md" 会被 _safe_rel 折成 a/b 两段过检，落盘
+            # 却用原始串——校验口径与使用口径劈叉（Windows 上多出一层
+            # 目录、文档成孤儿）。含反斜杠的目录名一律按非法拒绝
+            raise TransferError("包内文档路径不合法: {}".format(m))
         try:
             _safe_rel(safe)
         except TransferError:
@@ -448,11 +503,17 @@ def _doc_dirs_of(members):
 def _hda_plan(manifest, members, existing):
     """决策每个 .hda 包内文件：复制（无同名冲突）或跳过（含本地同名）。"""
     hda_import, hda_skip = [], []
-    for arc, info in (manifest.get("hda_files") or {}).items():
+    for arc, info in _seg_dict(manifest.get("hda_files"),
+                               "hda_files").items():
         arc = str(arc)
         if arc not in members:
             continue
-        rec = [str(n) for n in (info or {}).get("recipes") or []]
+        if info is not None and not isinstance(info, dict):
+            log.warning("import: manifest 的 hda_files[%r] 类型异常（%s），"
+                        "跳过该文件", arc, type(info).__name__)
+            continue
+        rec = [str(n) for n in _seg_list((info or {}).get("recipes"),
+                                         "hda_files[%s].recipes" % arc)]
         if any(n in existing for n in rec):
             hda_skip.append((arc, rec))
         else:
@@ -569,8 +630,9 @@ def _doc_target_map(doc_dirs, manifest):
     里）保持原名；此时若 stems 登记显示目标目录属于本次导入之外的本地
     配方，拒绝该目录（整目录换入会清掉对方的文档）。
     """
-    names = [str(n) for n in manifest.get("recipes") or []]
+    names = [str(n) for n in _seg_list(manifest.get("recipes"), "recipes")]
     mapping = {}
+    docs_root = str(metadata.DOCS_DIR)
     for safe in doc_dirs:
         matches = [n for n in names if metadata.safe_name(n) == safe]
         local = (metadata.unique_safe_name(matches[0])
@@ -580,6 +642,22 @@ def _doc_target_map(doc_dirs, manifest):
             raise TransferError(
                 "包内文档目录 {} 与本地配方 {} 的文档目录同名，"
                 "为避免覆盖已拒绝导入".format(safe, "、".join(others)))
+        if local == safe:
+            # 二道防线（覆盖 stems 登记之外的存在）：反查不唯一/无命中时
+            # 保持包内原名落盘，若该名在大小写不敏感盘上与 DOCS_DIR 里
+            # 已有目录撞名（含仅大小写差异），换入会整目录顶掉对方文档
+            # 且 .~old 备份被 rmtree——原文不可恢复
+            try:
+                existing_dirs = os.listdir(docs_root)
+            except OSError:
+                existing_dirs = []
+            hit = [d for d in existing_dirs
+                   if d != local
+                   and os.path.normcase(d) == os.path.normcase(local)]
+            if hit:
+                raise TransferError(
+                    "包内文档目录 {} 与本地文档目录 {} 同名，"
+                    "为避免覆盖已拒绝导入".format(safe, "、".join(hit)))
         mapping[safe] = local
     return mapping
 
@@ -616,6 +694,17 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
 
         stems_before = metadata.stems_snapshot()
         committed = False
+        # 缩略图暂存目录：先解到 .~incoming，元数据提交点之后再统一换入
+        # 正式名——直落正式名会在"缩略图步之后取消/失败"时静默覆盖本地
+        # 同名缩略图且不随 finally 回滚（元数据回滚了、文件回不去，本地
+        # 原图丢失），与文档目录的 .~incoming 保护拉齐强度
+        pending_thumbs = []   # (暂存路径, 正式路径)
+        thumb_staging = None
+        if thumb_plan:
+            thumb_staging = (Path(metadata.THUMBS_DIR)
+                             / (".~incoming%d_%d"
+                                % (os.getpid(), threading.get_ident())))
+            shutil.rmtree(str(thumb_staging), ignore_errors=True)
         try:
             # 先整批登记 stems（一次落盘）：包内名字尚未进本地元数据，逐个
             # unique_safe_name 探测不到批内撞名伙伴（曾双双落 plain、缩略图
@@ -625,10 +714,12 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
                 [str(n) for n in (manifest.get("recipes") or [])]
                 + [n for n, _arc, _ext in thumb_plan])
 
-            # ---- 1) 缩略图：按本地 unique_safe_name 重映射落盘 ----
+            # ---- 1) 缩略图：按本地 unique_safe_name 重映射解到暂存 ----
             # 包内文件名来自导出方的 safe_name，与本地布局无关；直用包内名
             # 会在折名撞名时整文件覆盖本地另一配方的缩略图（导入端漏配
-            # unique_safe_name 防线），本地撞名时摘要名也与查找路径一致
+            # unique_safe_name 防线），本地撞名时摘要名也与查找路径一致。
+            # 正式落盘推迟到提交点（见 bulk_set 之后），中途取消/失败只
+            # 留暂存目录、由 finally 整体清掉
             new_thumbs = {}
             for name, arc, ext in thumb_plan:
                 if _report(progress, done, total,
@@ -636,7 +727,10 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
                     raise TransferCancelled()
                 dst = str(Path(metadata.THUMBS_DIR)
                           / (metadata.unique_safe_name(name) + ext))
-                _extract_member(zf, members[arc], dst, budget)
+                tmp = str(thumb_staging
+                          / (metadata.unique_safe_name(name) + ext))
+                _extract_member(zf, members[arc], tmp, budget)
+                pending_thumbs.append((tmp, dst))
                 new_thumbs[name] = metadata._to_stored(dst)
                 done += 1
 
@@ -784,6 +878,17 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
             committed = True   # 不可取消点已过：此后失败不再回滚 stems
                                # （register_doc_names/rekey 还会继续改设置，
                                # 此时回滚反与已合并的元数据失步）
+            # ---- 提交点：元数据已落盘，暂存缩略图统一换入正式名 ----
+            # 放在 bulk_set 之后：此前任何取消/失败都只动暂存目录，本地
+            # 缩略图不受影响；提交后覆盖同名即"包内覆盖同名"的文档化
+            # 语义。单张失败不回滚（元数据已指向正式名，原图此时也还没
+            # 被覆盖——os.replace 失败即目标原样），逐张告警留空缩略图
+            for tmp, dst in pending_thumbs:
+                try:
+                    os.replace(tmp, dst)
+                except OSError as exc:
+                    log.warning("import: cannot move thumb to %s: %s",
+                                dst, exc)
             # 登记本次导入产生文档的名字（unique_safe_name 撞名检测的数据源；
             # 按 manifest 里的 recipe 名反查，导出端的包内目录名与本地
             # doc_dir 在非撞名场景下天然一致）
@@ -798,6 +903,10 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
             for old, new in pending_rekeys:
                 metadata.rekey_metadata_name(old, new)
         finally:
+            if thumb_staging is not None:
+                # 暂存目录无论成败都清掉：成功路径文件已全部换入（目录
+                # 已空），取消/失败路径残件不能留成缩略图垃圾
+                shutil.rmtree(str(thumb_staging), ignore_errors=True)
             if not committed:
                 # 失败/取消回滚本次登记增量：导入的取消契约是"元数据落盘
                 # 前不改任何设置"，而登记发生在文件搬运之前（缩略图落盘

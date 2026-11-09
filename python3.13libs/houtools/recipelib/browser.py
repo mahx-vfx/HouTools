@@ -1770,7 +1770,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             "Zip 包 (*.zip);;全部文件 (*.*)")
         if not path:
             return
-        existing = set(self._info_by_name)
+        # 只并 recipe 名，不含代码块名：_info_by_name 是两者并集，把代码
+        # 块名喂进"已存在"集合会让包内 .hda 声明的 recipe 名恰与本地同名
+        # 代码块撞上时整文件误判同名冲突跳过——recipe 静默丢失
+        existing = {r.name for r in self._recipes}
         # 出厂 recipe 名并入"已存在"集合：包内含同名 recipe 的 .hda 与
         # 本地同名同语义一律跳过——装进来会与出厂定义同名冲突（Houdini
         # 按库优先级二选一，不可预期）
@@ -3684,11 +3687,23 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                                  lambda: self._snip_begin_safe(info))
 
     def _snip_begin_safe(self, info):
-        """singleShot 回调：等待期面板可能被 Reload 销毁。"""
+        """singleShot 回调：等待期面板可能被 Reload 销毁。
+
+        任何异常都必须收尾：不恢复面板不复位 _snip_pending，面板就永久
+        停在隐藏态、之后每次点「截取缩略图」都在重入守卫处静默 return
+        （功能终身失效，且从菜单重开走 show() 不经过 closeEvent，没有
+        复位机会）。恢复动作自身兜 RuntimeError——面板真被销毁时属性
+        访问即抛，无可恢复，Reload 重建后自愈。
+        """
         try:
             self._snip_begin(info)
-        except RuntimeError:
-            log.warning("recipe 面板已销毁，取消截取缩略图")
+        except Exception as exc:
+            log.warning("截取缩略图启动失败（%s: %s），恢复面板",
+                        type(exc).__name__, exc)
+            try:
+                self._snip_restore_panel()
+            except RuntimeError:
+                log.warning("recipe 面板已销毁，跳过截取缩略图面板恢复")
 
     def _snip_begin(self, info):
         # 抓取全部屏幕：每屏一块遮罩，选框可在任意屏拖拽、允许跨屏；

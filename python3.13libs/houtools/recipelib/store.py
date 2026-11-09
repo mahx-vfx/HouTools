@@ -353,6 +353,12 @@ def _read_header(info, hfs):
         # - tool_recipe(shelf 式): label 在 tool.tool_labels[]（[0]=tab 名，
         #   [1]=shelf 名），子菜单在 tool.tab_submenus[]
         info.label = props.get("label") or ""
+        if not isinstance(info.label, str):
+            # data.recipe.json 是第三方可伪造输入：label/comment 这类
+            # 直接进 setText/join 的字段必须归一成 str——非字符串真值
+            # （dict/数字）原样透传会让面板列表重建抛 TypeError 卡死在
+            # 半构建状态（submenu/tool_labels 已有同款归一，别漏这两项）
+            info.label = str(info.label) if info.label else ""
         labels = tool.get("tool_labels") or []
         for lb in labels:
             if lb:
@@ -391,6 +397,10 @@ def _read_header(info, hfs):
         info.comment = header.get("comment") or ""
         info.author = header.get("author") or ""
         info.houdini_version = header.get("houdini_version") or ""
+        for attr in ("comment", "author", "houdini_version"):
+            val = getattr(info, attr)
+            if not isinstance(val, str):
+                setattr(info, attr, str(val) if val else "")
     except Exception as exc:
         # 头部信息读不到就用内部名兜底，不隐藏该 recipe
         log.warning("read recipe header failed for %s: %s", info.name, exc)
@@ -712,7 +722,12 @@ def delete_recipe(name):
                 log.warning("inspect definitions in %s failed after "
                             "delete, kept as-is: %s", lib, exc)
                 defs_left = None
-            if defs_left == []:
+            if not defs_left:
+                # 真值判断而非 == []：definitionsInFile 的文档返回类型是
+                # tuple，() == [] 恒 False——写成列表比较会让"返回空
+                # tuple"这条正常路径整段失效（现在靠上面 except 分支赋
+                # [] 才 work）。defs_left 为 None（读失败保守不动）同样
+                # 被真值判断挡住
                 # 自动卸载分支不再补 uninstallFile：对未加载的文件卸载必
                 # 然报 OperationFailed，删末尾 recipe 时每次都徒留一条
                 # "failed" 日志误导排查；直接走下方尺寸护栏删空壳。

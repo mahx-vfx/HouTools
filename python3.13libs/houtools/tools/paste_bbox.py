@@ -54,15 +54,23 @@ _UNDO_GROUP = "pasteBoundingBox"
 
 
 def is_bbox_target(node):
-    """目标节点判定：同时带三分量 size 与 t 向量参数。
+    """目标节点判定：同时带可写的三分量 size 与 t 向量参数。
 
     与 OPmenu.xml houtools_paste_bbox_menu 的 context expression 双处同步；
     不碰 hou，smoke test 用假节点直测本函数与 XML 表达式的同步一致性。
+    按"元组存在 + 三个分量参数存在"判定而非 len(tuple)：OPmenu context
+    表达式约定只用最保守 Python 子集（无内建函数调用，len() 曾是唯一
+    越界处）；HOM 分量参数统一 <元组名>x|y|z 命名——tuple 三分量 ⇔ 三个
+    分量参数存在，且 _apply 的写入路径 parmTuple(name)[i] 恰以分量参数
+    为载体（grid 的 size 是二向量 sizex/sizey，凭 t 三分量误命中不可
+    接受的语义不变）。
     """
-    for name in (_SIZE_PARM, _T_PARM):
-        tup = node.parmTuple(name)
-        if tup is None or len(tup) != 3:
+    for base in (_SIZE_PARM, _T_PARM):
+        if node.parmTuple(base) is None:
             return False
+        for suffix in "xyz":
+            if node.parm(base + suffix) is None:
+                return False
     return True
 
 

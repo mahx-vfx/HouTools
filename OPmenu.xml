@@ -84,13 +84,17 @@ _houtools_dispatcher.run("delete_viewport_capture", kwargs)
             <label>Paste Bounding Box [HT]</label>
             <context>
                 <!-- 仅同时带三分量 size+t 向量参数的节点显示；判定与
-                     houtools/tools/paste_bbox.py 的 is_bbox_target 双处同步。
-                     语义 = all()（两个元组都要三分量，grid 的 size 是二向量
-                     sizex/sizey，凭 t 三分量误命中不可接受）。
-                     表达式刻意只用最保守的 Python 子集（属性调用+比较+and/or，
-                     禁 walrus/推导式）：OPmenu context 表达式求值器的语法面
-                     没有官方承诺，smoke test 的 eval 对照才有意义 -->
-                <expression>kwargs.get("node") is not None and kwargs["node"].parmTuple("size") is not None and len(kwargs["node"].parmTuple("size")) == 3 and kwargs["node"].parmTuple("t") is not None and len(kwargs["node"].parmTuple("t")) == 3</expression>
+                     houtools/tools/paste_bbox.py 的 is_bbox_target 双处同步
+                     （同一"元组存在+三分量参数存在"口径）。语义 = all()
+                     （两个元组都要三分量，grid 的 size 是二向量
+                     sizex/sizey，凭 t 三分量误命中不可接受）。分量参数
+                     判定而非 len(tuple)：表达式刻意只用最保守的 Python
+                     子集（属性调用+比较+and/or，禁内建函数/walrus/推导式
+                     ——len() 曾是唯一越界处），HOM 分量名统一 x|y|z 后缀，
+                     _apply 的写入路径 parmTuple(name)[i] 恰以分量参数为
+                     载体；求值器语法面没有官方承诺，smoke test 的 eval
+                     对照才有意义 -->
+                <expression>kwargs.get("node") is not None and kwargs["node"].parmTuple("size") is not None and kwargs["node"].parm("sizex") is not None and kwargs["node"].parm("sizey") is not None and kwargs["node"].parm("sizez") is not None and kwargs["node"].parmTuple("t") is not None and kwargs["node"].parm("tx") is not None and kwargs["node"].parm("ty") is not None and kwargs["node"].parm("tz") is not None</expression>
             </context>
             <scriptItem id="houtools_paste_bbox_absolute">
                 <label>Paste Absolute Values [HT]</label>

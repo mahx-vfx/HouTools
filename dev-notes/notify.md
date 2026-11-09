@@ -12,7 +12,7 @@ notify.success("已创建 transform")        # 总 2s（保持 1s + 渐透 1s）
 notify.info("...")                        # 总 2s
 notify.warning("...")                     # 总 2s
 notify.error("...")                       # 总 4s（保持 3s + 渐透 1s）
-notify.show(msg, level="info", duration=5000)   # duration=总时长 ms（含渐透），下限 500
+notify.show(msg, level="info", duration=5000)   # duration=总时长 ms（含渐透），下限 500（2026-11 复审修复：下限作用在总时长上——旧写法落保持段，duration∈[500,1500) 全被拉成 1500ms；总时长不足完整渐透（<1000ms）时渐透按需压缩，_hold_ms/_fade_ms 一对函数统一切账）
 notify.clear()                            # 立即收掉全部（各自渐透）
 ```
 

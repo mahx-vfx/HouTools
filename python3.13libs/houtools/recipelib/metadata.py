@@ -185,7 +185,7 @@ def migrate_legacy_thumb_paths():
 
     只改能相对化（settings 目录内）的条目；目录外的跨盘绝对路径原样保留。
     """
-    thumbs = dict(_SETTINGS.get("thumbs") or {})
+    thumbs = dict(_thumbs_segment())
     migrated = 0
     for name, stored in list(thumbs.items()):
         if not stored or not os.path.isabs(stored):
@@ -522,9 +522,24 @@ def all_tags():
 # 缩略图
 # --------------------------------------------------------------------------
 
+def _thumbs_segment():
+    """thumbs 段读取（带类型收敛）：段被手写成非 dict（非空 list 等）
+    时按空处理并告警——`or {}` 只兜 falsy，非空数组会让 .get/.items
+    抛 AttributeError 打断缩略图热路径（get_thumb/_clean_stale_thumbs），
+    且下一次任何 set() 会把坏值原样写回。"""
+    thumbs = _SETTINGS.get("thumbs")
+    if thumbs is None:
+        return {}
+    if not isinstance(thumbs, dict):
+        log.warning("recipelib.json 的 thumbs 段类型异常（%s），按空处理",
+                    type(thumbs).__name__)
+        return {}
+    return thumbs
+
+
 def get_thumb(name):
     """返回缩略图的可用绝对路径（存储侧是相对 settings 目录的相对路径）。"""
-    stored = (_SETTINGS.get("thumbs") or {}).get(name) or ""
+    stored = _thumbs_segment().get(name) or ""
     if not stored:
         return ""
     path = _to_abs(stored)
@@ -540,7 +555,7 @@ def _clean_stale_thumbs(name, skip=()):
     """
     stem = unique_safe_name(name) + "."
     protected = set()
-    for other, stored in (_SETTINGS.get("thumbs") or {}).items():
+    for other, stored in _thumbs_segment().items():
         if stored and other != name:
             protected.add(os.path.normcase(
                 os.path.abspath(_to_abs(stored))))
@@ -588,7 +603,7 @@ def set_thumb_from_file(name, src):
                 os.remove(tmp)
             except OSError as exc:
                 log.warning("cannot remove partial thumb %s: %s", tmp, exc)
-    thumbs = dict(_SETTINGS.get("thumbs") or {})
+    thumbs = dict(_thumbs_segment())
     thumbs[name] = _to_stored(dst)
     _SETTINGS.set("thumbs", thumbs)
     # 旧扩展名文件最后清：先删后写时新图写失败（磁盘满/源被拔走）会让
@@ -640,7 +655,7 @@ def set_thumb_from_pixmap(name, pixmap, fmt="PNG"):
                 os.remove(tmp)
             except OSError as exc:
                 log.warning("cannot remove partial thumb %s: %s", tmp, exc)
-    thumbs = dict(_SETTINGS.get("thumbs") or {})
+    thumbs = dict(_thumbs_segment())
     thumbs[name] = _to_stored(dst)
     _SETTINGS.set("thumbs", thumbs)
     # 旧扩展名文件最后清（同 set_thumb_from_file：先删后写会让失败留下
@@ -650,7 +665,7 @@ def set_thumb_from_pixmap(name, pixmap, fmt="PNG"):
 
 
 def clear_thumb(name):
-    thumbs = dict(_SETTINGS.get("thumbs") or {})
+    thumbs = dict(_thumbs_segment())
     old = thumbs.pop(name, None)
     _SETTINGS.set("thumbs", thumbs)
     if old:
@@ -789,9 +804,17 @@ def insert_asset(name, src):
 
 def stem_owners(stem):
     """登记表里 unique 名等于 stem 的全部内部名（导入落盘归属检查用：
-    目标目录/文件名已被"本次导入之外"的配方占用时，调用方可拒绝写入）。"""
+    目标目录/文件名已被"本次导入之外"的配方占用时，调用方可拒绝写入）。
+
+    比较按 normcase：撞名判定必须与文件系统同口径（NTFS 等大小写
+    不敏感盘上 "Foo" 与 "foo" 是同一目录——本函数是全仓唯一漏掉
+    _fold_counts 那条"检测键折叠"纪律的撞名判定，仅大小写差异的
+    包内目录名会绕过防线，把本地另一配方的文档目录整目录顶掉）。
+    """
     stems = _SETTINGS.get("stems") or {}
-    return sorted(n for n, s in stems.items() if s == stem)
+    key = os.path.normcase(str(stem))
+    return sorted(n for n, s in stems.items()
+                  if os.path.normcase(str(s)) == key)
 
 
 def stems_snapshot():

@@ -26,6 +26,7 @@
 
 - 缩略图后台 QThread 内部线程池（**无 parent**，Reload 销毁窗口不会连带销毁运行中的线程；并发按核数/4 夹在 2..4 自动定档；底部有进度条 + 暂停/继续/停止，暂停在每张开工前生效；单张异常兜底记 warning 不中止整批；刷新起用新线程池时进度/完成信号按 sender 过滤，旧线程余量不污染新一轮；hoiiotool 子进程等待 1s 粒度可中断，CREATE_NO_WINDOW 防止批量生成时连续弹控制台黑框）。
 - 调 `$HFS/bin/hoiiotool` 生成（缓存 256px 存库目录 `.thumb_cache/`，按相对路径+扩展名命名避免同名/同名不同扩展冲突，有效性按**状态等值**判定——见「扫描快照与打开秒开」节，先写 `~tmp_<线程id>_*.jpg` 临时文件（线程标识防刷新时新旧两池并发覆写同一临时文件）再原子改名（临时名必须保留 `.jpg` 后缀——OIIO 靠扩展名选输出写入器，`.part` 之类未知后缀会让 hoiiotool 直接失败；坑：`--resize` 必须写全 WxH，`--colorconvert` 需 OCIO 配置、缺失时自动注入 `$HFS/packages/ocio/`，glob 结果须 sorted 再取 [0]）。
+- **扫描不完整 ⇒ 不做破坏性清理、不覆写快照**（2026-11 复审修复）：`_scan_library` 返回第 4 个值 `complete`——根目录 stat 失败、任一子树列表失败、任一文件 stat 失败都置 False（SMB 抖动/权限瞬变/盘符瞬断）。不设闸时失败子树的缩略图不在 expected_names 里，会被 clean_stale_thumbs 当"无主"**整批物理删除**（根目录失败时清空整个 .thumb_cache），快照也被覆写成残缺版——NAS 上重生成是小时级成本。reload 在不完整时保留现有列表、压回 `_need_reload` 让下次显示自动重试；`clean_stale_thumbs` 自扫兜底路径同样过闸。
 - **刷新先 `_stop_worker` 打断旧线程再 `clean_stale_thumbs`**（顺序反了清理会把在途的 `~tmp_` 临时文件当无主缩略图删掉，旧线程 os.replace 失败——单张异常有兜底但那张白生成）。
 - **运行中的线程由模块级 `_LIVE_THREADS` 留引用**（NameError 守卫活过 Reload，同 automation `_LIVE_ENGINES`；线程无 parent 只保证"父窗口死不掉它"，不保证"没人引用就不被 GC 析构"——Qt6 下析构运行中的 QThread 直接 qFatal）。
 - **hoiiotool 路径/OCIO 环境只在主线程解析**（`_oiiotool_path`/`_ocio_env` 会调 `hou.text.expandString`，启动线程前解析好作构造参数传入——工作线程内零 HOM 调用，线程结构上保证）。

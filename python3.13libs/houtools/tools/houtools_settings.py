@@ -153,8 +153,9 @@ class _HouToolsSettingsDialog(QDialog):
             self._set_hint("未捕获到按键。要清除自定义键位请点「恢复默认」。")
             return
         if not hotkeys.hotkey_apply_key(name, key):
-            self._set_hint("Houdini 拒绝了该键位:{}".format(key), error=True)
-            logger.warning("Houdini 拒绝了键位: %s", key)
+            self._set_hint("应用失败：Houdini 拒绝了该键位，或配置目录"
+                           "不可写（原因见控制台日志）。", error=True)
+            logger.warning("键位应用失败: %s", key)
             return
         display = hotkeys.ASSIGNABLE[name][0]
         logger.info("%s 快捷键已设为: %s", display, key)
@@ -172,7 +173,8 @@ class _HouToolsSettingsDialog(QDialog):
                             display, default_key)):
             return
         if not hotkeys.hotkey_reset_default(name):
-            self._set_hint("Houdini 拒绝了默认键位。", error=True)
+            self._set_hint("恢复失败：Houdini 拒绝了默认键位，或配置目录"
+                           "不可写（原因见控制台日志）。", error=True)
             return
         self._rows[name].setKeySequence(QKeySequence(default_key))
         logger.info("%s 自定义键位已清除", display)

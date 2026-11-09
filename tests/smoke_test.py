@@ -211,6 +211,16 @@ def main():
         def parmTuple(self, name):
             return self._comps.get(name)
 
+        def parm(self, name):
+            # 分量参数按 HOM 统一命名（<元组名>x|y|z）派生：仅当元组
+            # 恰为三分量时分量参数存在——与 is_bbox_target 的"元组存在+
+            # 三分量参数存在"判定共用同一套假数据
+            if len(name) > 1 and name[-1] in "xyz":
+                tup = self._comps.get(name[:-1])
+                if tup is not None and len(tup) == 3:
+                    return tup
+            return None
+
     def _expected(comps):
         return all(comps[n] is not None and len(comps[n]) == 3
                    for n in ("size", "t"))
@@ -4163,9 +4173,17 @@ def main():
     for _lv, _hold in (("info", 1000), ("success", 1000),
                        ("warning", 1000), ("error", 3000)):
         assert ht_notify._hold_ms(_lv, None) == _hold
-    # duration 语义 = 总时长（含渐透）：2000 → 保持 1000；下限 500ms
+    # duration 语义 = 总时长（含渐透）：2000 → 保持 1000；下限 500ms 作用
+    # 在总时长上（2026-11 复审修复：旧写法落保持段，duration∈[500,1500)
+    # 全被拉成 1500ms）；总时长不足完整渐透时渐透按需压缩，两段之和恰为
+    # max(duration, 500)
     assert ht_notify._hold_ms("info", 2000) == 1000
-    assert ht_notify._hold_ms("info", 300) == 500
+    assert ht_notify._fade_ms("info", 2000) == 1000
+    assert ht_notify._hold_ms("info", 300) == 0
+    assert ht_notify._fade_ms("info", 300) == 500
+    assert ht_notify._hold_ms("info", 1500) == 500
+    assert ht_notify._fade_ms("info", 1500) == 1000
+    assert ht_notify._hold_ms("info", 800) + ht_notify._fade_ms("info", 800) == 800
     # 旧 severity 映射表固化（dev.status 委托语义；漏接的一律落 info）
     for _sev, _lv in (("message", "info"), ("important", "info"),
                       ("warning", "warning"), ("error", "error")):

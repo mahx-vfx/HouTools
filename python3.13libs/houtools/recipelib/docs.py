@@ -397,20 +397,42 @@ class _DocPreview(QtWidgets.QTextBrowser):
 
 
 class _MovieLabel(QtWidgets.QLabel):
-    """GIF 播放标签（MediaDialog 用，QMovie 循环播放）。"""
+    """GIF 播放标签（MediaDialog 用，QMovie 循环播放）。
+
+    ⚠ 不用 QMovie.setScaledSize：GIF 解码器不支持 QImageReader 缩放，
+    帧按原始尺寸交付、缩放后显示不变（大 GIF 会按原分辨率溢出
+    MediaDialog，且 CacheAll 让全尺寸帧常驻内存）——本仓 browser.py 的
+    大图查看器已实测并改走 frameChanged 手动缩放，此处同一手法。
+    """
 
     def __init__(self, path, max_w, parent=None):
         super().__init__(parent)
+        self._max_w = max_w
         movie = QtGui.QMovie(self)
         movie.setFileName(path)
         movie.setCacheMode(QtGui.QMovie.CacheAll)
         movie.jumpToFrame(0)
+        self._movie = movie
         pm = movie.currentPixmap()
         if not pm.isNull() and pm.width() > max_w:
-            h = max(1, int(round(pm.height() * max_w / pm.width())))
-            movie.setScaledSize(QtCore.QSize(max_w, h))
-        self.setMovie(movie)
+            # 只记宽度上限，逐帧手动缩（frameChanged 交付，不 setMovie——
+            # setMovie 会绕过缩放按原始尺寸交付）
+            movie.frameChanged.connect(self._show_scaled_frame)
+            self._show_scaled_frame()
+        else:
+            self.setMovie(movie)
         movie.start()
+
+    def _show_scaled_frame(self):
+        """把 movie 当前帧手动缩放后显示（替代 setScaledSize，见类注释）。"""
+        pm = self._movie.currentPixmap()
+        if pm.isNull():
+            return
+        if pm.width() > self._max_w:
+            h = max(1, int(round(pm.height() * self._max_w / pm.width())))
+            pm = pm.scaled(self._max_w, h, QtCore.Qt.KeepAspectRatio,
+                           QtCore.Qt.SmoothTransformation)
+        self.setPixmap(pm)
 
 
 class MarkdownMediaView(_DocPreview):
@@ -564,14 +586,19 @@ class MarkdownMediaView(_DocPreview):
 
     def _resolve_size(self, url_str, w, h):
         """补全单边尺寸：缺的一边按源图比例（QImageReader 只探尺寸不解
-        码整图）。两边都无或源图不可读返回 None（该图维持原生尺寸）。"""
+        码整图）。两边都无或源图不可读返回 None（该图维持原生尺寸）。
+
+        路径解析复用 _resolve 的收敛校验：文档内容可能来自导入的分享包
+        （不可信第三方），尺寸探测也不能读文档目录外的文件——不过收敛
+        是防线上唯一曾被绕开的口（loadResource/_on_anchor 都走 _resolve）。
+        """
         if w and h:
             return int(w), int(h)
         if not w and not h:
             return None
-        path = unquote(url_str)
-        if not os.path.isabs(path):
-            path = os.path.join(self._doc_dir, path)
+        path, allowed = self._resolve(QtCore.QUrl(url_str))
+        if not allowed:
+            return None
         try:
             sz = QtGui.QImageReader(path).size()
         except Exception as exc:

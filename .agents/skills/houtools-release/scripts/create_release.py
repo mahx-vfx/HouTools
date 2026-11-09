@@ -207,6 +207,16 @@ def main(argv: list[str]) -> None:
     tag = "v" + args[0].lstrip("vV")
     root = find_repo_root(_flag_value(args, "--root"))
 
+    # 先验 annotated：轻量 tag 上 %(contents) 回退为所指 commit 的完整
+    # message——release 说明会静默变成提交文案并 POST 到公网 release 页
+    # （下方空串守卫拦不住带正常 commit message 的轻量 tag）
+    objtype = git_output(
+        root, "tag", "-l", "--format=%(objecttype)", tag).strip()
+    if objtype != "tag":
+        raise SystemExit(
+            "tag %s is a lightweight tag (points at a %s), not an annotated "
+            "tag - skill step 6 writes the confirmed release notes into an "
+            "annotated tag first" % (tag, objtype or "missing ref"))
     notes = git_output(root, "tag", "-l", "--format=%(contents)", tag).strip()
     notes_file = _flag_value(args, "--notes")
     if notes_file:

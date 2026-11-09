@@ -532,8 +532,11 @@ class _ProbeWorker(QThread):
             try:
                 first_file = info.in_pattern % info.in_start_number
             except (TypeError, ValueError) as e:
-                logger.debug("序列首帧文件名展开失败 %r: %s",
-                             info.in_pattern, e)
+                # 展开失败说明模式串里混进了字面 %（输入路径已拦，此处是
+                # 兜底诊断）：分辨率静默显示"-"会让人摸不着头脑，warning
+                # 留线索
+                logger.warning("序列首帧文件名展开失败 %r: %s",
+                               info.in_pattern, e)
                 return
         else:
             first_file = info.filepath
@@ -1114,6 +1117,11 @@ class _VideoToSequenceWindow(QDialog):
         self._close_poll = None
         self._video_info = None
         self._current_video_path = ""
+        # 程序化恢复路径框文本的抑制标志：setText("") 会触发 textChanged
+        # → _on_path_text_changed 判空 → _reset_video_state，把刚写的
+        # 红字提示同手擦掉（空状态首输无效路径 = 零反馈，见
+        # _on_path_editing_finished）
+        self._restoring_path = False
         # 旧序列让位记录：(bak 路径, 原路径)。让位（改名 .bak）而非直接
         # 删——转换成功才真正删，取消/失败原样改回（见 _on_convert）
         self._stale_baks: list = []
@@ -1555,6 +1563,18 @@ class _VideoToSequenceWindow(QDialog):
                 "color: #d1283e; font-size: 12px;")
             return
         if ext not in VIDEO_EXTENSIONS:
+            # image2 demuxer 对输入路径同样按 printf 模板展开（与输出侧
+            # 同罪，hffmpeg 实测：目录含字面 % 的序列 -i 直接报错，且
+            # stderr 已 DEVNULL 用户只会看到误导性退出码文案）——序列/
+            # 静帧输入路径禁 %。视频容器 demuxer 不做展开，% 无害不拦
+            if "%" in expanded:
+                self._status_label.setVisible(True)
+                self._status_label.setText(
+                    "序列/静帧路径不能包含 %（ffmpeg 会把整条输入路径当 "
+                    "printf 模板二次解释），请更换目录或文件名后重试")
+                self._status_label.setStyleSheet(
+                    "color: #d1283e; font-size: 12px;")
+                return
             self._load_still_sequence(expanded, display_path=media_path)
             return
         self._current_video_path = expanded
@@ -1650,8 +1670,12 @@ class _VideoToSequenceWindow(QDialog):
         """路径框即时编辑响应：手动清空 → 重置已加载状态。
 
         程序化 setText 在 _load_media 中先设好 _current_video_path，
-        因此触发本槽时 text 总等于已加载路径，不会误清。
+        因此触发本槽时 text 总等于已加载路径，不会误清；程序化恢复
+        （无效路径弹回）经 _restoring_path 抑制，见
+        _on_path_editing_finished。
         """
+        if self._restoring_path:
+            return
         if not text.strip():
             self._reset_video_state()
 
@@ -1677,11 +1701,19 @@ class _VideoToSequenceWindow(QDialog):
                 "$F" in os.path.basename(text) or os.path.isfile(expanded)):
             self._load_media(text)
             return
+        # 恢复文本用抑制标志包住：setText("") 触发的 textChanged 会让
+        # _on_path_text_changed 判空调 _reset_video_state，把下面这行
+        # 红字提示在同一次操作里擦掉（未装载过媒体时 _current_video_path
+        # 为空，恰是"空状态首输"这条最常见路径）
+        self._restoring_path = True
+        try:
+            self._path_edit.setText(self._current_video_path)
+        finally:
+            self._restoring_path = False
         self._status_label.setVisible(True)
         self._status_label.setText(
             "路径无效或不是支持的视频/序列格式，已恢复")
         self._status_label.setStyleSheet("color: #d1283e; font-size: 12px;")
-        self._path_edit.setText(self._current_video_path)
 
     # ── 拖放（整窗接收；光标落在视频源分组框内时由分组框优先处理）──
 
@@ -1879,12 +1911,16 @@ class _VideoToSequenceWindow(QDialog):
         self._extract_worker.progress.connect(self._on_extract_progress)
         self._extract_worker.done.connect(self._on_extract_finished)
         self._extract_worker.error.connect(self._on_extract_error)
-        self._extract_worker.start()
         # 模块级保引用（P0）：Reload 关窗路径会把本窗口 deleteLater，实例
         # 属性随之失去引用根，运行中的 QThread 被 GC 析构即 Qt6 qFatal。
         # 探测 worker 一直有这道防线，提取 worker 此前漏登记——Reload 遇上
         # 转换中且用户拒绝关闭时，窗口被删、线程唯一引用消失，Houdini 直接崩
+        # 登记必须在 start() 之前：finished 只投递给发射时刻已存在的连接，
+        # start 后才连的话，线程秒退（ffmpeg 路径失效等快速失败）会让
+        # finished 已发过、后连的 discard lambda 永不触发，worker 永久
+        # 滞留 _LIVE_WORKERS
         self._retire_worker(self._extract_worker)
+        self._extract_worker.start()
 
     def _cleanup_stale_baks(self):
         """转换成功后删除 .bak 旧序列（让位时未删，成功才删）。"""
@@ -1962,6 +1998,10 @@ class _VideoToSequenceWindow(QDialog):
             filepath, ffmpeg_path, sequence_info=sequence_info)
         self._probe_worker.info_ready.connect(self._on_probe_ready)
         self._probe_worker.error.connect(self._on_probe_error)
+        # 创建现场即登记（start 之前）：此前只在取消/关窗路径挂入——若
+        # 挂入时线程已结束，finished 已发过，discard lambda 永不触发，
+        # worker 永久滞留 _LIVE_WORKERS
+        self._retire_worker(self._probe_worker)
         self._probe_worker.start()
 
     def _on_probe_ready(self, info):

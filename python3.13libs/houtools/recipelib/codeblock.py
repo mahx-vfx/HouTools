@@ -191,7 +191,15 @@ def save_code(name, language, code):
 
 
 def delete_code(name, language):
-    """删除代码文件（元数据清理由调用方做，同删除 recipe 的分工）。"""
+    """删除代码文件（元数据清理由调用方做，同删除 recipe 的分工）。
+
+    与 save_code 同款 stem 校验：喂 os.remove 的 name 虽然当前唯一调用
+    方传的是目录扫描出的真名（外部不可达），但删除路径与写入路径校验
+    不对称就是纵深缺口——`../../foo` 形式的 name 会把目标指到代码库外
+    （AGENTS.md 反模式条款：删除前必校验）。
+    """
+    if not _STEM_RE.match(name):
+        raise RuntimeError("内部名不合法: {}".format(name))
     path = code_path(name, language)
     if os.path.isfile(str(path)):
         try:

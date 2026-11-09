@@ -29,6 +29,11 @@
 - 面板居中过滤器 `_PanelCenterFilter` 由 `_PANEL_FILTERS` 持引用保活到首次 Show 自摘，**自摘时同步 `discard(self)`**（2026-10 复审补，防无 parent QObject 连同其持有的 HOM FloatingPanel 包装滞留累积）。
 - **应用级过滤器的 obj 类型守卫（2026-10-28 H21 真机实测）**：Houdini 21 会把原生 `QWindow` 的 Show 投进应用级事件过滤器（QtGui 层对象，没有 `windowTitle`；H22 未投过此类事件）——`_PanelCenterFilter` 曾直接 `obj.windowTitle()` 被 AttributeError 打崩。凡应用级过滤器的回调：先 `isinstance(obj, QWidget)` 再调部件方法，或只用 QObject/身份比对 API（Automation 的 Delete 过滤器拿 obj 比 `windowHandle()` 同一性、fonts 的 ChildAdded 走 `property()/parent()` 均属安全写法，已逐一核查）。
 
+## 杂项（2026-11 复审修复）
+
+- **「设置」对话框 exec 后必须 deleteLater**（全仓 exec 站点成文约定的最后一处漏网）：`QDialog(self)` 有 C++ parent，Python 局部变量出作用域不析构——每开一次往面板挂一个隐藏对话框。复选框值先取到局部变量再删，不挂 self 属性。
+- **`_write_log` 的 `_log_active` 检查必须在 `_ensure_log_lock()` 之内**：它防的正是与 `_restore_stdout`（持同锁清 `_log_active`/`_current_log_path`）的竞争——检查放锁外会在竞争窗口"检查通过后路径被清空"，惰性创建重算路径、同分钟撞出 `.2` 分裂日志文件。
+
 ## 自动保存（window.py，2026-11）
 
 - **语义**（2026-11 用户拍板，翻掉原"仅 Start 落盘/关窗不保存"）：任务 JSON **改动即存**。编辑入口统一汇 `_mark_dirty`（置脏 + 600ms 单发 QTimer 防抖——连续打字每秒至多 1-2 次写，几十 KB 的原子写本地/SMB 均无感，性能不是该改动的约束）。

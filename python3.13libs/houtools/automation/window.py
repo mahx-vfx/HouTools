@@ -1973,14 +1973,14 @@ class AutomationWindow(QWidget):
         layout.setSpacing(12)
 
         # 日志输出到磁盘选项
-        self._log_to_disk_cb = QCheckBox("将日志输出到磁盘")
-        self._log_to_disk_cb.setChecked(self._log_to_disk_enabled)
-        self._log_to_disk_cb.setToolTip("勾选后，执行日志将保存到 $HIP/HouTools_cfg/Automation_logs/")
+        log_to_disk_cb = QCheckBox("将日志输出到磁盘")
+        log_to_disk_cb.setChecked(self._log_to_disk_enabled)
+        log_to_disk_cb.setToolTip("勾选后，执行日志将保存到 $HIP/HouTools_cfg/Automation_logs/")
         # 引擎运行中禁用:stdout 重定向与该开关耦合(开始执行时按它包
         # _LogTee),运行中切换会留下"包了没人还原"的缺口;_on_all_completed
         # 复位 _running 后,下次打开设置自然恢复可勾
-        self._log_to_disk_cb.setEnabled(not self._running)
-        layout.addWidget(self._log_to_disk_cb)
+        log_to_disk_cb.setEnabled(not self._running)
+        layout.addWidget(log_to_disk_cb)
 
         # 按钮
         btn_layout = QHBoxLayout()
@@ -1993,8 +1993,14 @@ class AutomationWindow(QWidget):
         btn_layout.addWidget(ok_btn)
         layout.addLayout(btn_layout)
 
-        if dialog.exec() == QDialog.Accepted:
-            self._log_to_disk_enabled = self._log_to_disk_cb.isChecked()
+        accepted = dialog.exec() == QDialog.Accepted
+        checked = log_to_disk_cb.isChecked()
+        # 取值后再删：exec 的模态框用完即释放，防积存（QDialog(self) 有
+        # C++ parent，Python 局部变量出作用域不析构——每次打开都往面板
+        # 挂一个隐藏对话框；全仓其余 exec 站点均有同款 deleteLater）
+        dialog.deleteLater()
+        if accepted:
+            self._log_to_disk_enabled = checked
             self._save_settings()
 
     def _load_settings(self):
@@ -2087,12 +2093,16 @@ class AutomationWindow(QWidget):
         """
         if not self._log_to_disk_enabled:
             return
-        if not getattr(self, "_log_active", False):
-            # 收尾已把本次执行标记为结束：迟到的引擎线程 print 不再新建
-            # 日志文件（否则会在同分钟撞出 .2 分裂文件）
-            return
 
         with self._ensure_log_lock():
+            # _log_active 检查必须在锁内：它与 _restore_stdout 持同锁改
+            # _log_active/_current_log_path——检查放锁外（旧写法）会在
+            # 竞争窗口"检查通过后收尾清空 _current_log_path"，下方惰性
+            # 创建重算路径，同分钟撞出 .2 分裂日志文件
+            if not getattr(self, "_log_active", False):
+                # 收尾已把本次执行标记为结束：迟到的引擎线程 print 不再
+                # 新建日志文件
+                return
             # 首次调用时确定路径并缓存("" = 目录创建失败,本次已停用)
             if not getattr(self, "_current_log_path", None):
                 self._current_log_path = self._get_log_path()

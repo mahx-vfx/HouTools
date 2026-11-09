@@ -152,11 +152,26 @@ def _main_window():
     return win
 
 
-def _hold_ms(level, duration):
-    """渐透前的保持时长；duration 语义是总时长（含渐透），下限 500ms。"""
+def _fade_ms(level, duration):
+    """渐透时长：总时长不足一个完整渐透（<1000ms）时按需压缩——固定
+    FADE_MS 会让 duration<1000 的请求实际跑出 1000ms+。"""
     total = duration if duration is not None else (
         HOLD_MS.get(level, 1000) + FADE_MS)
-    return max(total - FADE_MS, 500)
+    return min(FADE_MS, max(total, 500))
+
+
+def _hold_ms(level, duration):
+    """渐透前的保持时长；duration 语义是总时长（含渐透），下限 500ms。
+
+    下限作用在**总时长**上而非保持段：旧写法 max(total - FADE_MS, 500)
+    把 500 下限落进保持段，duration∈[500,1500) 全被拉成 1500ms 实际
+    总时长，与 show()/dev-notes 承诺的"duration=总时长"不符。保持段
+    与渐透段由 _hold_ms/_fade_ms 一对函数统一切账，两段之和恰为
+    max(duration, 500)。
+    """
+    total = duration if duration is not None else (
+        HOLD_MS.get(level, 1000) + FADE_MS)
+    return max(max(total, 500) - _fade_ms(level, duration), 0)
 
 
 def _level_icon(level):
@@ -250,6 +265,9 @@ class _Toast(QtWidgets.QFrame):
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._fadeout)
         self._timer.start(_hold_ms(self._level, duration))
+        # 渐透时长与保持段同源切账（_hold_ms/_fade_ms 一对）：总时长
+        # 不足完整渐透时按需压缩，两段之和恰为承诺的总时长
+        self._fade_duration = _fade_ms(self._level, duration)
 
     # ---- 手绘底色（半透明顶层窗上 QSS background 不渲染，必须 paintEvent）
     def paintEvent(self, event):
@@ -301,7 +319,7 @@ class _Toast(QtWidgets.QFrame):
         self._closing = True
         self._timer.stop()
         anim = QtCore.QPropertyAnimation(self, b"windowOpacity", self)
-        anim.setDuration(FADE_MS)
+        anim.setDuration(getattr(self, "_fade_duration", FADE_MS))
         anim.setStartValue(1.0)
         anim.setEndValue(0.0)
         anim.finished.connect(self._gone)

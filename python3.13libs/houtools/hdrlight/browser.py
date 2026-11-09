@@ -368,17 +368,26 @@ def _scan_library(lib_dir):
     数据再逐文件 getmtime，是 2N 次往返，网络盘上那才是打开卡顿的
     大头。任何一层目录列表失败只告警跳过（该子树本轮视作不存在，
     下轮目录比对自然判变化重扫）。
+
+    返回第 4 个值 complete：本轮扫描是否完整（根目录 stat 失败、任一
+    子树列表失败、任一文件 stat 失败都算不完整）。调用方必须拿它把关：
+    **扫描不完整 ⇒ 不做破坏性清理、不覆写快照**——否则失败子树的
+    缩略图不在 expected_names 里，会被 clean_stale_thumbs 当"无主"
+    整批物理删除（根目录失败时清空整个缓存），NAS 上重生成是小时级
+    成本（与 AGENTS.md"喂 os.remove 前必须校验"同一精神）。
     """
     records = []
     dir_mtimes = {}
     thumb_names = {}
+    complete = True
     if not lib_dir:
-        return records, dir_mtimes, thumb_names  # 未配置：不扫文件系统
+        return records, dir_mtimes, thumb_names, complete  # 未配置：不扫文件系统
     try:
         dir_mtimes[""] = os.stat(lib_dir).st_mtime_ns
     except OSError as exc:
         log.warning("cannot stat %s: %s", lib_dir, exc)
-        return records, dir_mtimes, thumb_names
+        complete = False
+        return records, dir_mtimes, thumb_names, complete
     stack = [(lib_dir, "")]
     while stack:
         abs_dir, rel_dir = stack.pop()
@@ -387,6 +396,7 @@ def _scan_library(lib_dir):
                 entries = list(it)
         except OSError as exc:
             log.warning("cannot scan %s: %s", abs_dir, exc)
+            complete = False
             continue
         for entry in entries:
             name = entry.name
@@ -407,6 +417,7 @@ def _scan_library(lib_dir):
                         st.st_mtime_ns, st.st_size))
             except OSError as exc:
                 log.warning("cannot stat %s: %s", entry.path, exc)
+                complete = False
     records.sort(key=lambda r: (r[1].lower(), r[0].rsplit("/", 1)[-1].lower()))
     # 缩略图缓存单独一趟列表（目录 mtime 走查里它被当作隐藏目录跳过，
     # 但跳扫路径需要"现存缓存名"来判有效性）；目录不存在属首跑常态
@@ -419,7 +430,7 @@ def _scan_library(lib_dir):
                         entry.stat(follow_symlinks=False).st_mtime_ns
     except OSError as exc:
         log.debug("no thumb cache listing %s: %s", cache, exc)
-    return records, dir_mtimes, thumb_names
+    return records, dir_mtimes, thumb_names, complete
 
 
 def _load_scan_index(lib_dir):
@@ -509,7 +520,7 @@ def _iter_hdrs(lib_dir):
     根目录文件为 ""；跳过隐藏目录（含 .thumb_cache）。
     兼容入口（脚本/测试用；窗口扫描走 _scan_library 单趟 scandir 版）。
     """
-    records, _dirs, _thumbs = _scan_library(lib_dir)
+    records, _dirs, _thumbs, _complete = _scan_library(lib_dir)
     return [(os.path.join(lib_dir, rel.replace("/", os.sep)), category)
             for rel, category, _m, _s in records]
 
@@ -541,7 +552,7 @@ def scan_hdrs(lib_dir):
     兼容入口（脚本/测试用）：有效性与窗口 reload 同语义——快照记录的
     状态等值优先，无记录的历史缓存按迁移启发式沿用。
     """
-    records, _dirs, thumb_names = _scan_library(lib_dir)
+    records, _dirs, thumb_names, _complete = _scan_library(lib_dir)
     snapshot = _load_scan_index(lib_dir) if lib_dir else None
     thumb_by_rel, _states, _gen, _adopted = _resolve_thumbs(
         lib_dir, records, thumb_names, snapshot["thumbs"] if snapshot else {})
@@ -563,7 +574,12 @@ def clean_stale_thumbs(lib_dir, expected_names=None):
     if not os.path.isdir(cache):
         return 0
     if expected_names is None:
-        records, _dirs, _thumbs = _scan_library(lib_dir)
+        records, _dirs, _thumbs, complete = _scan_library(lib_dir)
+        if not complete:
+            # 扫描不完整：expected_names 缺失败子树，按它清理会误删——
+            # 宁可留残留（下次完整扫描再清）也不做破坏性动作
+            log.warning("scan incomplete, skip stale thumb cleanup")
+            return 0
         expected_names = {_thumb_name(rel)
                           for rel, _c, _m, _s in records}
     removed = 0
@@ -1071,7 +1087,25 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
             self._apply_filter()
             self.status.setText("未设置库目录，请先点「更换目录」选择 HDR 库")
             return
-        records, dir_mtimes, thumb_names = _scan_library(self.lib_dir)
+        records, dir_mtimes, thumb_names, scan_complete = _scan_library(
+            self.lib_dir)
+        if not scan_complete:
+            # 扫描不完整（共享盘 SMB 抖动/权限瞬变/盘符瞬断等）：本轮
+            # 数据不可信——照常走下去会让 clean_stale_thumbs 把失败
+            # 子树的缩略图当"无主"整批物理删除（根目录失败时清空整个
+            # 缓存），快照也被覆写成残缺版。原则：**扫描不完整 ⇒ 不做
+            # 破坏性清理、不覆写快照**；已有会话数据原样保留，首开无
+            # 数据则如实提示。压回 _need_reload 让下次显示自动重试。
+            self._need_reload = True
+            if self._hdrs:
+                self.status.setText(
+                    "库扫描不完整（目录暂时无法访问？），已保留现有列表；"
+                    "请稍后点「刷新」重试")
+            else:
+                self.status.setText(
+                    "库扫描失败（目录暂时无法访问？），未获取到 HDR；"
+                    "请检查库目录后点「刷新」重试")
+            return
         snapshot = _load_scan_index(self.lib_dir)
         unchanged = (not force and snapshot is not None
                      and snapshot["dirs"] == dir_mtimes)

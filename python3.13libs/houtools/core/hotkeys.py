@@ -93,11 +93,19 @@ def _sole_assignment(context: str, symbol: str, key: str) -> bool:
 
 
 def hotkey_apply_key(name: str, key: str) -> bool:
-    """把键位写入 Houdini 会话并持久化;返回是否成功。"""
+    """把键位写入 Houdini 会话并持久化;返回是否成功。
+
+    先落盘再改会话：持久化失败（配置目录不可建/只读共享盘等）直接
+    False、会话不被改动——反过来的顺序曾让"会话已生效但 hotkeys.json
+    没落盘"，重启回退、用户以为没生效且 UI 零反馈（save() 抛的异常
+    从 Qt 槽穿出）。落盘成功但会话装失败时撤掉刚写的持久化记录。
+    """
     _display, context, symbol, _default = ASSIGNABLE[name]
-    if not _sole_assignment(context, symbol, key):
+    if not set_custom_key(symbol, key):
         return False
-    set_custom_key(symbol, key)
+    if not _sole_assignment(context, symbol, key):
+        clear_custom_key(symbol)
+        return False
     return True
 
 
@@ -105,12 +113,20 @@ def hotkey_reset_default(name: str) -> bool:
     """清除自定义键位、恢复默认(会话内即时生效 + 删除持久化记录)。
 
     返回是否成功。注意:直接应用默认值(不走 install_defaults 的
-    "已有键位不覆盖"分支)——用户明确要求恢复默认。
+    "已有键位不覆盖"分支)——用户明确要求恢复默认。同样先落盘
+    （删记录）再改会话：旧顺序在落盘失败时 json 里旧自定义键还在，
+    下次启动又被装回来——"恢复默认"被静默回滚。
     """
     _display, context, symbol, default = ASSIGNABLE[name]
-    if not _sole_assignment(context, symbol, default):
+    previous = get_custom_key(symbol)
+    if not clear_custom_key(symbol):
         return False
-    clear_custom_key(symbol)
+    if not _sole_assignment(context, symbol, default):
+        # 极小概率（默认键被 Houdini 拒绝）：恢复原自定义记录，
+        # 不丢用户设置
+        if previous:
+            set_custom_key(symbol, previous)
+        return False
     return True
 
 
@@ -133,14 +149,15 @@ def get_custom_key(symbol: str) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
-def set_custom_key(symbol: str, key: str) -> None:
-    """持久化用户自定义键位(JsonStore 自动落盘)。"""
-    _store().set(symbol, key)
+def set_custom_key(symbol: str, key: str) -> bool:
+    """持久化用户自定义键位，返回落盘是否成功(JsonStore 自动落盘)。"""
+    return _store().set(symbol, key)
 
 
-def clear_custom_key(symbol: str) -> None:
-    """删除用户自定义键位(回退 Hotkey Manager 已有键位 / 默认值)。"""
-    _store().remove(symbol)
+def clear_custom_key(symbol: str) -> bool:
+    """删除用户自定义键位(回退 Hotkey Manager 已有键位 / 默认值)，
+    返回落盘是否成功。"""
+    return _store().remove(symbol)
 
 
 def install_defaults() -> list[str]:
@@ -151,24 +168,32 @@ def install_defaults() -> list[str]:
     for context, symbol, default_key in DEFAULT_ASSIGNMENTS:
         # key 先绑定默认值：get_custom_key 抛异常（如设置文件损坏）时
         # 异常分支才有东西可报，不会变成 UnboundLocalError 掩盖真因
-        key = default_key
-        try:
-            custom = get_custom_key(symbol)
-            key = custom or default_key
-            if not custom:
-                # 无自定义时尊重 Houdini Hotkey Manager 的已有键位
-                try:
-                    if hou.hotkeys.assignments(context, symbol):
-                        continue  # 已有键位(含用户自定义),不覆盖
-                except Exception as e:
-                    # 查询失败不阻塞分配,由 addAssignment 的返回值兜底
-                    logger.debug("查询已有键位失败 %s: %s",
-                                 symbol, e)
+            key = default_key
+            try:
+                custom = get_custom_key(symbol)
+                key = custom or default_key
+                if not custom:
+                    # 无自定义时尊重 Houdini Hotkey Manager 的已有键位
+                    try:
+                        if hou.hotkeys.assignments(context, symbol):
+                            continue  # 已有键位(含用户自定义),不覆盖
+                    except Exception as e:
+                        # 查询失败不阻塞分配,由 addAssignment 的返回值兜底
+                        logger.debug("查询已有键位失败 %s: %s",
+                                     symbol, e)
 
-            if not hou.hotkeys.addAssignment(context, symbol, key):
-                failed.append(f"{symbol} <- {key}(符号未注册或键位无效)")
-        except Exception as e:
-            failed.append(f"{symbol} <- {key}: {e}")
+                if custom:
+                    # 自定义键必须走 _sole_assignment：addAssignment 是
+                    # 追加语义（见该函数 docstring），裸 add 会让默认键
+                    # 残留并存——两个键都能触发、设置窗口显示与实际
+                    # 生效集合不一致
+                    if not _sole_assignment(context, symbol, custom):
+                        failed.append(
+                            f"{symbol} <- {custom}(符号未注册或键位无效)")
+                elif not hou.hotkeys.addAssignment(context, symbol, key):
+                    failed.append(f"{symbol} <- {key}(符号未注册或键位无效)")
+            except Exception as e:
+                failed.append(f"{symbol} <- {key}: {e}")
 
     if failed:
         logger.warning("默认键位分配失败: %s", "; ".join(failed))
