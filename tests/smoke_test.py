@@ -1131,6 +1131,98 @@ def main():
     vs_win.deleteLater()
     print("VideoseqWindow instantiation OK")
 
+    # 相机行「匹配素材分辨率」：无相机/素材未加载走提示；假 hou 注入下
+    # 把 resx/resy 直写为素材宽高并同步宽/高两框与状态栏
+    import houtools.ui.dialogs as _vseq_dialogs
+    from houtools.videoseq.window import VideoInfo as _VseqInfo
+
+    class _MatchParm:
+        def __init__(self, store, key):
+            self._store, self._key = store, key
+
+        def set(self, value):
+            self._store[self._key] = value
+
+    class _MatchCam:
+        def __init__(self):
+            self.values = {}
+
+        def path(self):
+            return "/obj/cam_match"
+
+        def parm(self, name):
+            return _MatchParm(self.values, name) \
+                if name in ("resx", "resy") else None
+
+    class _MatchHou:
+        Error = type("Error", (Exception,), {})
+
+        def __init__(self, cam):
+            self._cam = cam
+
+        def node(self, path):
+            return self._cam
+
+    match_cam = _MatchCam()
+    match_win = _VideoToSequenceWindow()
+    match_win._video_info = None
+    # 灰置外观：presetBtn 必须带 :disabled 规则——QSS 未指定 disabled
+    # 外观时沿用正常配色，setEnabled 只断交互、按钮看起来没灰（实测踩坑）
+    assert "QPushButton#presetBtn:disabled" in vs_window.STYLE_SHEET
+    # 未选相机/素材未就绪：按钮灰置（初始态）
+    assert not match_win._cam_match_btn.isEnabled()
+    match_win._set_selected_camera("/obj/cam_match")   # 无 hou：分辨率行复位
+    assert not match_win._cam_match_btn.isEnabled()    # 素材仍缺，保持灰置
+    _saved_hou_match = sys.modules.get("hou")
+    try:
+        sys.modules["hou"] = _MatchHou(match_cam)
+        with patch.object(_vseq_dialogs, "warn") as match_warn:
+            # 已选相机但素材未加载：提示
+            match_win._on_match_source_resolution()
+            assert match_warn.call_count == 1 and "素材分辨率" in \
+                match_warn.call_args[0][2], match_warn.call_args
+            # 素材宽高就绪：按钮亮起，写回 resx/resy + 两框/状态栏同步
+            match_win._video_info = _VseqInfo(
+                filename="a.mp4", filepath="a.mp4", width=1920, height=1080)
+            match_win._update_match_btn_state()
+            assert match_win._cam_match_btn.isEnabled()
+            match_win._on_match_source_resolution()
+            assert match_warn.call_count == 1, "成功路径不应弹对话框"
+    finally:
+        if _saved_hou_match is None:
+            sys.modules.pop("hou", None)
+        else:
+            sys.modules["hou"] = _saved_hou_match
+    assert match_cam.values == {"resx": 1920, "resy": 1080}, match_cam.values
+    assert match_win._res_w_edit.text() == "1920"
+    assert match_win._res_h_edit.text() == "1080"
+    assert "1920x1080" in match_win._status_label.text()
+    # 清空素材状态：按钮回到灰置
+    match_win._reset_video_state()
+    assert not match_win._cam_match_btn.isEnabled()
+    # 相机已删分支：路径非空但 hou.node 返回 None
+    match_win._camera_edit.setText("/obj/gone")
+    try:
+        sys.modules["hou"] = _MatchHou(None)
+        with patch.object(_vseq_dialogs, "warn") as gone_warn:
+            match_win._on_match_source_resolution()
+            assert gone_warn.call_count == 1 and "已不存在" in \
+                gone_warn.call_args[0][2], gone_warn.call_args
+    finally:
+        if _saved_hou_match is None:
+            sys.modules.pop("hou", None)
+        else:
+            sys.modules["hou"] = _saved_hou_match
+    # 未选相机分支：空路径不触 hou（真 hou 缺席也只走提示）
+    match_win._camera_edit.setText("")
+    match_win._video_info = None
+    with patch.object(_vseq_dialogs, "warn") as nocam_warn:
+        match_win._on_match_source_resolution()
+        assert nocam_warn.call_count == 1 and "请先选择相机" in \
+            nocam_warn.call_args[0][2], nocam_warn.call_args
+    match_win.deleteLater()
+    print("videoseq match source resolution OK")
+
     # ExecutionEngine 构造（回归：曾因缺 data_manager import 在此 NameError）
     from houtools.automation.execution_engine import ExecutionEngine
     engine = ExecutionEngine([])

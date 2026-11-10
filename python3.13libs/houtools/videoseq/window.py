@@ -340,6 +340,11 @@ QPushButton#presetBtn:hover {
 QPushButton#presetBtn:pressed {
     background-color: #3d3d3d;
 }
+QPushButton#presetBtn:disabled {
+    background-color: #232323;
+    color: #666666;
+    border: 1px solid #2f2f2f;
+}
 QSlider#qualitySlider {
     background-color: transparent;
     border: none;
@@ -1291,6 +1296,16 @@ class _VideoToSequenceWindow(QDialog):
         cam_row.addWidget(self._camera_edit, 1)
         cam_row.addWidget(self._cam_jump_btn)
         cam_row.addWidget(self._cam_choose_btn)
+        # 「匹配素材分辨率」：一键把相机分辨率对齐当前素材——背景图与
+        # 相机分辨率不一致时会在相机里拉伸变形，此按钮消除手工对齐
+        self._cam_match_btn = QPushButton("匹配素材分辨率")
+        self._cam_match_btn.setObjectName("presetBtn")
+        self._cam_match_btn.setAutoDefault(False)
+        self._cam_match_btn.setToolTip(
+            "把所选相机的渲染分辨率（resx/resy）直接设置为当前素材的宽高，"
+            "防止背景图在相机里拉伸变形（需已选择相机且素材分辨率就绪后可用）")
+        self._cam_match_btn.clicked.connect(self._on_match_source_resolution)
+        cam_row.addWidget(self._cam_match_btn)
         layout.addLayout(cam_row)
 
         # 相机分辨率行：跟随所选相机显示（resx/resy），宽/高各占一个输入框；
@@ -1331,6 +1346,7 @@ class _VideoToSequenceWindow(QDialog):
 
         parent_layout.addWidget(group)
         self._auto_select_camera()
+        self._update_match_btn_state()
 
     def _build_output_section(self, parent_layout):
         group = QGroupBox("输出设置")
@@ -1595,6 +1611,7 @@ class _VideoToSequenceWindow(QDialog):
             return
         self._current_video_path = expanded
         self._video_info = None
+        self._update_match_btn_state()
         self._path_edit.setText(media_path)  # textChanged: text==loaded → no-op
         self._set_default_output_dir(
             os.path.splitext(os.path.basename(expanded))[0])
@@ -1638,6 +1655,7 @@ class _VideoToSequenceWindow(QDialog):
             stem = os.path.splitext(basename)[0]
         self._current_video_path = path
         self._video_info = info
+        self._update_match_btn_state()
         self._path_edit.setText(display_path or path)  # 显示保留 $HIP 原文
         self._set_default_output_dir(stem)
         self._probe_video(path, sequence_info=info)
@@ -1677,6 +1695,7 @@ class _VideoToSequenceWindow(QDialog):
             self._probe_worker = None
         self._current_video_path = ""
         self._video_info = None
+        self._update_match_btn_state()
         self._status_label.setText("")
         self._status_label.setVisible(False)
         self._progress_bar.setValue(0)
@@ -2045,6 +2064,7 @@ class _VideoToSequenceWindow(QDialog):
         if info.filepath != self._current_video_path:
             return
         self._video_info = info
+        self._update_match_btn_state()
 
         self._info_labels["filename"].setText(info.filename)
         self._info_labels["resolution"].setText(
@@ -2267,6 +2287,7 @@ class _VideoToSequenceWindow(QDialog):
         """记录所选相机并同步分辨率显示（选择对话框/自动选择共用入口）。"""
         self._camera_edit.setText(cam_path)
         self._refresh_camera_res()
+        self._update_match_btn_state()
 
     def _selected_camera_node(self):
         """当前所选相机节点；未选、场景中已不存在或无 hou 时返回 None。"""
@@ -2278,6 +2299,17 @@ class _VideoToSequenceWindow(QDialog):
         except ImportError:
             return None
         return hou.node(path)
+
+    def _update_match_btn_state(self):
+        """「匹配素材分辨率」可用态：已选相机且素材宽高就绪才可点。
+
+        未选素材/相机时灰置（用户拍板，与分辨率行无相机灰置同约定）。
+        相机路径在但节点已删的情形不做灰置判定（点击走"已不存在"提示
+        兜底），刷新时机与分辨率行保持一致（选相机/探测完成/清空素材）。"""
+        info = self._video_info
+        has_media = info is not None and info.width > 0 and info.height > 0
+        self._cam_match_btn.setEnabled(
+            bool(self._camera_edit.text().strip()) and has_media)
 
     def _refresh_camera_res(self):
         """按所选相机刷新分辨率框（resx/resy）；无相机或参数缺失则禁用。"""
@@ -2345,6 +2377,51 @@ class _VideoToSequenceWindow(QDialog):
         self._status_label.setVisible(True)
         self._status_label.setText(
             f"已设置 {cam.path()} 分辨率为 {width}x{height}")
+        self._status_label.setStyleSheet("color: #87cc8e; font-size: 12px;")
+
+    def _on_match_source_resolution(self):
+        """「匹配素材分辨率」：把所选相机分辨率直接设为当前素材的宽高。
+
+        写回与分辨率行「确定」同款（resx/resy 直改 + hou.Error 兜住
+        锁定参数）；成功后同步宽/高两框与状态栏。素材宽高取当前加载
+        媒体的探测结果（信息面板宽/高同源）；未选相机/素材未加载/
+        相机已删均走对话框提示，不打断操作。"""
+        cam = self._selected_camera_node()
+        if cam is None:
+            if self._camera_edit.text().strip():
+                dialogs.warn(self, "提示", "所选相机已不存在，请重新选择。")
+            else:
+                dialogs.warn(self, "提示", "请先选择相机。")
+            return
+        info = self._video_info
+        if info is None or info.width <= 0 or info.height <= 0:
+            dialogs.warn(
+                self, "提示",
+                "尚未获取到素材分辨率：请先加载视频/序列素材"
+                "（探测完成后信息面板会显示宽高）。",
+            )
+            return
+        resx, resy = cam.parm("resx"), cam.parm("resy")
+        if resx is None or resy is None:
+            dialogs.warn(self, "错误", "所选相机没有 resx/resy 分辨率参数。")
+            return
+        width, height = int(info.width), int(info.height)
+        import hou
+        try:
+            resx.set(width)
+            resy.set(height)
+        except hou.Error as e:
+            # 放宽到 hou.Error（同 _on_apply_camera_res）：锁定参数抛的
+            # PermissionError 与 OperationFailed 是兄弟类，只捕后者会让
+            # 异常穿出 Qt 槽、界面零反馈，用户误以为已生效
+            logger.warning("匹配素材分辨率失败 %s: %s", cam.path(), e)
+            dialogs.warn(self, "错误", f"设置相机分辨率失败（参数被锁定？）:\n{e}")
+            return
+        self._res_w_edit.setText(str(width))
+        self._res_h_edit.setText(str(height))
+        self._status_label.setVisible(True)
+        self._status_label.setText(
+            f"已把 {cam.path()} 分辨率匹配为素材 {width}x{height}")
         self._status_label.setStyleSheet("color: #87cc8e; font-size: 12px;")
 
     def _reset_info_labels(self):
