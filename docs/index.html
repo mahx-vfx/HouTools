@@ -994,6 +994,7 @@
   <h2>Reload Modules (Dev)<span class="zh">开发热加载</span></h2>
   <p class="entry">入口:<code>HouTools → Reload Modules (Dev)</code></p>
   <p>开发专用:重载所有 <code>houtools</code> 模块,改完代码无需重启 Houdini。已打开的工具窗口在 Reload 时自动关闭,重新打开即新代码;已打开的 Automation Python Panel 除外(由面板工具条的刷新按钮重建)。</p>
+  <div class="note">仅开发环境可用:插件目录带 <code>.git</code>(git 仓库安装)自动启用;目录被拷贝安装(丢失 <code>.git</code>)时,在 <code>Documents\houdiniXX.X\houdini.env</code> 里加一行 <code>HOUTOOLS_DEV = 1</code> 并重启 Houdini 手动开启(H21/H22 各有一份,按需设置;开关唯一入口,不支持 Windows 用户环境变量,也不要写进随包分发的 HouTools.json)。发行版安装点击只会提示、不执行任何操作。另:Automation 任务执行中 Reload 会使剩余任务误判为"未知类型",请在引擎空闲时使用。</div>
   <ul>
     <li>按模块导入顺序(即依赖序)重载;<code>houtools/dev</code> 框架自身不参与重载(改动它需重启)。</li>
     <li>菜单结构(两份菜单 XML)的改动是 H22 硬约束,仍需重启 Houdini 一次才能生效。</li>

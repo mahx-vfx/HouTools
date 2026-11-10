@@ -40,7 +40,7 @@ root/
 
 | Task | Location | Notes |
 |------|----------|-------|
-| 热加载机制 | `houtools/dev/reloader.py` | 按 sys.modules 插入序重载（=依赖序）；跳过 `houtools.dev*`；失败模块弹出 sys.modules 供下次重导 |
+| 热加载机制 | `houtools/dev/reloader.py` | 按 sys.modules 插入序重载（=依赖序）；跳过 `houtools.dev*`；失败模块弹出 sys.modules 供下次重导；**发行版闸门 `_is_dev_install`**：插件根带 `.git` 或 `HOUTOOLS_DEV=1` 即开发环境（env 唯一设置入口 = houdini.env，每用户文件；不支持 Windows 用户环境变量、**严禁**写进随包分发的 HouTools.json env 块——用户拍板），非开发环境点击仅提示不关窗，闸门在 `_close_windows` **之前**（发行版点击零副作用）；**已知开发期边界（用户拍板不加守卫、自行规避）**：Automation 引擎运行中 Reload 会使剩余任务误判为未知类型（日志可见、重跑即恢复）——引擎等主线程无超时 + 取消仅在任务边界，卡死态下加"运行中禁止 Reload"守卫会连排障手段一起堵死，故不做；拒绝关闭窗口时中止重载（见窗口单例行） |
 | 菜单点击入口 | `houtools/dev/dispatcher.py` | `run(tool_id)` → `importlib.import_module("houtools.tools." + tool_id)` → 调其 `run()` |
 | 菜单定义 | `MainMenuCommon.xml` / `NetworkViewMenu.xml` | 顶层子菜单 id：`houtools_tools_menu` / `houtools_network_view_menu`；均插在 help_menu 前 |
 | 节点右键菜单 | 仓库根 `OPmenu.xml` + `houtools/tools/open_cache_folder.py`、`capture_viewport_embed.py`、`delete_viewport_capture.py` | 条目块以 `<separatorItem/>` 起头与系统项隔开（悬空分割线由菜单系统自动收起）+ 标签尾部 `[HT]` 后缀；**标签一律英文/ASCII——中文 `<label>` 条目行出现但文字不渲染**；结构改动需重启 Houdini；scriptCode 只写两行分发器、工具代码走热加载；**context `<expression>` 只用最保守的 Python 子集（属性调用+比较+and/or，禁 walrus/推导式——H22 求值器语法面无官方承诺，smoke test 的 eval 对照才有意义）**。**Open Cache Folder 候选序/expandString/USD Render 特例/`_OUTPUT_PARMS` 双处同步等坑表 → `dev-notes/opmenu.md`（改前必读）；`expanded_output_path` 是与 Copy Output Path 共享的取值层** |

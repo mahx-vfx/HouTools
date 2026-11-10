@@ -3674,6 +3674,35 @@ def main():
     print("reload_all ->", summary)
     assert "FAILED" not in summary, summary
 
+    # Reload 开发环境闸门：dev 判据（.git 存在 / HOUTOOLS_DEV=1）。
+    # env 为唯一手动入口（houdini.env 设置，os.environ 可读）；root 参数
+    # 供测试注入，不受本仓库自身 .git 干扰
+    _gate_env = os.environ.get("HOUTOOLS_DEV")
+    _gate_dir = Path(tempfile.mkdtemp(prefix="houtools_nongit_"))
+    _gate_dir2 = Path(tempfile.mkdtemp(prefix="houtools_nongit2_"))
+    try:
+        os.environ.pop("HOUTOOLS_DEV", None)
+        assert reloader._is_dev_install(), "本仓库（.git）应判为 dev"
+        assert not reloader._is_dev_install(root=_gate_dir), \
+            "无 .git 且未设变量应判为非 dev"
+        (_gate_dir / ".git").write_text("", encoding="utf-8")
+        assert reloader._is_dev_install(root=_gate_dir), \
+            ".git 存在（含 worktree 文件形态）应判为 dev"
+        os.environ["HOUTOOLS_DEV"] = "0"
+        assert not reloader._is_dev_install(root=_gate_dir2), \
+            "HOUTOOLS_DEV=0 不应开启（真值白名单外一律不算）"
+        os.environ["HOUTOOLS_DEV"] = "1"
+        assert reloader._is_dev_install(root=_gate_dir2), \
+            "HOUTOOLS_DEV=1 应强制 dev（无 .git 也开）"
+    finally:
+        if _gate_env is None:
+            os.environ.pop("HOUTOOLS_DEV", None)
+        else:
+            os.environ["HOUTOOLS_DEV"] = _gate_env
+        shutil.rmtree(_gate_dir, ignore_errors=True)
+        shutil.rmtree(_gate_dir2, ignore_errors=True)
+    print("reload dev gate OK")
+
     # ------------------------------------------------------------------
     # settings 目录解析链 / recipe 版本比较 / 存储路径基准 / 版本过滤 /
     # hdrlight 空目录守卫 / HouTools Settings 窗口（2026-11 settings 分离）
