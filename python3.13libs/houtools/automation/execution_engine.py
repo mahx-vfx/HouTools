@@ -99,6 +99,9 @@ class ExecutionEngine(QThread):
         super().__init__(parent)
         self._tasks = tasks
         self._cancelled = False
+        # 本次运行因取消而未执行的任务数（协作式取消生效点统计；成功/
+        # 失败不含它们——在途任务已计入各自结果）。完成回调读取并汇报
+        self._cancelled_count = 0
         # 主线程预读 DW 软件路径:hou.getenv 严格说不该在 QThread 里调,
         # 每次运行读一次(而非每任务读)也足够
         self._dw_exe_path = AutomationDataManager.load_dw_exe_path()
@@ -128,6 +131,11 @@ class ExecutionEngine(QThread):
         try:
             for idx, task in enumerate(self._tasks):
                 if self._cancelled:
+                    # 协作式取消生效点：从当前任务起剩余的启用任务全部
+                    # 不再执行——统计数量供完成回调在日志/控制台汇报
+                    # （在途任务已完成收尾、计入各自结果，不计入取消数）
+                    self._cancelled_count = sum(
+                        1 for t in self._tasks[idx:] if t.enabled)
                     break
                 if not task.enabled:
                     continue

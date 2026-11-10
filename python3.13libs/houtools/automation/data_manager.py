@@ -91,6 +91,69 @@ class AutomationDataManager:
         name = filename if filename else "Automation"
         return os.path.join(base, "HouTools_cfg", "Automation_json", f"{name}.json")
 
+    # ── 上次使用配置标记（随工程持久化，2026-11 用户拍板） ─────
+
+    @classmethod
+    def get_last_config_path(cls) -> str:
+        """返回"上次使用配置"标记文件路径: ``{HIP}/HouTools_cfg/Automation_last.json``。
+
+        与任务配置同随工程走（参考其他 HouTools_cfg 配置的落盘约定）；
+        放在 ``HouTools_cfg/`` 顶层而非 ``Automation_json/`` 内——后者
+        的 ``*.json`` 会被 ``list_configs`` 枚举进配置下拉，标记文件
+        混进去会污染下拉。"""
+        return os.path.join(cls._hip_base(), "HouTools_cfg",
+                            "Automation_last.json")
+
+    @classmethod
+    def load_last_config(cls) -> Optional[str]:
+        """读取上次使用的配置名；缺失/损坏/内容非法一律返回 None。
+
+        标记是可再生缓存：只读不迁移、不判配置名合法性（调用方拿
+        ``list_configs`` 自查存在性），损坏直接按未持久化处理，下次
+        切换配置重写。"""
+        path = cls.get_last_config_path()
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            logger.warning("读取上次使用配置失败（按未持久化处理）: %s (%s)",
+                           path, exc)
+            return None
+        if not isinstance(data, dict):
+            logger.warning("上次使用配置标记顶层不是对象（按未持久化处理）: %s",
+                           path)
+            return None
+        name = data.get("last_config")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        return None
+
+    @classmethod
+    def save_last_config(cls, name: str) -> bool:
+        """记录上次使用的配置名（tmp + os.replace 原子写，同 save() 手法）。
+
+        失败只告警返回 False——持久化是可再生缓存，失败不影响配置切换
+        本身，下次切换会重写。"""
+        path = cls.get_last_config_path()
+        tmp_path = path + ".~tmp%d_%d" % (os.getpid(), threading.get_ident())
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump({"last_config": str(name)}, f,
+                          ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+            return True
+        except Exception as exc:
+            logger.warning("保存上次使用配置标记失败: %s (%s)", path, exc)
+            try:
+                os.unlink(tmp_path)
+            except OSError as exc2:
+                logger.debug("cannot remove last-config tmp %s: %s",
+                             tmp_path, exc2)
+            return False
+
     # ── 应用级配置(Automation_Config.json) ─────────────
 
     @classmethod

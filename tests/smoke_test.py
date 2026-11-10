@@ -1051,6 +1051,92 @@ def main():
             aw._PANEL_REFS.clear()
     print("automation autosave OK")
 
+    # ── Automation 三项改动回归：上次配置随工程持久化 / 日志默认保存 /
+    #    取消汇报未执行任务数 ──
+    import contextlib as _contextlib
+    import io as _io
+    import houtools.automation.data_manager as _adm
+    _adm_cls = _adm.AutomationDataManager
+
+    _adm_base = tempfile.mkdtemp(prefix="houtools_auto_last.")
+    atexit.register(lambda: shutil.rmtree(_adm_base, ignore_errors=True))
+    # _hip_base 是 AutomationDataManager 的类方法（读 hou.getenv("HIP")），
+    # patch 到类上把配置根隔离进临时目录
+    with patch.object(_adm_cls, "_hip_base",
+                      lambda *a: _adm_base):
+        # ① 上次使用配置标记：读写/损坏容错/不污染配置下拉
+        assert _adm_cls.load_last_config() is None, "无标记应返回 None"
+        assert _adm_cls.save_last_config("Persisted") is True
+        assert _adm_cls.load_last_config() == "Persisted"
+        _adm_cls.save([{"type": "OPEN_DW", "params": {}}], filename="Persisted")
+        _adm_cls.save([], filename="Second")
+        assert _adm_cls.load_last_config() not in ("Second",), "sanity"
+        assert "Automation_last" not in _adm_cls.list_configs(), \
+            "标记文件不得混进配置下拉"
+        Path(_adm_cls.get_last_config_path()).write_text(
+            "not json", encoding="utf-8")
+        assert _adm_cls.load_last_config() is None, "损坏标记按未持久化处理"
+        _adm_cls.save_last_config("Persisted")   # 修复标记，供窗口恢复用例
+
+        # ② 窗口打开恢复上次配置（标记指向的配置仍在配置目录）
+        from houtools.automation.window import AutomationWindow as _AutoWin2
+        last_win = _AutoWin2()
+        assert last_win._current_config_name == "Persisted", \
+            last_win._current_config_name
+        assert last_win._config_combo.currentText() == "Persisted"
+        # 日志默认保存：未写过设置键的配置 → 默认开启
+        assert last_win._log_to_disk_enabled is True
+        # 显式 false 持久化后保持关闭（用户选择优先于默认值）
+        _adm_cls.save_settings({"log_to_disk": False}, "Persisted")
+        last_win._load_settings()
+        assert last_win._log_to_disk_enabled is False
+        _adm_cls.save_settings({"log_to_disk": True}, "Persisted")
+        last_win._load_settings()
+        assert last_win._log_to_disk_enabled is True
+
+        # ③ 切换配置回写标记（真接线）
+        idx_second = last_win._config_combo.findText("Second")
+        assert idx_second >= 0
+        last_win._on_config_changed(idx_second)
+        assert last_win._current_config_name == "Second"
+        assert _adm_cls.load_last_config() == "Second"
+
+        # ④ 取消计数：3 个任务、首个执行时请求取消 → 剩余 2 个未执行
+        from houtools.automation import task_types as _tt
+        from houtools.automation.execution_engine import \
+            ExecutionEngine as _EngCls
+        _cancel_tasks = [_tt.TaskItem(
+            task_type=_tt.TaskType.BUTTON_CLICK,
+            params=_tt.ButtonClickParams(node_path="/obj/n",
+                                         parm_name="test"),
+            enabled=True)
+            for i in range(3)]
+        cancel_eng = _EngCls(_cancel_tasks)
+        cancel_eng._execute_button_click = lambda params: cancel_eng.cancel()
+        cancel_eng.start()
+        cancel_eng.wait(30000)
+        assert not cancel_eng.isRunning()
+        assert cancel_eng._cancelled_count == 2, cancel_eng._cancelled_count
+
+        # ⑤ 完成摘要固定四段（总共/成功/失败/取消——print 经 tee 同落
+        #    日志与控制台）
+        last_win._engine = cancel_eng   # _cancelled_count == 2 的引擎
+        _buf = _io.StringIO()
+        with _contextlib.redirect_stdout(_buf):
+            last_win._on_all_completed(1, 0, "12:00:00", 1.0)
+        _out = _buf.getvalue()
+        assert "总共 3，成功 1，失败 0，取消 2" in _out, _out
+        assert last_win._engine is None, "收尾应复位引擎引用"
+        # 取消数为 0 时四段齐显（取消 0）
+        last_win._engine = type("_ZeroEngine", (),
+                                {"_cancelled_count": 0})()
+        _buf2 = _io.StringIO()
+        with _contextlib.redirect_stdout(_buf2):
+            last_win._on_all_completed(2, 0, "12:00:00", 1.0)
+        assert "总共 2，成功 2，失败 0，取消 0" in _buf2.getvalue(), _buf2
+        last_win.deleteLater()
+    print("automation last-config/log-default/cancel-count OK")
+
     # 真实实例化 videoseq 窗口（捕获 __init__ 结构损伤；无视频、无线程）
     from houtools.videoseq.window import _VideoToSequenceWindow, parse_dimension
     assert parse_dimension("1920") == 1920

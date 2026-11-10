@@ -962,13 +962,19 @@ class AutomationWindow(QWidget):
         self._drag_threshold: int = 5  # 像素,超过才认作拖动
 
         # 配置下拉相关状态:当前加载的配置文件 basename(无 .json 后缀)。
-        # 初始默认 ``Automation``(保留向后兼容)。用户从下拉选其它
-        # 配置后会被 ``_on_config_changed`` 更新;Start 保存后会被
-        # ``_save_data`` 更新(用当前 combo 文本)。
+        # 初始默认 ``Automation``(保留向后兼容)。**随工程持久化的上次
+        # 使用配置**({HIP}/HouTools_cfg/Automation_last.json,用户拍板)
+        # 存在且该配置仍在配置目录时优先恢复——重开同一工程接着用上次
+        # 的配置。之后从下拉选其它配置/新建配置/Start 保存改名都会更新
+        # 此值并回写标记文件(_persist_last_config)。
         self._current_config_name: str = "Automation"
+        _last_cfg = AutomationDataManager.load_last_config()
+        if _last_cfg and _last_cfg in AutomationDataManager.list_configs():
+            self._current_config_name = _last_cfg
 
-        # 设置项:日志输出到磁盘
-        self._log_to_disk_enabled: bool = False
+        # 设置项:日志输出到磁盘（默认开启，2026-11 用户拍板；配置文件
+        # 里显式 false 才关闭）
+        self._log_to_disk_enabled: bool = True
 
         self._build_ui()
         self._load_data()
@@ -2030,13 +2036,24 @@ class AutomationWindow(QWidget):
             self._log_to_disk_enabled = checked
             self._save_settings()
 
+    def _persist_last_config(self):
+        """把当前配置名写入随工程的"上次使用"标记（失败只记 debug）。
+
+        持久化是可再生缓存：标记写失败不影响本次切换/保存本身，下次
+        操作会重写（data_manager.save_last_config 同语义）。"""
+        if AutomationDataManager.save_last_config(self._current_config_name):
+            return
+        logger.debug("Automation: 上次使用配置标记写入失败 name=%s",
+                     self._current_config_name)
+
     def _load_settings(self):
         """从配置文件加载设置。"""
         settings = AutomationDataManager.load_settings(self._current_config_name)
         # as_bool 归一：手改配置 "log_to_disk": "false" 是 truthy，裸取
-        # 会反向启用磁盘日志（同模块其余布尔读点的约定）
+        # 会反向启用磁盘日志（同模块其余布尔读点的约定）。缺省 **True**
+        # ——日志默认保存（2026-11 用户拍板），配置里显式 false 才关闭
         self._log_to_disk_enabled = as_bool(
-            settings.get("log_to_disk", False), False)
+            settings.get("log_to_disk", True), True)
 
     def _save_settings(self):
         """保存设置到配置文件(失败弹窗提示,不静默)。"""
@@ -2320,6 +2337,7 @@ class AutomationWindow(QWidget):
         self._current_config_name = name
         self._load_data()  # 重新加载,内部会再 refresh 一次(无副作用)
         self._load_settings()  # 同步加载新配置的设置项
+        self._persist_last_config()  # 上次使用配置随工程持久化
 
     def _on_new_config(self):
         """新建配置:输入名字确认后**立即**落盘一份空配置文件,并把面板
@@ -2373,6 +2391,7 @@ class AutomationWindow(QWidget):
         # _refresh_config_dropdown 带 blockSignals,不会误触发切换。
         self._load_data()
         self._load_settings()
+        self._persist_last_config()  # 上次使用配置随工程持久化
 
     def _get_save_target_name(self) -> str | None:
         """从下拉当前文本提取保存文件名(经 ``_sanitize_config_name`` 净化)。
@@ -2513,6 +2532,7 @@ class AutomationWindow(QWidget):
         # 状态同步:更新当前配置名(只有显式保存到某名时才更新)
         if save_name:
             self._current_config_name = save_name
+            self._persist_last_config()  # 上次使用配置随工程持久化
         # 刷新下拉让新文件出现在列表中 + 恢复选中
         self._refresh_config_dropdown()
         return tasks_data
@@ -2700,7 +2720,20 @@ class AutomationWindow(QWidget):
         minutes = int((total_elapsed % 3600) // 60)
         seconds = int(total_elapsed % 60)
         try:
-            print(f"{timestamp} 执行完成 总耗时: {hours:02d}时{minutes:02d}分{seconds:02d}秒 — 成功 {success}, 失败 {failed}")
+            # 完成摘要固定四段（总共/成功/失败/取消，2026-11 用户拍板）：
+            # 总共 = 本次运行的启用任务数（成功+失败+取消，禁用任务不计）；
+            # 取消数读引擎 _cancelled_count（协作式取消生效点统计，在途
+            # 任务已计入各自结果）。print 经 tee 同落日志与控制台
+            cancelled = 0
+            if self._engine is not None:
+                cancelled = int(
+                    getattr(self._engine, "_cancelled_count", 0) or 0)
+            summary = (
+                f"{timestamp} 执行完成 总耗时: {hours:02d}时{minutes:02d}分"
+                f"{seconds:02d}秒 — 总共 {success + failed + cancelled}，"
+                f"成功 {success}，失败 {failed}，取消 {cancelled}"
+            )
+            print(summary)
             print("=" * 80)  # 通过 tee 同时写入控制台和日志文件
         except Exception:
             # 底层 stdout 流被关闭等：输出失败不阻断收尾——状态复位与
