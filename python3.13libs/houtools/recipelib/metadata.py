@@ -254,7 +254,10 @@ def bulk_set(favorites=None, tags=None, thumbs=None, display_names=None,
 
     thumbs 的值须已是"存储形式"（相对 settings 目录，同 _to_stored 的产出）。
     逐键 setter 一条一存，导入几百条会写盘几百次，故走这里。
-    """
+
+    返回落盘是否成功：**导入提交段必须检查**——False 时提交点未过，
+    调用方要走回滚（否则"文件已换入、旧备份已清而元数据未落盘"
+    的不一致不可恢复）。"""
     if favorites is not None:
         _SETTINGS.set("favorites", list(favorites), save=False)
     if tags is not None:
@@ -274,7 +277,17 @@ def bulk_set(favorites=None, tags=None, thumbs=None, display_names=None,
         if dropped:
             log.warning("导入 colors 段有 %d 个非法颜色值，已丢弃", dropped)
         _SETTINGS.set("colors", clean, save=False)
-    _SETTINGS.save()
+    return _SETTINGS.save()
+
+
+def reload_from_disk():
+    """从磁盘重读设置，丢弃内存中未成功落盘的合并值（导入事务用）。
+
+    bulk_set 落盘失败时（transfer 提交段回滚路径）调用：文件回滚由
+    transfer 的回滚账本负责，这里把内存态退回磁盘权威状态——否则
+    "导入已失败"的报告与会话内元数据劈叉，后续任何一次成功保存会把
+    失败的合并值一并写回磁盘。"""
+    _SETTINGS.load()
 
 
 # --------------------------------------------------------------------------

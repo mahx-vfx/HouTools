@@ -361,11 +361,16 @@ class _DocPreview(QtWidgets.QTextBrowser):
 
     def loadResource(self, rtype, url):
         if rtype == QtGui.QTextDocument.ImageResource:
+            # 失败关闭：目录外/文件缺失/解码失败一律返回空图，**绝不
+            # 回退基类**——基类对绝对 file:/// URL 会按原样读文件，目录
+            # 校验就形同虚设（离屏探针实证非空返回）。空 QImage 在文档
+            # 里渲染为无图，第三方文档不再能诱导读取目录外本地图片
             path, allowed = self._resolve(url)
             if allowed and os.path.exists(path):
                 img = QtGui.QImage(path)
                 if not img.isNull():
                     return img
+            return QtGui.QImage()
         return super().loadResource(rtype, url)
 
     def _on_anchor(self, url):
@@ -396,6 +401,30 @@ class _DocPreview(QtWidgets.QTextBrowser):
             QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path))
 
 
+# GIF 播放期全帧解码预算：QMovie CacheAll 按"全帧 × 原始分辨率"缓存
+# 解码内存（800x600x1000 帧 ≈ 1.9GB）——导入侧 50MP 只约束单帧、管不住
+# 帧数，恶意/异常包可借此打爆 Houdini 进程。与 transfer.py 的导入期
+# 全帧预算（MAX_GIF_TOTAL_PIXELS）同一数值：超限动画降级为静态首帧，
+# 不创建 QMovie。
+GIF_MOVIE_MAX_TOTAL_PIXELS = 50 * 1000 * 1000
+
+
+def _gif_over_budget(path):
+    """GIF 全帧累计解码像素是否超预算（CacheAll 会缓存全部原始帧）。
+
+    读失败/帧数未知（imageCount 返回 -1）一律视为未超——不因探测失败
+    拒播正常动画；真正的超大帧仍被单帧 50MP 导入上限拦住。"""
+    try:
+        reader = QtGui.QImageReader(str(path))
+        size = reader.size()
+        count = reader.imageCount()
+        return bool(size.isValid() and count > 0
+                    and size.width() * size.height() * count
+                    > GIF_MOVIE_MAX_TOTAL_PIXELS)
+    except Exception:
+        return False
+
+
 class _MovieLabel(QtWidgets.QLabel):
     """GIF 播放标签（MediaDialog 用，QMovie 循环播放）。
 
@@ -408,6 +437,12 @@ class _MovieLabel(QtWidgets.QLabel):
     def __init__(self, path, max_w, parent=None):
         super().__init__(parent)
         self._max_w = max_w
+        if _gif_over_budget(path):
+            # 超预算动画降级为静态首帧：CacheAll 全帧缓存的解码内存
+            # 随帧数无上限增长（导入单帧上限管不住帧数），不创建 QMovie
+            self.setPixmap(QtGui.QPixmap.fromImage(
+                QtGui.QImageReader(str(path)).read()))
+            return
         movie = QtGui.QMovie(self)
         movie.setFileName(path)
         movie.setCacheMode(QtGui.QMovie.CacheAll)
@@ -693,7 +728,11 @@ class MarkdownMediaView(_DocPreview):
                 movie = self._movies.get(url_str)
                 if movie is None:
                     path, allowed = self._resolve(url)
-                    if allowed and os.path.exists(path):
+                    if allowed and os.path.exists(path) \
+                            and not _gif_over_budget(path):
+                        # 超预算 GIF 不创建 QMovie（CacheAll 全帧缓存可
+                        # 达 GB 级）：落回下方 super() = 父类 loadResource
+                        # 的放行分支，读静态首帧渲染
                         movie = QtGui.QMovie(self)
                         movie.setFileName(path)
                         movie.setCacheMode(QtGui.QMovie.CacheAll)

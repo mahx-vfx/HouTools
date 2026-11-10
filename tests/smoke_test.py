@@ -3127,6 +3127,146 @@ def main():
                     assert rl_meta.get_display_name("my_vex-1") == "烟雾测试"
             print("code block transfer roundtrip OK")
 
+        # ---- 审查修复回归：bulk_set 落盘失败回滚 / loadResource 失败
+        # 关闭 / GIF 全帧预算 / JsonStore 跨进程互斥 ----
+        import base64 as _b64
+        import subprocess as _subprocess
+        import houtools.recipelib.docs as _rl_docs
+        import houtools.recipelib.transfer as _fix_tr
+        from PySide6 import QtCore as _QtCore
+        from PySide6 import QtGui as _QtGui
+        from PySide6 import QtWidgets as _QtWidgets
+
+        # ① 导入提交段 bulk_set 落盘失败：TransferError + 文件/元数据全量回滚
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(rl_meta, "DOCS_DIR", Path(tmp) / "docs"), \
+                 patch.object(rl_meta, "THUMBS_DIR", Path(tmp) / "thumbs"):
+                _bulk_store = houtools.core.settings.JsonStore(
+                    "_smoke_rl_bulkfail.json",
+                    defaults=dict(rl_meta._DEFAULTS))
+                _track_rm(_bulk_store.path)
+                with patch.object(rl_meta, "_SETTINGS", _bulk_store):
+                    rl_meta.write_doc("bulkkee", "ORIGINAL")
+                    _bulk_pack = Path(tmp) / "bulk_pack.zip"
+                    manifest = {"app": _fix_tr.APP_TAG, "format_version": 1,
+                                "recipes": ["bulkkee"],
+                                "code_blocks": [], "hda_files": {}}
+                    packaged = {"favorites": [], "tags": {"bulkkee": ["x"]},
+                                "thumbs": {}, "display_names": {},
+                                "colors": {}, "code_blocks": {}}
+                    with _zf.ZipFile(_bulk_pack, "w") as z:
+                        z.writestr("manifest.json", json.dumps(manifest))
+                        z.writestr("recipelib.json", json.dumps(packaged))
+                        z.writestr("docs/bulkkee/doc.md", "IMPORTED")
+                    raised = False
+                    with patch.object(_bulk_store, "save",
+                                      return_value=False):
+                        try:
+                            _fix_tr.import_package(_bulk_pack)
+                        except _fix_tr.TransferError as exc:
+                            raised = "落盘失败" in str(exc)
+                    assert raised, "元数据落盘失败应抛 TransferError"
+                    assert rl_meta.read_doc("bulkkee") == "ORIGINAL", \
+                        "文件回滚后旧文档应还原"
+                    assert not list(Path(tmp).rglob("*~old*")), \
+                        "回滚后不应残留备份目录"
+                    assert not list(Path(tmp).rglob("*~incoming*")), \
+                        "回滚后不应残留暂存目录"
+                rl_meta._SETTINGS.load()   # 内存与磁盘重新对齐（测试卫生）
+                assert "bulkkee" not in (
+                    rl_meta._SETTINGS.get("tags") or {}), \
+                    "落盘失败的合并值不得出现在磁盘元数据"
+            print("import bulk_set-fail rollback OK")
+
+        # ② Markdown 图片目录外读取失败关闭：拒绝分支直接返回空图，
+        # 不回退基类（基类对 file:/// 会照读，离屏探针实证）
+        with tempfile.TemporaryDirectory() as tmp:
+            _doc_root = Path(tmp) / "docs"
+            _doc_root.mkdir()
+            outside = Path(tmp) / "outside.png"
+            outside.write_bytes(_b64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUl"
+                "EQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="))
+            inside = _doc_root / "in.png"
+            shutil.copyfile(outside, inside)
+            view = _rl_docs._DocPreview(str(_doc_root))
+            with patch.object(_QtWidgets.QTextBrowser, "loadResource",
+                              side_effect=AssertionError("fallback")):
+                img = view.loadResource(
+                    _QtGui.QTextDocument.ImageResource,
+                    _QtCore.QUrl.fromLocalFile(str(outside)))
+                assert img.isNull(), "目录外图片应返回空图"
+                img2 = view.loadResource(
+                    _QtGui.QTextDocument.ImageResource,
+                    _QtCore.QUrl.fromLocalFile(str(inside)))
+                assert not img2.isNull(), "目录内图片应正常加载"
+            view.deleteLater()
+            print("doc image fail-closed OK")
+
+        # ③ GIF 全帧预算（导入期拒收 + 播放期降级）：依赖本机 ffmpeg 生成
+        # 多帧样本；ffmpeg 缺失或裸环境无 gif 解码器时跳过（不阻塞 smoke）
+        from houtools.videoseq.ffmpeg import find_ffmpeg as _find_ff
+        _ff = _find_ff()
+        if _ff:
+            with tempfile.TemporaryDirectory() as tmp:
+                small_gif = str(Path(tmp) / "small.gif")
+                big_gif = str(Path(tmp) / "big.gif")
+                _subprocess.run(
+                    [_ff, "-y", "-f", "lavfi",
+                     "-i", "testsrc2=s=32x32:d=1:r=30",
+                     "-frames:v", "30", small_gif],
+                    capture_output=True, timeout=120, check=True)
+                _subprocess.run(
+                    [_ff, "-y", "-f", "lavfi",
+                     "-i", "testsrc2=s=512x512:d=1:r=200",
+                     "-frames:v", "200", big_gif],
+                    capture_output=True, timeout=120, check=True)
+                if _QtGui.QImageReader(small_gif).size().isValid():
+                    _fix_tr._assert_image_dimensions(
+                        small_gif, ext_name=small_gif)   # 不抛即通过
+                    try:
+                        _fix_tr._assert_image_dimensions(
+                            big_gif, ext_name=big_gif)
+                        raise AssertionError("超预算 GIF 应被拒收")
+                    except _fix_tr.TransferError:
+                        pass
+                    assert not _rl_docs._gif_over_budget(small_gif)
+                    assert _rl_docs._gif_over_budget(big_gif)
+                    print("gif budget OK")
+                else:
+                    print("gif budget SKIP (no gif decoder in bare env)")
+        else:
+            print("gif budget SKIP (no ffmpeg)")
+
+        # ④ JsonStore 跨进程互斥：named mutex 持有期间另一写入方 fail-closed
+        if os.name == "nt":
+            import threading as _threading
+            _mutex_store = houtools.core.settings.JsonStore(
+                "_smoke_mutex.json", defaults={})
+            _track_rm(_mutex_store.path)
+            handle, locked = houtools.core.settings._acquire_file_mutex(
+                _mutex_store.path)
+            assert locked, "空闲锁应可获取"
+            _saved_ms = houtools.core.settings._MUTEX_TIMEOUT_MS
+            houtools.core.settings._MUTEX_TIMEOUT_MS = 300
+            _res = {}
+
+            def _mutex_writer():
+                _res["ok"] = _mutex_store.set("x", 1)
+
+            _wt = _threading.Thread(target=_mutex_writer)
+            _wt.start()
+            _wt.join(15)
+            houtools.core.settings._MUTEX_TIMEOUT_MS = _saved_ms
+            houtools.core.settings._release_file_mutex(handle)
+            assert not _wt.is_alive(), "锁超时后 writer 应返回"
+            assert _res.get("ok") is False, \
+                "持锁期间另一写入方应 fail-closed"
+            assert _mutex_store.set("x", 2), "释放后应可写入"
+            print("jsonstore mutex OK")
+        else:
+            print("jsonstore mutex SKIP (non-Windows)")
+
     # 文档编辑器：实例化（无文档=空白）+ 确认/取消模式 + 实时预览渲染
     # （纯 Qt，不触 hou）
     with tempfile.TemporaryDirectory() as tmp:

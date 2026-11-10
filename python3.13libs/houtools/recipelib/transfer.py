@@ -166,6 +166,10 @@ def _extract_member(zf, info, dst, budget=None):
 # 落位前按 QImageReader 探尺寸拦下（见 _extract_member）；视频没有
 # QImageReader 解码器，维持字节配额约束。
 MAX_IMAGE_PIXELS = 50 * 1000 * 1000
+# GIF 额外全帧预算：单帧上限管不住帧数，QMovie CacheAll 按"全帧 ×
+# 原始分辨率"缓存解码内存（800x600x1000 帧 ≈ 1.9GB）。导入期即拒收
+# 累计超限动画；播放期同预算降级静态首帧（docs._gif_over_budget）。
+MAX_GIF_TOTAL_PIXELS = 50 * 1000 * 1000
 
 
 def _assert_image_dimensions(path, ext_name=None):
@@ -174,17 +178,35 @@ def _assert_image_dimensions(path, ext_name=None):
     由 _extract_member 在 os.replace 之前对临时文件调用——检查放在
     落位后会让超限图片已经以正式名留在 thumbs/docs 目录（元数据未
     引用、也没有清理路径），成为永久垃圾。ext_name 提供扩展名判定
-    依据（临时文件后缀是 .~part*，必须按正式名判图片类型）。"""
+    依据（临时文件后缀是 .~part*，必须按正式名判图片类型）。
+
+    GIF 额外检查全帧累计像素（imageCount × 单帧面积）：帧数不受单帧
+    上限约束，是 CacheAll 播放的内存 DoS 面。imageCount 未知（-1/0）
+    时跳过累计检查——不因探测失败拒收合法动画，单帧上限仍生效。"""
     name_for_ext = str(ext_name) if ext_name is not None else str(path)
-    if os.path.splitext(name_for_ext)[1].lower() not in metadata.IMAGE_EXTS:
+    ext = os.path.splitext(name_for_ext)[1].lower()
+    if ext not in metadata.IMAGE_EXTS:
         return
     from PySide6 import QtGui
-    size = QtGui.QImageReader(str(path)).size()
-    if size.isValid() and size.width() * size.height() > MAX_IMAGE_PIXELS:
+    reader = QtGui.QImageReader(str(path))
+    size = reader.size()
+    if not size.isValid():
+        return
+    area = size.width() * size.height()
+    if area > MAX_IMAGE_PIXELS:
         raise TransferError(
             "图片像素尺寸超限（{}x{}，上限 {}MP）: {}".format(
                 size.width(), size.height(),
                 MAX_IMAGE_PIXELS // (1000 * 1000), path))
+    if ext == ".gif":
+        count = reader.imageCount()
+        if count > 0 and area * count > MAX_GIF_TOTAL_PIXELS:
+            raise TransferError(
+                "GIF 全帧解码尺寸超限（{}x{} x {} 帧，累计 {}MP，"
+                "上限 {}MP——播放需全帧缓存内存）: {}".format(
+                    size.width(), size.height(), count,
+                    area * count // (1000 * 1000),
+                    MAX_GIF_TOTAL_PIXELS // (1000 * 1000), path))
 
 
 # --------------------------------------------------------------------------
@@ -927,7 +949,11 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
                 path = codeblock.save_code(
                     stem, rec.get("language", "vex"), rec.get("code", ""))
                 legacy_created.append(Path(path))
-            # 5e. 元数据合并，一次落盘——真正的提交点
+            # 5e. 元数据合并，一次落盘——真正的提交点。落盘失败（盘满/
+            # 只读/占用）时提交点未过：把内存合并值从磁盘重读丢弃后抛
+            # 错走 finally 回滚，提交段已换入的文件（旧备份此时都还在）
+            # 整体还原——否则"文件已换入、旧备份已清而元数据未落盘"
+            # 的不一致不可恢复
             local = metadata.all_metadata()
             favs = list(local["favorites"])
             for n in meta["favorites"]:
@@ -941,8 +967,13 @@ def import_package(zip_path, lib_dir=None, existing_names=(), progress=None):
             display.update(meta["display_names"])
             colors = dict(local["colors"])
             colors.update(meta["colors"])
-            metadata.bulk_set(favorites=favs, tags=tags, thumbs=merged_thumbs,
-                              display_names=display, colors=colors)
+            if not metadata.bulk_set(favorites=favs, tags=tags,
+                                     thumbs=merged_thumbs,
+                                     display_names=display, colors=colors):
+                metadata.reload_from_disk()
+                raise TransferError(
+                    "导入中止：元数据落盘失败（磁盘满/只读/文件占用），"
+                    "已回滚导入的文件与元数据")
             committed = True   # 不可取消点已过：此后失败不再回滚 stems
                                # （register_doc_names/rekey 还会继续改设置，
                                # 此时回滚反与已合并的元数据失步）

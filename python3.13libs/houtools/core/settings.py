@@ -1,5 +1,7 @@
 """JSON file-backed settings storage."""
 
+import ctypes
+import hashlib
 import json
 import os
 import threading
@@ -8,6 +10,53 @@ from houtools.core.constants import SETTINGS_DIR
 from houtools.core.log import get_logger
 
 log = get_logger("core.settings")
+
+_MUTEX_TIMEOUT_MS = 5000   # 跨进程锁等待上限（save 本体毫秒级，超时=异常竞争）
+_MUTEX_WAIT_ABANDONED = 0x80
+
+
+def _acquire_file_mutex(path):
+    """按配置文件路径获取 Windows named mutex（跨进程互斥）。
+
+    返回 (handle, acquired)。让"读磁盘 → 合并脏键 → 原子替换"整段在
+    锁内完成：仅靠进程内 RLock，两个 Houdini 实例的读-合并-写窗口
+    交叠时后写者仍会覆盖先写者的键（os.replace 只保证替换单步原子）。
+
+    非 Windows 直接放行（本项目仅支持 Windows，此分支只为无头/非 NT
+    环境不崩）；创建失败或等待超时返回未获取——调用方 **fail-closed
+    拒绝本次写入**（脏键保留重试），不做无锁写入。WAIT_ABANDONED
+    视为获取成功：前任持锁进程崩溃未释放，锁已归本进程，而 os.replace
+    原子性保证磁盘不会读到半截文件。
+    """
+    if os.name != "nt":
+        return None, True
+    k32 = ctypes.windll.kernel32
+    k32.CreateMutexW.restype = ctypes.c_void_p
+    k32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                 ctypes.c_wchar_p]
+    k32.WaitForSingleObject.restype = ctypes.c_uint32
+    k32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    name = "Local\\HouTools.Settings." + hashlib.sha1(
+        str(path).lower().encode("utf-8")).hexdigest()[:24]
+    handle = k32.CreateMutexW(None, False, name)
+    if not handle:
+        log.warning("cannot create settings mutex for %s", path)
+        return None, False
+    wait = k32.WaitForSingleObject(handle, _MUTEX_TIMEOUT_MS)
+    if wait in (0, _MUTEX_WAIT_ABANDONED):
+        return handle, True
+    log.warning("settings mutex busy (0x%x): %s", wait, path)
+    k32.CloseHandle(handle)
+    return None, False
+
+
+def _release_file_mutex(handle):
+    if handle:
+        k32 = ctypes.windll.kernel32
+        k32.ReleaseMutex.argtypes = [ctypes.c_void_p]
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        k32.ReleaseMutex(handle)
+        k32.CloseHandle(handle)
 
 
 class JsonStore:
@@ -106,55 +155,68 @@ class JsonStore:
         bool 决定会话态是否可信，异常逃出去会让 Qt 槽零反馈）。
 
         写入是"磁盘最新内容 + 本会话脏键"的合并：只把改动过的键写回，
-        其余键以磁盘为准——多实例/多进程写同一文件的不同键不再互相
-        丢更新。save() 失败时磁盘不动、脏键保留（下次 save 重试），内存
+        其余键以磁盘为准。整段读-合并-写持跨进程 named mutex（按文件
+        路径命名），多实例/多进程并发写同一文件的不同键不再互相覆盖；
+        锁获取失败/超时 fail-closed 拒写（脏键保留，下次 save 重试）。
+
+        save() 失败时磁盘不动、脏键保留（下次 save 重试），内存
         中已发生的编辑也不回滚——Automation 的"改动即存"语义要求编辑
         不因一次瞬时写盘失败从界面消失；需要"失败即回滚"的调用方（如
         热键应用）在调用侧自行保存 previous 并恢复。
         """
         with self._lock:
-            tmp = self.path.with_name(
-                self.path.name + ".~tmp%d_%d"
-                % (os.getpid(), threading.get_ident()))
-            try:
-                # mkdir 也在保护内：配置目录被删/只读共享盘时 OSError
-                # 不能逃出 save()（曾在 try 外，会把热键会话态与持久化
-                # 态劈叉且 UI 零反馈）
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                if not self._dirty:
-                    # 无改动：文件已存在则不动（空写会把其他进程刚写入
-                    # 的键冲回旧快照）；文件缺失时补建 defaults
-                    if self.path.exists():
-                        return True
-                    merged = dict(self._data)
-                else:
-                    disk, ok = self._read_disk_locked()
-                    if not ok:
-                        return False
-                    merged = dict(self._defaults)
-                    merged.update(disk)
-                    for key in self._dirty:
-                        if key in self._data:
-                            merged[key] = self._data[key]
-                        else:
-                            merged.pop(key, None)
-                # 临时文件 + 原子替换：写盘中途崩溃/断电不会截断原文件
-                tmp.write_text(
-                    json.dumps(merged, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-                os.replace(tmp, self.path)
-                # 提交内存态：非脏键以磁盘为准刷新（拾取其他进程的改动）
-                self._data = merged
-                self._dirty.clear()
-                return True
-            except Exception as exc:
-                log.error("cannot save %s: %s", self.path, exc)
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError as unlink_exc:
-                    log.debug("cannot remove tmp %s: %s", tmp, unlink_exc)
+            handle, locked = _acquire_file_mutex(self.path)
+            if not locked:
                 return False
+            try:
+                return self._save_locked()
+            finally:
+                _release_file_mutex(handle)
+
+    def _save_locked(self):
+        """互斥持锁后的读-合并-写主体（跨进程原子段；进程内另有 RLock）。"""
+        tmp = self.path.with_name(
+            self.path.name + ".~tmp%d_%d"
+            % (os.getpid(), threading.get_ident()))
+        try:
+            # mkdir 也在保护内：配置目录被删/只读共享盘时 OSError
+            # 不能逃出 save()（曾在 try 外，会把热键会话态与持久化
+            # 态劈叉且 UI 零反馈）
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if not self._dirty:
+                # 无改动：文件已存在则不动（空写会把其他进程刚写入
+                # 的键冲回旧快照）；文件缺失时补建 defaults
+                if self.path.exists():
+                    return True
+                merged = dict(self._data)
+            else:
+                disk, ok = self._read_disk_locked()
+                if not ok:
+                    return False
+                merged = dict(self._defaults)
+                merged.update(disk)
+                for key in self._dirty:
+                    if key in self._data:
+                        merged[key] = self._data[key]
+                    else:
+                        merged.pop(key, None)
+            # 临时文件 + 原子替换：写盘中途崩溃/断电不会截断原文件
+            tmp.write_text(
+                json.dumps(merged, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.replace(tmp, self.path)
+            # 提交内存态：非脏键以磁盘为准刷新（拾取其他进程的改动）
+            self._data = merged
+            self._dirty.clear()
+            return True
+        except Exception as exc:
+            log.error("cannot save %s: %s", self.path, exc)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError as unlink_exc:
+                log.debug("cannot remove tmp %s: %s", tmp, unlink_exc)
+            return False
 
     def get(self, key, default=None):
         with self._lock:
