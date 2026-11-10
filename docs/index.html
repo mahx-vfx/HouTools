@@ -788,10 +788,10 @@
   <p class="entry">入口:网络编辑器 <code>HouTools</code> 菜单 / 快捷键 <code>Ctrl+Shift+C</code></p>
   <p>网络编辑器里选中节点按 <code>Ctrl+Shift+C</code>,把该节点输出文件<strong>所在的文件夹</strong>复制到系统剪贴板(如 <code>C:\...\render\TTT</code>,不含文件名),直接粘进文件对话框或其他软件。</p>
   <ul>
-    <li>只对 <strong>filecache / mantra / usdrender</strong> 三族节点生效(usdrender 含 <code>/out</code> 与 LOP 内两种;karma、rop geometry 等不响应),选中其他节点时通知提示。</li>
+    <li>对与右键 <code>Open Cache Folder [HT]</code> <strong>同一批节点</strong>生效(按输出参数命中:filecache / mantra / karma / usdrender / rop geometry 等,第三方 Arnold 节点带相应参数即支持),选中其他节点时通知提示。</li>
     <li>取值与节点右键 <code>Open Cache Folder [HT]</code> 同源:<code>$HIP</code>/<code>$OS</code> 等变量展开后的绝对路径。</li>
     <li>目录尚未写出(缓存未落盘)时<strong>不复制</strong>,左下角红色错误通知;各类失败反馈只走通知模块、不刷控制台。</li>
-    <li>多选时把命中节点的目录去重后逐行合并复制,清单外节点忽略。</li>
+    <li>多选时把命中节点的目录去重后逐行合并复制,未命中的节点忽略。</li>
     <li>键位在 <code>HouTools → HouTools Settings…</code> 修改,也可用 Houdini 自带 Hotkey Manager(符号 <code>h.pane.wsheet.houtools_copy_output_path</code>)。</li>
   </ul>
 </section>

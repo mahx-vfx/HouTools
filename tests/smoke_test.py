@@ -317,9 +317,10 @@ def main():
     assert eval(ocf_expr, {"kwargs": {"node": None}}) is False  # 无节点
     print("open_cache_folder context: consistent")
 
-    # Copy Output Path (Ctrl+Shift+C)：白名单判定（type().name() 去 ::版本
-    # 后缀的基名）——filecache/ifd/usdrender(/out)+usdrender_rop(LOP) 命中，
-    # karma / rop geometry / 普通 SOP 不命中（用户指定只对三族生效）
+    # Copy Output Path (Ctrl+Shift+C)：命中规则与 Open Cache Folder 同步
+    # （参数存在性，复用其 _OUTPUT_PARMS；类型名不参与）——filecache/
+    # mantra/karma/usdrender/rop geometry/带参第三方（如 Arnold）命中，
+    # 不带四参数之一的节点不命中（2026-11 用户拍板从类型白名单翻转）
     from houtools.tools.copy_output_path import is_copy_target
 
     class _FakeTName:
@@ -329,20 +330,44 @@ def main():
         def name(self):
             return self._name
 
-    class _FakeTypedNode:
-        def __init__(self, name):
-            self._tname = _FakeTName(name)
+    class _FakeParmNode:
+        def __init__(self, parms, tname="box"):
+            self._parms = dict.fromkeys(parms, object())
+            self._tname = _FakeTName(tname)
 
         def type(self):
             return self._tname
 
-    for _name in ("filecache::2.0", "filecache", "ifd",
-                  "usdrender", "usdrender::2.0", "usdrender_rop"):
-        assert is_copy_target(_FakeTypedNode(_name)) is True, _name
-    for _name in ("karma", "karma::2.0", "rop_geometry", "geometry", "box"):
-        assert is_copy_target(_FakeTypedNode(_name)) is False, _name
+        def parm(self, name):
+            return self._parms.get(name)
+
+    for _parms, _tname in (
+            (["sopoutput"], "filecache::2.0"),
+            (["sopoutput"], "filecache"),
+            (["vm_picture"], "ifd"),
+            (["outputimage"], "usdrender"),
+            (["outputimage"], "usdrender::2.0"),
+            (["outputimage"], "usdrender_rop"),
+            (["picture"], "karma"),          # 此前白名单外的 karma 纳入
+            (["picture"], "karma::2.0"),
+            (["sopoutput"], "rop_geometry"),  # 同上，rop geometry 纳入
+            (["sopoutput"], "geometry"),
+            (["picture"], "arnold"),          # 第三方 Arnold（带相应参数）
+            (["sopoutput"], "box"),           # 类型名不参与：带参即命中
+    ):
+        assert is_copy_target(_FakeParmNode(_parms, _tname)) is True, \
+            (_parms, _tname)
+    for _parms, _tname in (
+            ([], "karma"),            # 同类型名不带参数不命中（参数才判定）
+            (["file"], "filecache"),  # 旧 filecache：file 参数不在候选内
+            (["ar_picture"], "arnold"),  # 仅 ar_picture 同样不命中（与
+                                         # Open Cache Folder 同边界）
+            ([], "box"),
+    ):
+        assert is_copy_target(_FakeParmNode(_parms, _tname)) is False, \
+            (_parms, _tname)
     assert is_copy_target(None) is False
-    print("copy_output_path whitelist OK")
+    print("copy_output_path parm rule OK")
 
     # 取值层：open_cache_folder.expanded_output_path（与 Open Cache Folder
     # 同源，本工具不重复实现展开逻辑）——变量展开 + 相对路径按 $HIP 拼接 +

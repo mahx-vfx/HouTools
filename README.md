@@ -55,7 +55,7 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings�
 |------|--------|------|
 | Automation | `HouTools → Automation`（Python Panel） | 自动化批处理：节点按钮点击 / Flipbook 拍屏 / HomeAssistant Webhook / 打开DW |
 | 粘贴为 Object Merge | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+V` | 复制节点后，按"目标上下文 × 源类别"在鼠标位置粘贴引用节点；键位在 `HouTools → HouTools Settings…` 修改 |
-| 复制输出路径 | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+C` | 选中 filecache / mantra / usdrender 节点，把输出文件**所在的文件夹**（展开后的绝对路径，不含文件名）复制到系统剪贴板；目录未落盘时不复制并红色报错；多选时去重逐行合并 |
+| 复制输出路径 | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+C` | 选中带输出路径参数的节点（与右键 Open Cache Folder 同规则：filecache / mantra / karma / usdrender / rop geometry 等，第三方 Arnold 节点亦支持），把输出文件**所在的文件夹**（展开后的绝对路径，不含文件名）复制到系统剪贴板；目录未落盘时不复制并红色报错；多选时去重逐行合并 |
 | 打开工程文件夹 | `HouTools → Open Hip Folder`（主菜单与网络编辑器菜单） | 用资源管理器打开当前 hip 文件所在的文件夹；工程尚未保存时打开默认的 `$HIP` 文件夹（`untitled.hip` 所在目录） |
 | 拖放导入 Alembic / FBX / USD | 拖 `.abc`/`.fbx`/`.usd` 等文件到网络编辑器 | 松手即在鼠标位置创建导入节点：obj 层级 = Alembic Archive（自动构建层级）/ FBX 子网（官方导入器），SOP 层级 = alembic / file 节点，LOP 层级（`.usd`/`.usda`/`.usdc`/`.usdz`）= sublayer 节点；支持多文件混拖（基于 Houdini 官方 externaldragdrop 钩子） |
 | 视窗截图嵌入 | 节点右键 `Capture Viewport to Node [HT]` | 截取当前 3D 视窗存为 JPG（`$HIP/HouTools_cfg/captures/`），作为网络编辑器背景图钉在节点旁，随节点移动/改名跟随；只存路径引用不进 hip；右键 `Delete Viewport Capture [HT]` 删除截图 |
@@ -108,7 +108,7 @@ Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_paste_as_object_mer
 
 ### 复制输出路径
 
-网络编辑器里选中节点按 `Ctrl+Shift+C`（或点网络编辑器的 `HouTools` 菜单），把该节点输出文件**所在的文件夹**复制到系统剪贴板（如 `C:\...\render\TTT`，不含文件名），直接粘进文件对话框或其他软件。只对 **filecache / mantra / usdrender** 三族节点生效（usdrender 含 `/out` 与 LOP 内两种；karma、rop geometry 等不响应），取值与节点右键 `Open Cache Folder [HT]` 同源——`$HIP`/`$OS` 等变量展开后的绝对路径。目录尚未写出（缓存未落盘）时**不复制**，左下角红色错误通知；各类失败反馈只走通知模块、不刷控制台。多选时把命中节点的目录去重后逐行合并复制；键位在 `HouTools → HouTools Settings…` 修改（捕获式输入，保存到配置目录的 `hotkeys.json`，每次启动自动应用），也可在 Houdini 自带 Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_copy_output_path`。
+网络编辑器里选中节点按 `Ctrl+Shift+C`（或点网络编辑器的 `HouTools` 菜单），把该节点输出文件**所在的文件夹**复制到系统剪贴板（如 `C:\...\render\TTT`，不含文件名），直接粘进文件对话框或其他软件。对与右键 `Open Cache Folder [HT]` **同一批节点**生效（按输出参数命中：filecache / mantra / karma / usdrender / rop geometry 等，第三方 Arnold 节点带相应参数即支持），取值与节点右键 `Open Cache Folder [HT]` 同源——`$HIP`/`$OS` 等变量展开后的绝对路径。目录尚未写出（缓存未落盘）时**不复制**，左下角红色错误通知；各类失败反馈只走通知模块、不刷控制台。多选时把命中节点的目录去重后逐行合并复制；键位在 `HouTools → HouTools Settings…` 修改（捕获式输入，保存到配置目录的 `hotkeys.json`，每次启动自动应用），也可在 Houdini 自带 Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_copy_output_path`。
 
 ffmpeg 说明：优先使用 Houdini 自带的 `$HFS/bin/hffmpeg`，**无需单独安装**；如需指定版本，
 把 `ffmpeg.exe` 放到 HouTools 配置目录即可优先使用（包清单 `HouTools.json` 里

@@ -16,6 +16,7 @@
 - 按 `_pick_output_path` 候选序求值（`parm.evalAsString()`，**没有 evaluatedString()**）；**参数值是表达式，先 `hou.text.expandString` 整体展开再判 isabs**——不展开会把 "$HIP/..." join 成 "工程/$HIP/..." 错路径。2026-11 实测（H22.0.429）：evalAsString 对**普通字符串值已做全展开**（含节点局部 $OS、帧号 $F4——mantra/filecache 默认值直出完整绝对路径），expandString 兜的是**表达式结果带原文**的形态（如 chs() 读回未展开文本）；另注 `$OS` 在节点上下文外 expandString 会展开成无关值，不能依赖全局展开处理节点局部变量。
 - 展开 + 相对路径按 $HIP 拼接 + normpath 已抽成 **`expanded_output_path`** 共享层（Copy Output Path / Ctrl+Shift+C 复用同一取值，改展开逻辑两工具同步生效）；`resolve_folder` 在其上只做取目录 + 上溯存在祖先。注意 `unexpandedString()` 对带关键帧参数直接抛 OperationFailed（filecache::2.0 的 sopoutput 默认带帧表达式），取原文只能走 evalAsString。
 - **两个工具的目录语义有意分叉**：`resolve_folder` 目录不存在时**上溯**最近存在祖先（打开资源管理器总能开个地方看）；Copy Output Path 的 `_output_folder` 只取 dirname 且**要求目录已存在**（不存在 = 红色错误通知、不复制——复制一个没写出来的目录没有意义，2026-11 用户指定）。改上溯逻辑只影响 Open Cache Folder，别顺手"统一"。
+- **Copy Output Path 的命中规则已与本参数清单同步**（2026-11 用户拍板，从类型基名白名单 `_ALLOWED_TYPE_BASES` 翻转）：`is_copy_target` 直接复用 `_OUTPUT_PARMS` 做参数存在性判定（懒 import 取最新模块对象）——右键能出本菜单的节点 Ctrl+Shift+C 就能复制，karma（picture）/rop geometry（sopoutput）/带相应参数的第三方（如 Arnold）随之纳入；旧 filecache（file 参数）两边都不认。类型名不再参与判定。
 - **USD Render 特例**：outputimage 为空回退 loppath 指向节点的 picture（一般 lop/Karma Render Settings），非空永远 outputimage 优先。
 - 取父目录 `os.startfile` 打开，目录不存在上溯最近存在祖先，真相对路径按 $HIP 拼接。
 - 旧版 `filecache`（非 ::2.0）参数叫 `file` 不在候选内，无菜单。

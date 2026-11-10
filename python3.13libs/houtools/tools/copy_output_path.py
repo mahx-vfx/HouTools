@@ -1,23 +1,22 @@
 """Copy Output Path (Ctrl+Shift+C): 复制输出目录到 OS 剪贴板
 ================================================================
-在网络编辑器选中 filecache / mantra / usdrender 节点按 Ctrl+Shift+C，
-把该节点输出文件**所在的文件夹**（如 ``...\\render\\TTT``，不含文件名）
-复制到系统剪贴板。取值与 Open Cache Folder [HT] 同源（复用其
-expanded_output_path：候选参数求值 + 变量展开 + 相对路径按 $HIP 拼接），
-但**不做 resolve_folder 的"上溯最近存在祖先"兜底**：目录尚未落盘时不复制
-任何内容、直接红色错误通知（2026-11 用户指定）。
+在网络编辑器选中带输出路径参数的节点按 Ctrl+Shift+C，把该节点输出文件
+**所在的文件夹**（如 ``...\\render\\TTT``，不含文件名）复制到系统剪贴板。
 
-只对三族节点生效（type().name() 去 ::版本后缀后的基名，2026-11 用户
-指定；实测 H22 各家族内部类型名）：
-  ``filecache``      File Cache SOP（filecache::2.0；旧版 filecache 同基名
-                     命中但无 sopoutput，按取值层报错文案提示）
-  ``ifd``            Mantra ROP（vm_picture）
-  ``usdrender``      /out 的 USD Render ROP（outputimage，为空回退 loppath）
-  ``usdrender_rop``  LOP 网络内的 USD Render ROP（同上参数）
-karma 不在清单（用户未要求）；rop geometry 等 Open Cache Folder 支持的
-其余节点同样不响应本快捷键。
+命中规则与 Open Cache Folder [HT] **完全同步**（2026-11 用户拍板，从
+类型基名白名单改为参数命中）：节点携带 ``sopoutput`` / ``vm_picture``
+/ ``picture`` / ``outputimage`` 之一即命中——右键能出 Open Cache
+Folder 菜单的节点，热键就能复制，两套入口零裂缝。filecache/mantra/
+karma/usdrender/rop geometry/fbx 及第三方节点（如携带相应参数的
+Arnold）随之全部纳入；旧 filecache（``file`` 参数）仍不命中，与
+Open Cache Folder 一致。参数清单直接复用 open_cache_folder 的
+_OUTPUT_PARMS（单一事实来源，未来加参数两工具同步生效）。
 
-多选时把命中节点的目录去重后逐行合并复制，清单外节点忽略。失败反馈
+取值复用其 ``expanded_output_path``（候选求值 + 变量展开 + 相对路径按
+$HIP 拼接），但**不做 resolve_folder 的"上溯最近存在祖先"兜底**：目录
+尚未落盘时不复制任何内容、直接红色错误通知（2026-11 用户指定）。
+
+多选时把命中节点的目录去重后逐行合并复制，未命中节点忽略。失败反馈
 只走通知模块、不打任何控制台日志（houtools 日志器 DEBUG 级，log.debug
 也会进控制台）：目录不存在=红色 error，取值失败（参数为空等）=黄色
 warning，均含节点路径可定位。
@@ -34,17 +33,20 @@ from houtools.dev import status
 
 log = get_logger("tools.copy_output_path")
 
-# 允许的节点类型基名（type().name() 去 ::版本后缀）。usdrender=/out、
-# usdrender_rop=LOP 内，两族参数同名（outputimage/loppath），取值层统一处理。
-_ALLOWED_TYPE_BASES = ("filecache", "ifd", "usdrender", "usdrender_rop")
-
 
 def is_copy_target(node) -> bool:
-    """节点是否属于允许清单（smoke test 假节点直测）。"""
+    """节点是否带输出路径参数（与 Open Cache Folder 同规则，smoke 直测）。
+
+    参数存在性命中，**类型名不参与**：同一类型名可因携带参数不同而
+    命中与否不同（如 karma 带 picture 命中、裸同名不带参数不命中）。
+    懒 import 防热加载持旧引用（同 _output_folder 手法）。
+    """
     if node is None:
         return False
-    base = node.type().name().split("::", 1)[0]
-    return base in _ALLOWED_TYPE_BASES
+    from houtools.tools import open_cache_folder
+
+    return any(node.parm(name) is not None
+               for name in open_cache_folder._OUTPUT_PARMS)
 
 
 def _selected_nodes(editor):
@@ -97,8 +99,9 @@ def run(**kwargs):
     targets = [n for n in _selected_nodes(editor)
                if is_copy_target(n)]
     if not targets:
-        status("HouTools: 没有（或选中的不是）filecache / mantra / "
-               "usdrender 节点，无法复制输出目录", severity="warning")
+        status("HouTools: 没有（或选中的不是）带输出路径参数的节点"
+               "（与右键 Open Cache Folder 同规则），无法复制输出目录",
+               severity="warning")
         return
 
     folders, failures = [], []   # failures: (message, severity)
