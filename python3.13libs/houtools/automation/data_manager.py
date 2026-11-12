@@ -16,6 +16,8 @@ Automation — Data Manager 数据持久化模块
 
 import os
 import json
+import re
+import socket
 import tempfile
 import threading
 from dataclasses import asdict, fields
@@ -40,6 +42,26 @@ DW_EXE_PATH_DEFAULT = "C:/Program Files/Thinkbox/Deadline10/bin/deadlineworker.e
 # $HIP 不可用、配置落系统临时目录的告警只发一次:路径计算是高频调用,
 # 每次都告警会刷屏;无头测试等合法场景同样走 fallback
 _HIP_FALLBACK_WARNED = False
+
+
+class ConfigConflictError(Exception):
+    """配置写盘冲突（乐观并发检测）：盘上 rev 与调用方基线不一致。
+
+    冲突时**不写盘、不留底**——由调用方（window 的覆盖/另存/取消
+    三选弹窗）决定处理方式。``disk_rev`` 是检测到的盘上 rev，
+    ``path`` 是配置文件路径。
+    """
+
+    def __init__(self, path: str, disk_rev: int):
+        self.path = path
+        self.disk_rev = disk_rev
+        super().__init__(
+            f"配置已被其他机器修改 (disk rev={disk_rev}): {path}")
+
+
+# 计算机名作配置文件名时需要替换的字符:Windows 文件名非法字符、
+# 路径分隔符、控制符(NetBIOS 名允许的空格/点/连字符等保留)
+_HOSTNAME_ILLEGAL = re.compile(r'[<>:"|?*/\\\x00-\x1f]')
 
 
 class AutomationDataManager:
@@ -70,6 +92,25 @@ class AutomationDataManager:
         return base
 
     @classmethod
+    def config_hostname(cls) -> str:
+        """返回本机计算机名（socket.gethostname），净化为合法文件名。
+
+        用作默认配置名与「上次使用」标记的机器命名空间：多机器共用
+        工程目录时各写各的配置文件，"改动即存"不再互相覆盖（2026-11
+        用户拍板；计算机名在公司内网唯一且不随 DHCP 变，比 IP/用户名
+        稳）。净化规则：Windows 文件名非法字符/路径分隔符/控制符替换
+        为 ``_``，去掉结尾的点和空格；净化后为空（极端机器名）回退
+        ``"Automation"`` 保持旧行为。
+        """
+        raw = ""
+        try:
+            raw = socket.gethostname() or ""
+        except Exception as exc:  # gethostname 极少失败，留痕可查
+            logger.warning("获取计算机名失败，回退默认配置名: %s", exc)
+        name = _HOSTNAME_ILLEGAL.sub("_", raw).strip().rstrip(". ")
+        return name if name else "Automation"
+
+    @classmethod
     def get_data_path(cls, filename: Optional[str] = None) -> str:
         """返回数据文件的绝对路径(纯计算,不创建目录)。
 
@@ -94,24 +135,33 @@ class AutomationDataManager:
     # ── 上次使用配置标记（随工程持久化，2026-11 用户拍板） ─────
 
     @classmethod
-    def get_last_config_path(cls) -> str:
-        """返回"上次使用配置"标记文件路径: ``{HIP}/HouTools_cfg/Automation_last.json``。
+    def get_last_config_path(cls, hostname: Optional[str] = None) -> str:
+        """返回"上次使用配置"标记文件路径:
+        ``{HIP}/HouTools_cfg/Automation_last.<主机名>.json``。
 
-        与任务配置同随工程走（参考其他 HouTools_cfg 配置的落盘约定）；
-        放在 ``HouTools_cfg/`` 顶层而非 ``Automation_json/`` 内——后者
+        **按机器分文件**（2026-11 用户拍板）：多机器共用工程目录时，
+        共享单文件标记会互相挤占（后写者覆盖前者的"上次选择"），按
+        计算机名分文件后各机器只写自己的标记。``hostname=None`` 取
+        本机（``config_hostname``）。与任务配置同随工程走；放在
+        ``HouTools_cfg/`` 顶层而非 ``Automation_json/`` 内——后者
         的 ``*.json`` 会被 ``list_configs`` 枚举进配置下拉，标记文件
         混进去会污染下拉。"""
+        host = hostname if hostname else cls.config_hostname()
+        return os.path.join(cls._hip_base(), "HouTools_cfg",
+                            f"Automation_last.{host}.json")
+
+    @classmethod
+    def _legacy_last_config_path(cls) -> str:
+        """旧版共享标记路径（按工程单文件、不分公司机器）。
+
+        2026-11 改按机器分文件前的存量：只读兼容（升级用户的"上次
+        配置"不丢），永不回写。"""
         return os.path.join(cls._hip_base(), "HouTools_cfg",
                             "Automation_last.json")
 
-    @classmethod
-    def load_last_config(cls) -> Optional[str]:
-        """读取上次使用的配置名；缺失/损坏/内容非法一律返回 None。
-
-        标记是可再生缓存：只读不迁移、不判配置名合法性（调用方拿
-        ``list_configs`` 自查存在性），损坏直接按未持久化处理，下次
-        切换配置重写。"""
-        path = cls.get_last_config_path()
+    @staticmethod
+    def _read_last_marker(path: str) -> Optional[str]:
+        """读单个标记文件，返回配置名；缺失/损坏/内容非法返回 None。"""
         if not os.path.exists(path):
             return None
         try:
@@ -129,6 +179,20 @@ class AutomationDataManager:
         if isinstance(name, str) and name.strip():
             return name.strip()
         return None
+
+    @classmethod
+    def load_last_config(cls) -> Optional[str]:
+        """读取本机上次使用的配置名；缺失/损坏/内容非法一律返回 None。
+
+        先读本机标记（``Automation_last.<主机名>.json``），缺失时回读
+        旧版共享标记（``Automation_last.json``，只读兼容——升级用户的
+        上次选择不丢）。标记是可再生缓存：只读不迁移、不判配置名合法性
+        （调用方拿 ``list_configs`` 自查存在性），损坏直接按未持久化
+        处理，下次切换配置重写。"""
+        name = cls._read_last_marker(cls.get_last_config_path())
+        if name is not None:
+            return name
+        return cls._read_last_marker(cls._legacy_last_config_path())
 
     @classmethod
     def save_last_config(cls, name: str) -> bool:
@@ -153,6 +217,29 @@ class AutomationDataManager:
                 logger.debug("cannot remove last-config tmp %s: %s",
                              tmp_path, exc2)
             return False
+
+    @classmethod
+    def read_config_rev(cls, filename: Optional[str] = None) -> int:
+        """读取配置文件顶层的 ``rev`` 计数（乐观并发冲突检测的盘上基线）。
+
+        文件缺失/损坏/顶层非对象/字段非法一律 0——损坏文件由 ``save()``
+        的留底覆盖流程接管（那边有 warning），此处不重复告警（rev 读点
+        在每次保存后都会经过，warning 会刷屏，只留 debug 可检索）。"""
+        path = cls.get_data_path(filename)
+        try:
+            if not os.path.exists(path):
+                return 0
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            logger.debug("读取配置 rev 失败（按 0 处理）: %s (%s)", path, exc)
+            return 0
+        if not isinstance(data, dict):
+            return 0
+        value = data.get("rev", 0)
+        if isinstance(value, bool) or not isinstance(value, int):
+            return 0
+        return value
 
     # ── 应用级配置(Automation_Config.json) ─────────────
 
@@ -325,15 +412,23 @@ class AutomationDataManager:
             return []
 
     @classmethod
-    def save(cls, tasks_data: list[dict], filename: Optional[str] = None) -> bool:
+    def save(cls, tasks_data: list[dict], filename: Optional[str] = None,
+             expect_rev: Optional[int] = None) -> bool:
         """将任务 dict 列表写入 JSON 文件。
 
         Args:
             tasks_data: 任务数据列表
             filename: 配置文件 basename(**无** ``.json`` 后缀)。
                       ``None`` 时保存到默认 ``Automation.json``。
+            expect_rev: 乐观并发基线（调用方上次读/写时的 ``rev``）。
+                非 ``None`` 且与盘上实际 rev 不一致 → 抛
+                ``ConfigConflictError``，**不写盘、不留底**，由调用方
+                （window 的覆盖/另存/取消弹窗）分流。``None`` = 不检查
+                （新建配置、冲突后强制覆盖等受控入口）。
 
-        写入结构: ``{"tasks": tasks_data}``
+        写入结构: ``{"tasks": tasks_data, "rev": n}``——每次写盘 rev
+        递增，多机器共用目录时读方凭差异发现他人写入（2026-11 多用户
+        拍板；不依赖 mtime，NAS 跨机器时钟偏差不可靠）。
         使用 ``ensure_ascii=False``(支持中文)和 ``indent=2``。
 
         **副作用**:首次调用会创建 ``{HIP}/HouTools_cfg/Automation_json/`` 目录
@@ -343,6 +438,8 @@ class AutomationDataManager:
 
         Returns:
             True 写入成功,False 写入异常。
+        Raises:
+            ConfigConflictError: expect_rev 与盘上 rev 不一致。
         """
         path = cls.get_data_path(filename)
         tmp_path = path + ".~tmp%d_%d" % (os.getpid(), threading.get_ident())
@@ -359,6 +456,11 @@ class AutomationDataManager:
             # 读取现有数据（保留 settings）；读不出来先留底再覆盖，
             # 尚可抢救的内容不随本次写入直接丢失
             existing_data = {}
+            # 盘上 rev 基线：正常文件取顶层 rev（无字段按 0）；文件缺失
+            # 按 0（expect_rev 非 0 时视为"文件被他人删除"→ 冲突）；损坏
+            # 恢复（留底后空起）按调用方期望放行——原内容已保底 .bak，
+            # 不属于"他人修改"，不误报冲突
+            disk_rev = 0
             if os.path.exists(path):
                 try:
                     with open(path, "r", encoding="utf-8") as f:
@@ -367,6 +469,10 @@ class AutomationDataManager:
                         raise ValueError(
                             "顶层必须是对象，实际为 " + type(loaded).__name__)
                     existing_data = loaded
+                    rev = loaded.get("rev")
+                    if isinstance(rev, bool) or not isinstance(rev, int):
+                        rev = 0
+                    disk_rev = rev
                 except OSError as exc:
                     # 读不了 ≠ 文件坏了（杀软/同步盘瞬时占用等）：不动
                     # 原文件、本次拒绝写入——基于空合并基覆盖会把读到
@@ -384,8 +490,14 @@ class AutomationDataManager:
                         logger.warning(
                             "留底失败，本次拒绝写入: %s", path)
                         return False
-            # 合并数据
+                    disk_rev = expect_rev if expect_rev is not None else 0
+            # 乐观并发冲突检测：调用方基线与盘上不一致 = 他人已写入，
+            # 拒绝写入（不覆盖、不留底），由调用方弹窗决定覆盖/另存/放弃
+            if expect_rev is not None and expect_rev != disk_rev:
+                raise ConfigConflictError(path, disk_rev)
+            # 合并数据 + rev 递增（写入方推进计数，读方据此发现他人写入）
             existing_data["tasks"] = tasks_data
+            existing_data["rev"] = disk_rev + 1
             # 临时文件 + 原子替换：写盘中途崩溃/断电不会截断原文件
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(
@@ -396,6 +508,10 @@ class AutomationDataManager:
                 )
             os.replace(tmp_path, path)
             return True
+        except ConfigConflictError:
+            # 冲突不是 IO 故障：原样上抛给调用方弹窗分流——落进下面的
+            # 通用失败分支会把冲突伪装成"写盘失败 return False"
+            raise
         except Exception as exc:
             logger.warning("保存配置失败: %s (%s)", path, exc)
             try:
@@ -485,8 +601,14 @@ class AutomationDataManager:
                         logger.warning(
                             "留底失败，本次拒绝写入: %s", path)
                         return False
-            # 合并数据
+            # 合并数据 + rev 递增（settings 写也是一次写盘，推进计数——
+            # 不做冲突检查：settings 低风险 last-writer-wins；其他机器的
+            # task 写方会凭 rev 差异发现这次写入并弹窗）
             existing_data["settings"] = settings_data
+            _rev = existing_data.get("rev")
+            if isinstance(_rev, bool) or not isinstance(_rev, int):
+                _rev = 0
+            existing_data["rev"] = _rev + 1
             # 临时文件 + 原子替换：写盘中途崩溃/断电不会截断原文件
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(
@@ -537,6 +659,37 @@ class AutomationDataManager:
             logger.warning("列出配置目录失败（按无配置处理）: %s (%s)",
                            json_dir, exc)
             return []
+
+    @classmethod
+    def delete_config(cls, filename: Optional[str] = None) -> bool:
+        """删除配置文件（物理删除、不可恢复——调用方负责二级确认）。
+
+        文件不存在视为已删除返回 True（幽灵项清理）；删除失败（占用/
+        权限）返回 False，原文件不动。"""
+        path = cls.get_data_path(filename)
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+            return True
+        except OSError as exc:
+            logger.warning("删除配置文件失败: %s (%s)", path, exc)
+            return False
+
+    @classmethod
+    def remove_last_config(cls) -> bool:
+        """删除本机的「上次使用配置」标记文件（best-effort）。
+
+        供配置删除后清理指向被删配置的标记；失败只告警返回 False——
+        标记是可再生缓存，残留的过期指向会在下次恢复时因配置不存在
+        回落默认，不阻塞任何流程。"""
+        path = cls.get_last_config_path()
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+            return True
+        except OSError as exc:
+            logger.warning("删除上次使用配置标记失败: %s (%s)", path, exc)
+            return False
 
     # ── 序列化 / 反序列化 ─────────────────────────────────
 

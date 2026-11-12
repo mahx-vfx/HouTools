@@ -30,7 +30,10 @@ try:
 except ImportError:  # QtSvg 缺失时跳转按钮回退文字箭头（正常环境都有）
     QtSvg = None
 
-from houtools.automation.data_manager import AutomationDataManager
+from houtools.automation.data_manager import (
+    AutomationDataManager,
+    ConfigConflictError,
+)
 from houtools.automation.task_types import (
     TaskItem,
     TaskType,
@@ -79,6 +82,17 @@ _TOOLBAR_BTN_STYLE = (
     " border-radius: 4px; font-size: 13px; }"
     "QPushButton:hover { background-color: #46464b; }"
     "QPushButton:pressed { background-color: #0d6399; }"
+)
+
+# 删除配置按钮：点击态用亮红（破坏性操作的颜色语义，2026-11 用户指定），
+# 其余状态与普通工具栏按钮一致
+_DELETE_BTN_STYLE = (
+    "QPushButton { background-color: #3a3a3e; color: #e0e0e0;"
+    " border: 1px solid #55555a; padding: 6px 16px;"
+    " border-radius: 4px; font-size: 13px; }"
+    "QPushButton:hover { background-color: #46464b;"
+    " border: 1px solid #d1283e; }"
+    "QPushButton:pressed { background-color: #d1283e; }"
 )
 
 # 数量行的 + / - 按钮:同工具栏按钮底色但更紧凑(固定 32x26,内容居中)
@@ -962,15 +976,25 @@ class AutomationWindow(QWidget):
         self._drag_threshold: int = 5  # 像素,超过才认作拖动
 
         # 配置下拉相关状态:当前加载的配置文件 basename(无 .json 后缀)。
-        # 初始默认 ``Automation``(保留向后兼容)。**随工程持久化的上次
-        # 使用配置**({HIP}/HouTools_cfg/Automation_last.json,用户拍板)
-        # 存在且该配置仍在配置目录时优先恢复——重开同一工程接着用上次
-        # 的配置。之后从下拉选其它配置/新建配置/Start 保存改名都会更新
-        # 此值并回写标记文件(_persist_last_config)。
-        self._current_config_name: str = "Automation"
+        # 初始默认为本机计算机名(2026-11 用户拍板:多机器共用工程目录,
+        # "改动即存"的自动保存各写各的配置文件,不再共写 Automation.json
+        # 互相覆盖)。**随工程按机器持久化的上次使用配置**
+        # ({HIP}/HouTools_cfg/Automation_last.<主机名>.json,旧版共享
+        # 标记 Automation_last.json 只读兼容)存在且该配置仍在配置目录
+        # 时优先恢复——重开同一工程接着用上次的配置。之后从下拉选其它
+        # 配置/新建配置/Start 保存改名都会更新此值并回写标记文件
+        # (_persist_last_config)。
+        self._current_config_name: str = \
+            AutomationDataManager.config_hostname()
         _last_cfg = AutomationDataManager.load_last_config()
         if _last_cfg and _last_cfg in AutomationDataManager.list_configs():
             self._current_config_name = _last_cfg
+        # 配置文件 rev 基线(乐观并发冲突检测):装载后由 _load_data 与盘上
+        # 对齐,每次成功写盘后刷新;盘上 rev 不一致 = 他人已修改 → 弹窗三选
+        self._config_rev: int = 0
+        # 关窗/隐藏收尾点的落盘失败 toast 去重位(closeEvent 与紧随的
+        # hideEvent 都会 flush,一次可见周期只告警一次,showEvent 重置)
+        self._flush_warned: bool = False
 
         # 设置项:日志输出到磁盘（默认开启，2026-11 用户拍板；配置文件
         # 里显式 false 才关闭）
@@ -1000,6 +1024,8 @@ class AutomationWindow(QWidget):
         # 过滤器生命周期绑定到可见性:隐藏/残留面板(关闭后仍挂桌面的
         # 浮动面板)绝不参与全应用事件过滤,避免逐次累积拖慢整个界面
         super().showEvent(event)
+        # 重新可见 = 新的可见周期,收尾落盘失败 toast 的去重位复位
+        self._flush_warned = False
         app = QApplication.instance()
         if app is not None:
             app.installEventFilter(self)
@@ -1014,9 +1040,12 @@ class AutomationWindow(QWidget):
         # 析构，_collect_data 不能留到那时补。仅 _dirty_pending 时才写，
         # 无编辑零开销
         try:
-            self._flush_dirty_tasks()
+            flushed = self._flush_dirty_tasks()
         except Exception as exc:
             logger.debug("Automation: hideEvent flush failed: %s", exc)
+            flushed = False
+        if not flushed:
+            self._warn_flush_failed()
 
     def _is_own_native_window(self, obj) -> bool:
         """判断事件源 ``obj``(QWindow) 是否为本面板专属的原生窗口。
@@ -1099,7 +1128,12 @@ class AutomationWindow(QWidget):
         # "鼠标扫过滚轮就换配置"比任务类型下拉的后果更重
         self._config_combo = _NoWheelComboBox()
         self._config_combo.setObjectName("configCombo")
-        self._config_combo.setMinimumWidth(160)
+        # 最小宽让位给按钮（窄面板下唯一可压缩项）：工具栏总最小宽超出
+        # 面板宽时 QBoxLayout 会把所有项压到最小提示以下，此前 minW=160
+        # 也守不住（实测被压到 143），下拉框文字与相邻按钮文字挤在一起
+        # 视觉重叠——现在按钮锁定文字宽度（见下方循环），下拉框放到底线
+        # 36（仅箭头），自身文字超宽在自己框内裁剪
+        self._config_combo.setMinimumWidth(36)
         self._config_combo.setToolTip(
             "选择配置;新建配置用旁边的\"新建\"按钮"
         )
@@ -1117,6 +1151,17 @@ class AutomationWindow(QWidget):
         )
         new_config_btn.setStyleSheet(_TOOLBAR_BTN_STYLE)
         new_config_btn.clicked.connect(lambda: self._on_new_config())
+
+        # "删除"配置:删除下拉当前所选配置(二级确认;物理删除不可恢复)。
+        # 删除当前配置后回落本机默认;标记指向被删配置时一并清理
+        delete_config_btn = QPushButton("删除")
+        delete_config_btn.setObjectName("configDeleteBtn")
+        delete_config_btn.setToolTip(
+            "删除配置:删除下拉当前所选的配置文件(二级确认,\n"
+            "物理删除不可恢复);删除当前配置后回落到本机默认配置"
+        )
+        delete_config_btn.setStyleSheet(_DELETE_BTN_STYLE)
+        delete_config_btn.clicked.connect(self._on_delete_config)
 
         self._start_btn = QPushButton("执行")
         self._start_btn.setObjectName("startBtn")
@@ -1142,14 +1187,21 @@ class AutomationWindow(QWidget):
         # 用部件级内联样式（Qt 中优先级最高）保证底色可见
         for btn in (auto_fill_btn, clear_btn, settings_btn):
             btn.setStyleSheet(_TOOLBAR_BTN_STYLE)
+        # 按钮锁定文字宽度：窄面板下工具栏溢出时 QBoxLayout 把各项压到
+        # 最小提示以下，按钮文字被压缩裁剪、与相邻控件挤在一起——锁定后
+        # 第一排的宽度压力由下拉框承担（见 _config_combo 的
+        # setMinimumWidth），第二排溢出时由尾部 stretch 与最右按钮裁剪兜底
+        for btn in (new_config_btn, delete_config_btn, self._start_btn,
+                    auto_fill_btn, clear_btn, settings_btn):
+            btn.setMinimumWidth(btn.sizeHint().width())
 
-        # 顺序:配置 → 新建 → start → auto fill → clear   <stretch>   设置
+        # 顺序:配置 → 新建 → 删除   <stretch>   设置
+        # （执行/自动填充/清空移到第二排数量行——2026-11 用户指定，单排
+        # 过挤；第二排数量控件右侧留白正好容纳三个动作按钮）
         toolbar1.addWidget(self._config_label)
         toolbar1.addWidget(self._config_combo)
         toolbar1.addWidget(new_config_btn)
-        toolbar1.addWidget(self._start_btn)
-        toolbar1.addWidget(auto_fill_btn)
-        toolbar1.addWidget(clear_btn)
+        toolbar1.addWidget(delete_config_btn)
         toolbar1.addStretch()
         toolbar1.addWidget(settings_btn)
 
@@ -1190,11 +1242,17 @@ class AutomationWindow(QWidget):
         remove_btn.setStyleSheet(_SLOT_OP_BTN_STYLE)
         remove_btn.clicked.connect(lambda: self._remove_slot())
 
-        # 顺序:数量标签 → 数量输入框 → + → -   <stretch>
+        # 顺序:数量标签 → 数量输入框 → + → - → 〈间距〉→ 执行 → 自动填充
+        #   → 清空 <stretch>（三个动作按钮 2026-11 用户指定从第一排移入，
+        #   与数量控件之间留固定间距作呼吸感——紧贴加减号太挤）
         toolbar2.addWidget(self._task_count_label)
         toolbar2.addWidget(self._task_count_input)
         toolbar2.addWidget(add_btn)
         toolbar2.addWidget(remove_btn)
+        toolbar2.addSpacing(20)
+        toolbar2.addWidget(self._start_btn)
+        toolbar2.addWidget(auto_fill_btn)
+        toolbar2.addWidget(clear_btn)
         toolbar2.addStretch()
 
         layout.addLayout(toolbar2)
@@ -2061,15 +2119,33 @@ class AutomationWindow(QWidget):
             {"log_to_disk": self._log_to_disk_enabled},
             self._current_config_name,
         )
-        if not ok:
-            logger.warning(
-                "Automation: 设置保存失败 filename=%s", self._current_config_name
-            )
-            dialogs.warn(
-                self, "保存失败",
-                "设置写入配置文件失败:\n"
-                + AutomationDataManager.get_data_path(self._current_config_name),
-            )
+        if ok:
+            # settings 写盘同样递增 rev,刷新基线（settings 不做冲突检查,
+            # 低风险 last-writer-wins）
+            self._config_rev = AutomationDataManager.read_config_rev(
+                self._current_config_name)
+            return
+        logger.warning(
+            "Automation: 设置保存失败 filename=%s", self._current_config_name
+        )
+        dialogs.warn(
+            self, "保存失败",
+            "设置写入配置文件失败:\n"
+            + AutomationDataManager.get_data_path(self._current_config_name),
+        )
+
+    def _warn_flush_failed(self):
+        """关窗/隐藏收尾点的落盘失败 toast（不拦关窗）。
+
+        编辑期的 flush 失败只记日志不弹——自动保存是后台动作，失败会
+        随下次编辑自动重试；关闭/隐藏收尾的失败没有重试机会，必须让
+        用户知道改动没保住。closeEvent 与紧随的 hideEvent 都会触发
+        flush，去重：一次可见周期只告警一次（showEvent 重置）。"""
+        if self._flush_warned:
+            return
+        self._flush_warned = True
+        status(f"Automation: 配置 {self._current_config_name} 保存失败，"
+               "未落盘的修改可能丢失", severity="warning")
 
     def _get_log_path(self) -> str:
         """获取日志文件路径（基于当前时间，防覆盖）。
@@ -2257,6 +2333,10 @@ class AutomationWindow(QWidget):
         try:
             # 2. 加载当前选中的配置
             raw_list = AutomationDataManager.load(self._current_config_name)
+            # rev 基线与盘上对齐（冲突检测的读侧；切配置/新建/删除回落
+            # 都经此处刷新）
+            self._config_rev = AutomationDataManager.read_config_rev(
+                self._current_config_name)
 
             # 清空现有槽
             for slot in self._slot_widgets:
@@ -2393,6 +2473,75 @@ class AutomationWindow(QWidget):
         self._load_settings()
         self._persist_last_config()  # 上次使用配置随工程持久化
 
+    def _on_delete_config(self):
+        """删除下拉当前所选配置（二级确认；物理删除不可恢复）。
+
+        删除当前配置 → 回落本机默认（计算机名配置）；「上次使用」标记
+        指向被删配置时一并清理（防幽灵恢复）。运行中拒绝（与切配置/
+        新建同款守卫——删掉的是下一轮草稿）。
+
+        **确认必须覆盖幽灵项分支**：删除回落后的默认配置与当前配置同名
+        （幻影项，盘上无文件），若恰逢自动保存的防抖窗口内（文件尚未
+        重建）再次点击会走幽灵分支——该分支曾无确认直接重置面板内容，
+        用户刚编辑的任务瞬间消失（2026-11 用户反馈），故任何删除路径
+        一律先确认。"""
+        if getattr(self, "_running", False) \
+                or getattr(self, "_cancel_requested", False):
+            status("Automation: 执行中不能删除配置，请先停止",
+                   severity="warning")
+            return
+        name = _sanitize_config_name(self._config_combo.currentText())
+        if not name:
+            return
+        path = AutomationDataManager.get_data_path(name)
+        phantom = not os.path.exists(path)
+        if phantom and name != self._current_config_name:
+            # 幽灵项只可能是当前名（下拉只对当前名做幽灵插入）；防御
+            # 分支：静默刷新下拉恢复一致，无破坏性动作无需确认
+            self._refresh_config_dropdown()
+            return
+        if phantom:
+            text = (f"配置 {name} 尚未落盘（无对应文件）。\n"
+                    "将清空面板内容并切回本机默认配置，确定继续？")
+        else:
+            task_count = len(AutomationDataManager.load(name))
+            text = (f"将永久删除配置 {name}（{task_count} 个任务）\n"
+                    f"文件: {path}\n\n此操作不可恢复，确定删除？")
+        if not dialogs.question(self, "删除配置", text):
+            return
+        # 确认后停防抖清脏（删除意图优先于自动保存）：防删除后 flush 把
+        # 文件原样重建；幽灵分支同样需要——否则挂起的定时器会把回落前
+        # 的旧草稿写进默认配置文件
+        self._dirty_timer.stop()
+        self._dirty_pending = False
+        if phantom:
+            self._switch_to_default_config()
+            return
+        if not AutomationDataManager.delete_config(name):
+            dialogs.warn(
+                self, "删除失败",
+                f"无法删除配置文件（可能被其他程序占用）:\n{path}")
+            return
+        if AutomationDataManager.load_last_config() == name:
+            AutomationDataManager.remove_last_config()
+        if name == self._current_config_name:
+            self._switch_to_default_config()
+        else:
+            self._refresh_config_dropdown()
+        status(f"Automation: 已删除配置 {name}")
+
+    def _switch_to_default_config(self):
+        """当前配置被删除后回落本机默认（计算机名配置）。
+
+        入口先停防抖清脏（双保险）：旧配置的未落盘草稿属于被放弃的
+        配置，不能随切换写进默认配置文件。"""
+        self._dirty_timer.stop()
+        self._dirty_pending = False
+        self._current_config_name = AutomationDataManager.config_hostname()
+        self._load_data()
+        self._load_settings()
+        self._persist_last_config()
+
     def _get_save_target_name(self) -> str | None:
         """从下拉当前文本提取保存文件名(经 ``_sanitize_config_name`` 净化)。
 
@@ -2519,10 +2668,24 @@ class AutomationWindow(QWidget):
           1. 更新 ``_current_config_name`` 为刚保存的文件名(状态同步,
              让后续操作基于新保存的文件)
           2. 刷新下拉(让新建文件出现在列表中,用户能看到自己刚保存的配置)
+
+        **冲突处理**:写盘带 ``expect_rev`` 乐观并发检查,盘上已被其他
+        机器修改时抛 ``ConfigConflictError`` → ``_resolve_conflict``
+        弹窗三选（覆盖/另存/取消）。三个结局统一返回磁盘现状供调用方
+        使用——取消结局尤其不能拿面板旧内容起跑,那正是被放弃的草稿。
         """
         tasks_data = self._collect_data()
         save_name = self._get_save_target_name()  # 可能为 None
-        ok = AutomationDataManager.save(tasks_data, filename=save_name)
+        try:
+            ok = AutomationDataManager.save(
+                tasks_data, filename=save_name,
+                expect_rev=(self._config_rev
+                            if save_name == self._current_config_name
+                            else None))
+        except ConfigConflictError:
+            if self._resolve_conflict():
+                return AutomationDataManager.load(self._current_config_name)
+            return tasks_data
         if not ok:
             # 写盘失败:不更新状态,让用户重试 + 看到日志提示
             logger.warning(
@@ -2532,6 +2695,8 @@ class AutomationWindow(QWidget):
         # 状态同步:更新当前配置名(只有显式保存到某名时才更新)
         if save_name:
             self._current_config_name = save_name
+            self._config_rev = AutomationDataManager.read_config_rev(
+                save_name)
             self._persist_last_config()  # 上次使用配置随工程持久化
         # 刷新下拉让新文件出现在列表中 + 恢复选中
         self._refresh_config_dropdown()
@@ -2558,25 +2723,117 @@ class AutomationWindow(QWidget):
 
         落盘目标只认 ``_current_config_name`` —— 自动保存绝不走
         ``_save_data``（那会按下拉当前文本创建新文件，输入到一半的
-        名字会被当文件名）。失败只记日志不弹窗：自动保存是后台动作，
-        打断编辑反而糟糕，下次改动会再试。
+        名字会被当文件名）。写盘带 ``expect_rev`` 乐观并发检查：盘上
+        已被其他机器修改时弹窗三选（覆盖/另存/取消），三个结局都算
+        flush 已解决返回 True。IO 失败只记日志不弹窗：自动保存是后台
+        动作，打断编辑反而糟糕，下次改动会再试（关闭/隐藏收尾点另有
+        toast 提示，见 _warn_flush_failed）。
 
-        返回 True = 无未落盘改动或保存成功；False = 有改动但落盘失败
-        （脏标记保持置位，下次编辑/收尾重试）。切配置/新建配置等破坏性
-        重建入口必须检查返回值——失败仍继续会清空旧槽，编辑既没保存
-        又从界面消失。"""
+        返回 True = 无未落盘改动、保存成功或冲突已解决；False = 有
+        改动但未落盘（脏标记保持置位，下次编辑/收尾重试）。切配置/
+        新建配置等破坏性重建入口必须检查返回值——失败仍继续会清空
+        旧槽，编辑既没保存又从界面消失。"""
         self._dirty_timer.stop()
         if not self._dirty_pending:
             return True
-        self._dirty_pending = False
-        if AutomationDataManager.save(
+        try:
+            saved = AutomationDataManager.save(
                 self._collect_data(),
-                filename=self._current_config_name):
+                filename=self._current_config_name,
+                expect_rev=self._config_rev)
+        except ConfigConflictError:
+            return self._resolve_conflict()
+        if saved:
+            self._dirty_pending = False
+            self._config_rev = AutomationDataManager.read_config_rev(
+                self._current_config_name)
             return True
         self._dirty_pending = True
         logger.warning("Automation: 自动保存失败 filename=%s",
                        self._current_config_name)
         return False
+
+    # ── 写盘冲突三选（2026-11 多用户拍板） ─────────────────
+
+    def _resolve_conflict(self) -> bool:
+        """配置写盘冲突的三选处理（ConfigConflictError 触发）。
+
+        覆盖：以面板内容为准强制写（不检查 rev，rev 按盘上现状递增）。
+        另存：把面板内容落成新配置并切换过去（含标记回写）。
+        取消：放弃本次草稿，恢复为磁盘内容（_load_data 重载）。
+
+        三个结局都算 flush 已解决（返回 True），调用方（切配置/新建/
+        Start/关窗收尾）照常继续；False = 未解决（弹窗异常/另存被放弃），
+        脏标记保持、由调用方按保存失败处理。
+        """
+        name = self._current_config_name
+        try:
+            pick = dialogs.choice(
+                self, "配置冲突",
+                f"配置 {name} 已被其他机器修改，本次编辑如何处理？\n\n"
+                "覆盖：以当前面板内容为准，覆盖盘上的修改\n"
+                "另存：把当前内容保存为新配置\n"
+                "取消：放弃本次修改，恢复为磁盘上的内容",
+                ["覆盖", "另存", "取消"],
+            )
+        except Exception as exc:
+            logger.warning(
+                "Automation: 冲突弹窗失败 filename=%s (%s)", name, exc)
+            return False
+        if pick == 0:  # 覆盖
+            if AutomationDataManager.save(self._collect_data(),
+                                          filename=name):
+                self._dirty_pending = False
+                self._config_rev = AutomationDataManager.read_config_rev(name)
+                self._refresh_config_dropdown()
+                return True
+            self._dirty_pending = True
+            logger.warning("Automation: 冲突覆盖保存失败 filename=%s", name)
+            return False
+        if pick == 1:  # 另存
+            new_name = self._prompt_save_as_name()
+            if not new_name:
+                return False  # 用户放弃另存 → 未解决,脏标记保持
+            if AutomationDataManager.save(self._collect_data(),
+                                          filename=new_name):
+                self._dirty_pending = False
+                self._current_config_name = new_name
+                self._config_rev = AutomationDataManager.read_config_rev(
+                    new_name)
+                self._persist_last_config()
+                self._refresh_config_dropdown()
+                self._load_settings()
+                return True
+            self._dirty_pending = True
+            logger.warning("Automation: 冲突另存失败 filename=%s", new_name)
+            return False
+        # 取消：放弃草稿，恢复磁盘镜像（_load_data 刷新 rev 基线）
+        self._dirty_timer.stop()
+        self._dirty_pending = False
+        self._load_data()
+        self._load_settings()
+        return True
+
+    def _prompt_save_as_name(self) -> str | None:
+        """冲突「另存」的目标名输入循环；取消/放弃返回 None。"""
+        while True:
+            raw, ok = dialogs.prompt_text(self, "另存为配置", "配置名称:")
+            if not ok:
+                return None
+            sanitized = _sanitize_config_name(raw)
+            if not sanitized:
+                dialogs.warn(
+                    self, "无效名称",
+                    "配置名不能为空,不能包含路径分隔符,\n"
+                    "也不能使用 Windows 保留名(CON/PRN/AUX/NUL/COM1-9/LPT1-9)。",
+                )
+                continue
+            if os.path.exists(AutomationDataManager.get_data_path(sanitized)):
+                if not dialogs.question(
+                        self, "配置已存在",
+                        f"配置 {sanitized} 已存在,覆盖其内容?"):
+                    continue
+            return sanitized
 
     # ── 执行集成 ───────────────────────────────────────────
 
@@ -2957,8 +3214,11 @@ class AutomationWindow(QWidget):
         完成收尾——期间由模块级 _LIVE_ENGINES 持有引用，防止运行中的 QThread
         被 GC 销毁。其信号随面板销毁自动断开，不会再回调本窗口。
         """
-        # 自动保存收尾：任务列表草稿与引擎状态无关，先写后取消
-        self._flush_dirty_tasks()
+        # 自动保存收尾：任务列表草稿与引擎状态无关，先写后取消。
+        # 失败 toast 告警（不拦关窗——停靠页签关闭没有否决通道，且盘满/
+        # 权限坏掉时把用户锁在关不掉的窗口里更糟）
+        if not self._flush_dirty_tasks():
+            self._warn_flush_failed()
         if self._engine is not None:
             self._engine.cancel()
         # _running/_cancel_requested 不在此复位:状态收尾只能由

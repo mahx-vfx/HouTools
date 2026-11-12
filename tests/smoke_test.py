@@ -951,7 +951,7 @@ def main():
 
     win = AutomationWindow()
     for name in ("startBtn", "autoFillBtn", "clearBtn", "settingsBtn",
-                 "configNewBtn"):
+                 "configNewBtn", "configDeleteBtn"):
         assert win.findChild(QPushButton, name) is not None, f"missing {name}"
     assert not win._config_combo.isEditable(), "config combo 应为只读"
     assert win._slot_widgets, "slot state not initialized"
@@ -1014,13 +1014,21 @@ def main():
     print("new config creation OK")
 
     win._remove_slot(0)  # 槽管理冒烟
+    # 立即拆除防抖定时器：容器编辑已置脏并启动 600ms 单发 QTimer，若留到
+    # 后面各测试段的 app.processEvents() 轮询里才派发，会在无 dialogs 打桩
+    # 的环境触发真冲突弹窗（_resolve_conflict → dialogs.choice 真模态 =
+    # 无头挂死；win 的 MAtest.json 落 %TEMP% 跨 run 复用，rev 状态不可控）
+    win._dirty_timer.stop()
+    win._dirty_pending = False
     print("AutomationWindow instantiation OK")
 
     # 自动保存（2026-11 用户拍板"改动即存"）：编辑 → flush 落盘；
     # 打开/装载零写盘；装载守卫抑制程序化信号
     with tempfile.TemporaryDirectory() as tmp:
         with patch.object(dm.AutomationDataManager, "_hip_base",
-                          return_value=tmp):
+                          return_value=tmp), \
+             patch.object(dm.AutomationDataManager, "config_hostname",
+                          return_value="Automation"):
             cfg_path = (Path(tmp) / "HouTools_cfg" / "Automation_json"
                         / "Automation.json")
             # 打开面板（__init__ 已 _load_data）零写盘：配置文件尚不存在
@@ -1051,8 +1059,8 @@ def main():
             aw._PANEL_REFS.clear()
     print("automation autosave OK")
 
-    # ── Automation 三项改动回归：上次配置随工程持久化 / 日志默认保存 /
-    #    取消汇报未执行任务数 ──
+    # ── Automation 持久化改造回归：按机器分配置/标记 / rev 冲突三选 /
+    #    删除配置 / 日志默认保存 / 取消汇报未执行任务数 ──
     import contextlib as _contextlib
     import io as _io
     import houtools.automation.data_manager as _adm
@@ -1060,26 +1068,53 @@ def main():
 
     _adm_base = tempfile.mkdtemp(prefix="houtools_auto_last.")
     atexit.register(lambda: shutil.rmtree(_adm_base, ignore_errors=True))
-    # _hip_base 是 AutomationDataManager 的类方法（读 hou.getenv("HIP")），
-    # patch 到类上把配置根隔离进临时目录
+    # _hip_base / config_hostname 都是 AutomationDataManager 的类方法，
+    # patch 到类上把配置根隔离进临时目录、机器名固化为 WS-TEST
     with patch.object(_adm_cls, "_hip_base",
-                      lambda *a: _adm_base):
-        # ① 上次使用配置标记：读写/损坏容错/不污染配置下拉
+                      lambda *a: _adm_base), \
+         patch.object(_adm_cls, "config_hostname",
+                      lambda *a: "WS-TEST"):
+        # ① 上次使用配置标记（按机器分文件）：读写/损坏容错/旧标记兼容/
+        #    不污染配置下拉
         assert _adm_cls.load_last_config() is None, "无标记应返回 None"
         assert _adm_cls.save_last_config("Persisted") is True
         assert _adm_cls.load_last_config() == "Persisted"
+        # 按机器分文件:写入的是本机(打桩 WS-TEST)的标记
+        assert Path(_adm_cls.get_last_config_path()).name == \
+            "Automation_last.WS-TEST.json", \
+            Path(_adm_cls.get_last_config_path()).name
         _adm_cls.save([{"type": "OPEN_DW", "params": {}}], filename="Persisted")
         _adm_cls.save([], filename="Second")
         assert _adm_cls.load_last_config() not in ("Second",), "sanity"
         assert "Automation_last" not in _adm_cls.list_configs(), \
             "标记文件不得混进配置下拉"
+        # 旧版共享标记只读兼容:本机标记缺失时回读旧文件(升级用户上次
+        # 选择不丢);本机标记存在时优先
+        Path(_adm_cls.get_last_config_path()).unlink()
+        Path(_adm_cls._legacy_last_config_path()).write_text(
+            json.dumps({"last_config": "Legacy"}), encoding="utf-8")
+        assert _adm_cls.load_last_config() == "Legacy", "旧标记应被兼容回读"
+        _adm_cls.save_last_config("Persisted")   # 本机标记优先于旧标记
+        assert _adm_cls.load_last_config() == "Persisted"
+        Path(_adm_cls._legacy_last_config_path()).unlink()
+        assert _adm_cls.load_last_config() == "Persisted", \
+            "旧标记删除后仍应读本机标记"
+        # 损坏标记:本机损坏且无旧标记 → 按未持久化处理
         Path(_adm_cls.get_last_config_path()).write_text(
             "not json", encoding="utf-8")
         assert _adm_cls.load_last_config() is None, "损坏标记按未持久化处理"
         _adm_cls.save_last_config("Persisted")   # 修复标记，供窗口恢复用例
 
-        # ② 窗口打开恢复上次配置（标记指向的配置仍在配置目录）
+        # ② 窗口打开恢复：无标记 → 默认 = 本机计算机名；有标记且指向的
+        #    配置仍在配置目录 → 恢复
         from houtools.automation.window import AutomationWindow as _AutoWin2
+        Path(_adm_cls.get_last_config_path()).unlink()
+        no_marker_win = _AutoWin2()
+        assert no_marker_win._current_config_name == "WS-TEST", \
+            no_marker_win._current_config_name
+        assert no_marker_win._config_combo.currentText() == "WS-TEST"
+        no_marker_win.deleteLater()
+        _adm_cls.save_last_config("Persisted")
         last_win = _AutoWin2()
         assert last_win._current_config_name == "Persisted", \
             last_win._current_config_name
@@ -1100,6 +1135,158 @@ def main():
         last_win._on_config_changed(idx_second)
         assert last_win._current_config_name == "Second"
         assert _adm_cls.load_last_config() == "Second"
+
+        # ③b rev 乐观并发（data_manager 级）：写盘递增 / expect_rev 过期
+        #    抛冲突且盘上不动 / 损坏文件按期望放行不误报
+        from houtools.automation.data_manager import ConfigConflictError
+        _rev_tasks = [{"type": "OPEN_DW", "params": {}}]
+        _adm_cls.save(_rev_tasks, filename="RevCfg")
+        assert _adm_cls.read_config_rev("RevCfg") == 1
+        _adm_cls.save(_rev_tasks, filename="RevCfg", expect_rev=1)
+        assert _adm_cls.read_config_rev("RevCfg") == 2
+        _conflict_raised = False
+        try:
+            _adm_cls.save(_rev_tasks, filename="RevCfg", expect_rev=1)
+        except ConfigConflictError as e:
+            _conflict_raised = True
+            assert e.disk_rev == 2, e.disk_rev
+        assert _conflict_raised, "过期 expect_rev 应抛 ConfigConflictError"
+        assert _adm_cls.read_config_rev("RevCfg") == 2, "冲突不得写盘"
+        assert _adm_cls.load("RevCfg") == _rev_tasks, "冲突后原任务仍在"
+        # 损坏文件:留底后按调用方期望放行,不误报冲突
+        Path(_adm_cls.get_data_path("RevCfg")).write_text(
+            "not json", encoding="utf-8")
+        assert _adm_cls.read_config_rev("RevCfg") == 0
+        _adm_cls.save(_rev_tasks, filename="RevCfg", expect_rev=2)  # 不抛即通过
+        assert _adm_cls.read_config_rev("RevCfg") == 3
+        # settings 写盘同样递增 rev
+        _adm_cls.save_settings({"log_to_disk": True}, "RevCfg")
+        assert _adm_cls.read_config_rev("RevCfg") == 4
+        print("automation config rev/conflict OK")
+
+        # ③c 窗口级冲突三选（dialogs.choice 打桩）：取消 / 覆盖 / 另存
+        # 取消:放弃草稿,面板恢复磁盘镜像
+        _conf_win = _AutoWin2()   # 启动恢复标记(此时指向 Second)
+        _conf_win._current_config_name = "Persisted"
+        _conf_win._config_rev = _adm_cls.read_config_rev("Persisted")
+        _adm_cls.save([{"type": "OPEN_DW", "params": {}},
+                       {"type": "OPEN_DW", "params": {}}],
+                      filename="Persisted")   # 模拟他人修改(盘上 rev+1)
+        _conf_win._mark_dirty()
+        assert _conf_win._dirty_pending is True
+        with patch("houtools.ui.dialogs.choice", return_value=2):
+            assert _conf_win._flush_dirty_tasks() is True
+        assert _conf_win._dirty_pending is False
+        assert _conf_win._config_rev == _adm_cls.read_config_rev("Persisted")
+        assert len(_conf_win._slot_widgets) == 2, "取消结局应恢复磁盘镜像"
+        _conf_win.deleteLater()
+
+        # 覆盖:以面板内容为准落盘,rev 推进
+        _conf_win2 = _AutoWin2()
+        _conf_win2._current_config_name = "Persisted"
+        _conf_win2._config_rev = _adm_cls.read_config_rev("Persisted")
+        _adm_cls.save([], filename="Persisted")   # 再抬一次盘上 rev
+        _disk_rev_before = _adm_cls.read_config_rev("Persisted")
+        _conf_win2._mark_dirty()
+        with patch("houtools.ui.dialogs.choice", return_value=0):
+            assert _conf_win2._flush_dirty_tasks() is True
+        assert _adm_cls.read_config_rev("Persisted") == _disk_rev_before + 1
+        assert len(_adm_cls.load("Persisted")) == 1, "覆盖应以面板内容落盘"
+        assert _conf_win2._dirty_pending is False
+        _conf_win2.deleteLater()
+
+        # 另存:落成新配置并切换 + 回写标记
+        _conf_win3 = _AutoWin2()
+        _conf_win3._current_config_name = "Persisted"
+        _conf_win3._config_rev = _adm_cls.read_config_rev("Persisted")
+        _adm_cls.save([], filename="Persisted")   # 再抬一次盘上 rev
+        _conf_win3._mark_dirty()
+        with patch("houtools.ui.dialogs.choice", return_value=1), \
+             patch("houtools.ui.dialogs.prompt_text",
+                   return_value=("SavedAs", True)):
+            assert _conf_win3._flush_dirty_tasks() is True
+        assert _conf_win3._current_config_name == "SavedAs"
+        assert Path(_adm_cls.get_data_path("SavedAs")).is_file()
+        assert _adm_cls.load_last_config() == "SavedAs", "另存应回写标记"
+        assert _conf_win3._dirty_pending is False
+        _conf_win3.deleteLater()
+        print("automation conflict 3-choice OK")
+
+        # ③d 删除配置：当前配置回落默认 + 标记清理 / 删除失败保文件 /
+        #     运行中守卫
+        # data_manager 层:remove_last_config 清理本机标记
+        _adm_cls.save([], filename="DelMe")
+        _adm_cls.save_last_config("DelMe")
+        assert _adm_cls.load_last_config() == "DelMe"
+        _adm_cls.remove_last_config()
+        assert _adm_cls.load_last_config() is None, "本机标记应被清理"
+        # 窗口层:删除当前配置 → 文件删除 + 回落本机默认(标记重指向默认)
+        _adm_cls.save_last_config("DelMe")
+        _del_win = _AutoWin2()
+        assert _del_win._current_config_name == "DelMe", \
+            _del_win._current_config_name
+        with patch("houtools.ui.dialogs.question", return_value=True):
+            _del_win._on_delete_config()
+        assert not Path(_adm_cls.get_data_path("DelMe")).exists(), \
+            "确认后文件应被删除"
+        assert _adm_cls.load_last_config() == "WS-TEST", \
+            "删当前配置后标记应回落指向本机默认"
+        assert _del_win._current_config_name == "WS-TEST", \
+            "删当前配置应回落本机默认"
+        # 删除失败(文件占用):warn 提示,文件与状态不动
+        _adm_cls.save([], filename="DelFail")
+        _del_win._current_config_name = "DelFail"
+        _del_win._refresh_config_dropdown()
+        with patch("houtools.ui.dialogs.question", return_value=True), \
+             patch.object(_adm_cls, "delete_config", return_value=False), \
+             patch("houtools.ui.dialogs.warn", return_value=None):
+            _del_win._on_delete_config()
+        assert Path(_adm_cls.get_data_path("DelFail")).exists(), \
+            "删除失败时文件应保留"
+        assert _del_win._current_config_name == "DelFail"
+        # 运行中守卫:拒绝删除
+        _adm_cls.save([], filename="GuardCfg")
+        _del_win._current_config_name = "GuardCfg"
+        _del_win._refresh_config_dropdown()
+        _del_win._running = True
+        try:
+            _del_win._on_delete_config()
+        finally:
+            _del_win._running = False
+        assert Path(_adm_cls.get_data_path("GuardCfg")).exists(), \
+            "运行中不得删除配置"
+        # 幽灵项删除也必须确认（2026-11 用户反馈：删除回落后的默认配置
+        # 与当前同名=幻影项，防抖窗口内二次点击曾无确认直接重置面板）
+        _del_win._current_config_name = "WS-TEST"
+        _del_win._refresh_config_dropdown()
+        _del_win._dirty_pending = True   # 模拟回落期间的用户编辑未落盘
+        with patch("houtools.ui.dialogs.question", return_value=True) as _q:
+            _del_win._on_delete_config()
+        assert _q.called, "幽灵项删除必须弹确认"
+        assert _del_win._dirty_pending is False, "确认切换后须清脏"
+        assert _del_win._current_config_name == "WS-TEST"
+        # 取消确认：面板状态与脏标记不动
+        _del_win._dirty_pending = True
+        with patch("houtools.ui.dialogs.question", return_value=False) as _q2:
+            _del_win._on_delete_config()
+        assert _q2.called, "取消路径也应先弹确认"
+        assert _del_win._dirty_pending is True, "取消确认不得清脏"
+        _del_win._dirty_pending = False
+        _del_win.deleteLater()
+        print("automation delete config OK")
+
+        # ③e 关窗 flush 失败 toast：closeEvent 检查返回值并告警（去重，
+        #    closeEvent + hideEvent 双触发只告警一次）
+        _toast_win = _AutoWin2()
+        _toast_win.show()
+        _toast_win._dirty_pending = True
+        with patch.object(_adm_cls, "save", return_value=False), \
+             patch("houtools.automation.window.status") as _fake_status:
+            _toast_win.close()
+        assert _fake_status.call_count == 1, _fake_status.call_count
+        _toast_win.deleteLater()
+        aw._PANEL_REFS.clear()
+        print("automation close-flush toast OK")
 
         # ④ 取消计数：3 个任务、首个执行时请求取消 → 剩余 2 个未执行
         from houtools.automation import task_types as _tt
@@ -1135,6 +1322,19 @@ def main():
             last_win._on_all_completed(2, 0, "12:00:00", 1.0)
         assert "总共 2，成功 2，失败 0，取消 0" in _buf2.getvalue(), _buf2
         last_win.deleteLater()
+
+        # 收尾清扫（防跨段定时器泄漏）：后段多处 app.processEvents() 会
+        # 派发 QTimer 事件——任何存活的 Automation 窗口若残留脏标记+活跃
+        # 防抖定时器，会在那里被派发 flush 并可能弹真冲突模态（无头挂死）。
+        # 只停定时器清脏标记、不代写盘——各窗口的配置根 patch 上下文不同，
+        # 代写盘会与各自 rev 基线错配反而制造冲突
+        for _w in (win, w2, no_marker_win, last_win, _conf_win, _conf_win2,
+                   _conf_win3, _del_win, _toast_win):
+            try:
+                _w._dirty_timer.stop()
+                _w._dirty_pending = False
+            except RuntimeError:
+                pass  # C++ 对象已销毁（deleteLater 已处理的极端情形）
     print("automation last-config/log-default/cancel-count OK")
 
     # 真实实例化 videoseq 窗口（捕获 __init__ 结构损伤；无视频、无线程）

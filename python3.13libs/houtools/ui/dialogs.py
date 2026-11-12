@@ -85,6 +85,30 @@ def question(parent, title, text):
     return ret == QtWidgets.QMessageBox.Yes
 
 
+def choice(parent, title, text, buttons):
+    """N 按钮模态选择框（按钮文字由调用方给出，直接中文）。
+
+    返回被按下按钮的下标；Esc / 关闭窗口映射到最后一个按钮（拒绝
+    语义，如「取消」）。用于标准 Yes/No 表达不了的多选场景（如配置
+    冲突的 覆盖/另存/取消）。"""
+    box = QtWidgets.QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(text)
+    for i, label in enumerate(buttons):
+        role = (QtWidgets.QMessageBox.RejectRole if i == len(buttons) - 1
+                else QtWidgets.QMessageBox.AcceptRole)
+        box.addButton(label, role)
+    box.setDefaultButton(box.buttons()[0])
+    box.exec_()
+    clicked = box.clickedButton()
+    all_buttons = box.buttons()   # deleteLater 前取引用，防销毁后枚举
+    box.deleteLater()
+    for i, btn in enumerate(all_buttons):
+        if btn is clicked:
+            return i
+    return len(buttons) - 1
+
+
 def prompt_text(parent, title, label, text=""):
     """单行文本输入（自建 QInputDialog 实例 + 按钮中文化）。
 

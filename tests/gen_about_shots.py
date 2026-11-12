@@ -116,8 +116,12 @@ def shot_automation(tmp: Path):
     (cfg_dir / "Automation.json").write_text(
         json.dumps(tasks, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    # 默认配置名 = 计算机名（2026-11 按机器隔离），截图环境固化为
+    # "Automation" 才能对上演示数据文件名
     with patch.object(dm.AutomationDataManager, "_hip_base",
-                      classmethod(lambda cls: str(tmp))):
+                      classmethod(lambda cls: str(tmp))), \
+         patch.object(dm.AutomationDataManager, "config_hostname",
+                      classmethod(lambda cls: "Automation")):
         win = AutomationWindow()
         win.resize(SHOT_W, SHOT_H)
         win.show()

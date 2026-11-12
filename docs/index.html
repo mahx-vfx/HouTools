@@ -748,8 +748,8 @@
     <li>后台线程执行,不阻塞 Houdini 界面;对 Houdini 的调用统一派发主线程,<strong>上一任务真正完成后才派发下一个</strong>——顺序语义有保证,主线程被解算阻塞多久就等多久。</li>
     <li>取消是协作式的,只在任务边界生效;点停止后按钮显示「停止中…」直到当前任务结束。</li>
     <li>节点可直接<strong>拖入参数路径框</strong>(原生投递)。</li>
-    <li>配置 JSON 存 <code>$HIP/HouTools_cfg/Automation_json/</code>(跟工程走,多配置文件可切换),执行日志存 <code>$HIP/HouTools_cfg/Automation_logs/</code>。</li>
-    <li>任务列表<strong>改动即存</strong>:编辑后 600ms 自动落盘(切配置/Start/关窗时强制保存),崩溃不丢配置。</li>
+    <li>配置 JSON 存 <code>$HIP/HouTools_cfg/Automation_json/</code>(跟工程走,多配置文件可切换),执行日志存 <code>$HIP/HouTools_cfg/Automation_logs/</code>。<strong>默认配置为本机计算机名</strong>,多台机器共用同一工程目录时各写各的配置文件,互不覆盖;「上次使用的配置」也按机器随工程记忆,重开同一工程自动切回。</li>
+    <li>任务列表<strong>改动即存</strong>:编辑后 600ms 自动落盘(切配置/Start/关窗时强制保存),崩溃不丢配置;配置被其他机器修改过时,写盘会弹窗让用户选择<strong>覆盖 / 另存 / 取消</strong>(取消=放弃本次修改,恢复磁盘内容);工具栏「删除」按钮可删除废弃配置(二级确认,物理删除不可恢复)。</li>
     <li>「打开DW」任务的软件路径在配置目录的 <code>Automation_Config.json</code> 配置(缺失时自动按默认值补建,可直接编辑);该任务执行前会强制保存当前工程。</li>
     <li>Flipbook 帧范围支持灵活写法,解析失败时沿用场景当前范围并告警。</li>
   </ul>
