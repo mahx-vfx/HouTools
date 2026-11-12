@@ -556,8 +556,12 @@ def _qt_floating_window(panel):
     return None
 
 
-def _apply_centered_position(panel, main, frame_w, frame_h):
-    """把面板写到"主窗口外框正中"。
+def _apply_default_position(panel, main, frame_w, frame_h):
+    """把面板写到"主窗口外框正中、整体左移 1.25 个面板宽"。
+
+    2026-11 用户三轮调定：居中位左移半个身位（右缘=主窗中线）→ 再左移
+    半个身位（左缘贴屏幕边，过头）→ 回拉四分之一个身位。最终：面板中心
+    落在主窗中线左侧 0.75 个面板宽处，右缘在中线左侧约四分之一面板宽。
 
     setPosition 的坐标语义(H22 实测双轴标定):X 与 Qt 一致(向右);
     **Y 轴向上、原点在屏幕底边** —— 参数是窗口底边距屏幕底部的高度,
@@ -568,12 +572,13 @@ def _apply_centered_position(panel, main, frame_w, frame_h):
         screen_h = main.windowHandle().screen().geometry().height()
         c = main.frameGeometry().center()
         panel.setPosition((
-            c.x() - frame_w // 2,
+            # 居中位累计左移 1.25 个面板宽（半 + 半 - 回拉四分之一）
+            c.x() - frame_w * 5 // 4,
             screen_h - c.y() - frame_h // 2,
         ))
         return True
     except Exception as exc:
-        logger.debug("centered position failed: %s", exc)
+        logger.debug("default position failed: %s", exc)
         return False
 
 
@@ -589,14 +594,15 @@ except NameError:
 
 class _PanelCenterFilter(QObject):
     """一次性过滤器:本工具浮动面板的顶层窗口首次 Show 时,把面板移到
-    主窗口正中。
+    主窗口正中、整体左移 1.25 个面板宽(2026-11 用户三轮调定;
+    定位数学见 _apply_default_position)。
 
     背景(MCP 现场实测,H22):createFloatingPanel 返回时原生窗口尚未
     创建、不可见,HOM 的 position()/size() 初始为 (-1,-1);Houdini 在
     自动 show 环节才建窗口并摆到"上次关闭的位置" —— 发生在
     open_floating_panel 返回之后,创建期的 setPosition 会被覆盖。在
     Show 事件阶段(paint 尚未发生)同步 setPosition,窗口第一次上屏
-    就在居中位置,消除"先旧位置、再跳中间"的闪烁。H21 实测:应用级
+    就在目标位置,消除"先旧位置、再跳中间"的闪烁。H21 实测:应用级
     过滤器会收到原生 QWindow 的 Show——非 QWidget 一律穿透,否则
     AttributeError 打崩过滤器(2026-10-28 用户真机)。
     """
@@ -621,7 +627,7 @@ class _PanelCenterFilter(QObject):
             main = hou.qt.mainWindow()
             fg = obj.frameGeometry()
             if main is not None and fg.width() > 0 and fg.height() > 0:
-                _apply_centered_position(
+                _apply_default_position(
                     self._panel, main, fg.width(), fg.height())
         except Exception as exc:
             # 定位失败:保持 Houdini 摆位,150ms 兜底校正仍在
@@ -682,7 +688,8 @@ def open_floating_panel():
     from PySide6.QtCore import QTimer
 
     def _center_panel():
-        """把面板摆到主窗口外框正中;窗口未建时按创建尺寸近似。"""
+        """把面板摆到主窗口外框正中再整体左移 1.25 个面板宽;窗口
+        未建时按创建尺寸近似（定位数学见 _apply_default_position）。"""
         try:
             main = hou.qt.mainWindow()
             if main is None:
@@ -691,13 +698,13 @@ def open_floating_panel():
             if win is not None:
                 fg = win.frameGeometry()
                 if fg.width() > 0 and fg.height() > 0:
-                    _apply_centered_position(
+                    _apply_default_position(
                         panel, main, fg.width(), fg.height())
                     return
             w, h = panel.size()
             if int(w) <= 0 or int(h) <= 0:
                 w, h = 620, 578  # 显示前 size() 无效:创建尺寸+标题栏近似
-            _apply_centered_position(panel, main, int(w), int(h))
+            _apply_default_position(panel, main, int(w), int(h))
         except Exception as exc:
             # 面板已销毁或定位失败:保持 Houdini 的摆位
             logger.debug("panel centering failed: %s", exc)

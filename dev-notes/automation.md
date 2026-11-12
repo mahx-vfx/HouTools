@@ -26,7 +26,7 @@
 - **stdout 重定向的生命周期必须不依赖面板存活**：tee 是进程级替换，面板执行中被销毁时（pane 可关、收不到 closeEvent）实例的 `_restore_stdout` 不可达——`destroyed` 连模块级 `_force_restore_stdout`（沿链 splice 本属主层）+ `_close_log_file` 兜底。
 - `_LogTee` 实现 `__getattr__` 转发原始流（fileno/isatty/encoding 等被第三方库访问时不炸）。
 - 执行日志句柄在 Start 时惰性打开、`_write_log` 全程持 `threading.Lock`（tee 挂在 sys.stdout 上任意线程的 print 都会进来，无锁时两线程同首调 `_get_log_path` 会拿到不同文件、日志分裂）。**Start 在主线程先预热 `_get_log_path` 缓存再置 `_log_active`**（2026-10 复审补）：置位后到首次 `_write_log` 缓存路径前的窗口期里，任意线程的 print 会代调 `_get_log_path`——其内含 `hou.getenv`，HOM 跨线程无官方承诺（对齐引擎"预读后传入"约定）。
-- 面板居中过滤器 `_PanelCenterFilter` 由 `_PANEL_FILTERS` 持引用保活到首次 Show 自摘，**自摘时同步 `discard(self)`**（2026-10 复审补，防无 parent QObject 连同其持有的 HOM FloatingPanel 包装滞留累积）。
+- 面板居中过滤器 `_PanelCenterFilter` 由 `_PANEL_FILTERS` 持引用保活到首次 Show 自摘，**自摘时同步 `discard(self)`**（2026-10 复审补，防无 parent QObject 连同其持有的 HOM FloatingPanel 包装滞留累积）。**默认位=主窗口正中再左移 1.25 个面板宽**（2026-11 用户三轮调定：半→一个半过头左缘贴屏→回拉四分之一身位；定位数学单点在 `_apply_default_position`，Show 过滤器/0ms/150ms 兜底三条路径共用；主窗较窄时面板左缘可能越出屏幕，属用户自担的可拖回状态）。
 - **应用级过滤器的 obj 类型守卫（2026-10-28 H21 真机实测）**：Houdini 21 会把原生 `QWindow` 的 Show 投进应用级事件过滤器（QtGui 层对象，没有 `windowTitle`；H22 未投过此类事件）——`_PanelCenterFilter` 曾直接 `obj.windowTitle()` 被 AttributeError 打崩。凡应用级过滤器的回调：先 `isinstance(obj, QWidget)` 再调部件方法，或只用 QObject/身份比对 API（Automation 的 Delete 过滤器拿 obj 比 `windowHandle()` 同一性、fonts 的 ChildAdded 走 `property()/parent()` 均属安全写法，已逐一核查）。
 
 ## 杂项（2026-11 复审修复）
