@@ -56,6 +56,7 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings�
 | Automation | `HouTools → Automation`（Python Panel） | 自动化批处理：节点按钮点击 / Flipbook 拍屏 / HomeAssistant Webhook / 打开DW |
 | 粘贴为 Object Merge | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+V` | 复制节点后，按"目标上下文 × 源类别"在鼠标位置粘贴引用节点；键位在 `HouTools → HouTools Settings…` 修改 |
 | 复制输出路径 | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+C` | 选中带输出路径参数的节点（与右键 Open Cache Folder 同规则：filecache / mantra / karma / usdrender / rop geometry 等，第三方 Arnold 节点亦支持），把输出文件**所在的文件夹**（展开后的绝对路径，不含文件名）复制到系统剪贴板；目录未落盘时不复制并红色报错；多选时去重逐行合并 |
+| File Cache 路径转绝对 | 网络编辑器 `HouTools` 菜单 → `File Cache Paths to Absolute` | 一键把当前层级所有 File Cache 节点的三个路径参数（basedir/basename/file）展开成绝对路径（`$HIP`/`$HIPNAME`/`$OS` 等变量冻结成字面值、相对路径按工程目录拼接），**帧变量 `$F`/`$FF` 原样保留**（帧号不冻结）；已绝对/表达式驱动/锁定参数等自动跳过；整批单个 undo 槽 |
 | 打开工程文件夹 | `HouTools → Open Hip Folder`（主菜单与网络编辑器菜单） | 用资源管理器打开当前 hip 文件所在的文件夹；工程尚未保存时打开默认的 `$HIP` 文件夹（`untitled.hip` 所在目录） |
 | 拖放导入 Alembic / FBX / USD | 拖 `.abc`/`.fbx`/`.usd` 等文件到网络编辑器 | 松手即在鼠标位置创建导入节点：obj 层级 = Alembic Archive（自动构建层级）/ FBX 子网（官方导入器），SOP 层级 = alembic / file 节点，LOP 层级（`.usd`/`.usda`/`.usdc`/`.usdz`）= sublayer 节点；支持多文件混拖（基于 Houdini 官方 externaldragdrop 钩子） |
 | 视窗截图嵌入 | 节点右键 `Capture Viewport to Node [HT]` | 截取当前 3D 视窗存为 JPG（`$HIP/HouTools_cfg/captures/`），作为网络编辑器背景图钉在节点旁，随节点移动/改名跟随；只存路径引用不进 hip；右键 `Delete Viewport Capture [HT]` 删除截图 |
@@ -121,6 +122,15 @@ ffmpeg 说明：优先使用 Houdini 自带的 `$HFS/bin/hffmpeg`，**无需单�
 的上级；值也可改成
 ffmpeg.exe 完整路径或其他目录）。ffprobe 无需单独配置：视频信息探测优先借用
 ffmpeg 同目录配套的 ffprobe，缺失时自动回退 PATH / Houdini 自带的 `hffprobe`。
+
+### File Cache 路径转绝对
+
+网络编辑器 `HouTools` 菜单 → `File Cache Paths to Absolute`：一键把**当前层级**所有 File Cache 节点的三个路径参数——`basedir`（Base Folder）/ `basename`（Base Name）/ `file`（Geometry File）——展开成绝对路径。`$HIP`/`$HIPNAME`/`$OS`/`$JOB` 等变量全部冻结成字面值（`$OS` 按节点名替换），相对路径按工程目录（`$HIP`）拼接，工程挪走/换机打开时缓存不再依赖 hip 位置。**帧变量原样保留**：`$F`/`$F1-9`/`$FF`/`$FF1-9`（含 `${F4}` 花括号形态）不展开，帧编号仍随播放推进；`$FPS` 等以 F 开头的其他变量不受保护、正常展开。三个参数相互独立（File Path 的「组合模式 basedir+basename」与「直接模式 file」两种界面形态都覆盖）。
+
+- `basename` 是名称段：只展开变量成字面名（`$HIPNAME.$OS` → `untitled.filecache1`），不按工程目录拼接；`basedir`/`file` 按完整路径处理，目录尾斜杠按原文保留。
+- 已是绝对路径、路径为空、表达式驱动（关键帧/chs 链接）、含反引号内联表达式、`op:` 等协议路径、参数锁定的参数**自动跳过**并计入汇总通知——表达式类写静态值会冻结表达式结果，属破坏性改写，直接拒绝；旧版 filecache 没有 basedir/basename 参数时静默忽略。
+- 写回值为正斜杠归一（如 `file` → `D:/shots/SA01/geo/untitled.filecache1.$F.bgeo.sc`），即最终落盘形态。
+- 整批操作单个 undo 槽（Ctrl+Z 一次全还原）；单参数写入失败只跳过该参数，不影响其余参数。
 
 ### 拖放导入 Alembic / FBX / USD
 

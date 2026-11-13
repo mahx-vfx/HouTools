@@ -77,6 +77,16 @@ import houtools.dev.dispatcher as _houtools_dispatcher
 _houtools_dispatcher.run("copy_output_path", **kwargs)
         ]]></scriptCode>
       </scriptItem>
+      <!-- File Cache 路径转绝对：当前层级所有 filecache 节点的 file 参数
+           展开为绝对路径（$HIP 等变量全展开、相对路径按 $HIP 拼接），
+           $F 帧变量原样保留；整批一个 undo 槽 -->
+      <scriptItem id="houtools.networkview.filecache_abs_path">
+        <label>File Cache Paths to Absolute</label>
+        <scriptCode><![CDATA[
+import houtools.dev.dispatcher as _houtools_dispatcher
+_houtools_dispatcher.run("filecache_abs_path", **kwargs)
+        ]]></scriptCode>
+      </scriptItem>
     </subMenu>
   </menuBar>
 </mainMenu>

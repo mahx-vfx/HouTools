@@ -717,6 +717,7 @@
   <a href="#automation">Automation</a>
   <a href="#paste-as-object-merge">粘贴为 Object Merge</a>
   <a href="#copy-output-path">复制输出路径</a>
+  <a href="#filecache-absolute">File Cache 路径转绝对</a>
   <a href="#dragdrop-import">拖放导入 .abc/.fbx/.usd</a>
   <a href="#capture-viewport">视窗截图嵌入</a>
   <a href="#paste-bounding-box">粘贴边界框</a>
@@ -793,6 +794,19 @@
     <li>目录尚未写出(缓存未落盘)时<strong>不复制</strong>,左下角红色错误通知;各类失败反馈只走通知模块、不刷控制台。</li>
     <li>多选时把命中节点的目录去重后逐行合并复制,未命中的节点忽略。</li>
     <li>键位在 <code>HouTools → HouTools Settings…</code> 修改,也可用 Houdini 自带 Hotkey Manager(符号 <code>h.pane.wsheet.houtools_copy_output_path</code>)。</li>
+  </ul>
+</section>
+
+<!-- ============ File Cache 路径转绝对 ============ -->
+<section id="filecache-absolute">
+  <h2>File Cache Paths to Absolute<span class="zh">File Cache 路径转绝对</span></h2>
+  <p class="entry">入口:网络编辑器 <code>HouTools</code> 菜单 → <code>File Cache Paths to Absolute</code></p>
+  <p>一键把<strong>当前层级</strong>所有 File Cache 节点的三个路径参数——<code>basedir</code>(Base Folder)/<code>basename</code>(Base Name)/<code>file</code>(Geometry File)——展开成绝对路径:<code>$HIP</code>/<code>$HIPNAME</code>/<code>$OS</code>/<code>$JOB</code> 等变量冻结成字面值(<code>$OS</code> 按节点名替换),相对路径按工程目录(<code>$HIP</code>)拼接,工程挪走/换机打开时缓存不再依赖 hip 位置。<code>$HIP/geo/$HIPNAME.$OS.$F.bgeo.sc</code> → <code>D:/shots/SA01/geo/untitled.filecache1.$F.bgeo.sc</code>。三个参数相互独立(File Path 的「组合模式 basedir+basename」与「直接模式 file」两种界面形态都覆盖)。</p>
+  <ul>
+    <li><strong>帧变量原样保留</strong>:<code>$F</code>/<code>$F1-9</code>/<code>$FF</code>/<code>$FF1-9</code>(含 <code>${F4}</code> 花括号形态)不展开,帧编号仍随播放推进;<code>$FPS</code> 等以 F 开头的其他变量不受保护、正常展开。</li>
+    <li><code>basename</code> 是名称段:只展开变量成字面名(<code>$HIPNAME.$OS</code> → <code>untitled.filecache1</code>),不按工程目录拼接;<code>basedir</code>/<code>file</code> 按完整路径处理,目录尾斜杠按原文保留。</li>
+    <li>已是绝对路径、路径为空、表达式驱动(关键帧/chs 链接)、含反引号内联表达式、<code>op:</code> 等协议路径、参数锁定的参数<strong>自动跳过</strong>并计入汇总通知——表达式类写静态值会冻结表达式结果,属破坏性改写,直接拒绝;旧版 filecache 没有 basedir/basename 参数时静默忽略。</li>
+    <li>写回值为正斜杠归一(即最终落盘形态);整批操作单个 undo 槽(Ctrl+Z 一次全还原),单参数写入失败只跳过该参数,不影响其余参数。</li>
   </ul>
 </section>
 

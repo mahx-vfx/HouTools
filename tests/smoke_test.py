@@ -146,6 +146,12 @@ def main():
     assert '_houtools_dispatcher.run("open_hip_folder")' in nv_xml
     print("open_hip_folder menu wiring: consistent")
 
+    # File Cache 路径转绝对:仅网络编辑器菜单注册（无独立快捷键，item id
+    # 用 houtools.networkview.* 前缀、不进设置窗口快捷键区）
+    assert 'id="houtools.networkview.filecache_abs_path"' in nv_xml
+    assert '_houtools_dispatcher.run("filecache_abs_path", **kwargs)' in nv_xml
+    print("filecache_abs_path menu wiring: consistent")
+
     # About 页面:仅主菜单注册（全局性条目，不进网络编辑器菜单）；
     # 手册离线可用（无互联网工作站）：样式内联、不加载任何外部资源
     # ——src= 一律禁止、外部样式表(<link>)禁止；指向仓库的导航超链接
@@ -518,6 +524,162 @@ def main():
             sys.modules["hou"] = _saved_hou_sel
     print("copy_output_path selection filter OK")
 
+    # filecache_abs_path:三路径参数 basedir/basename/file。打桩 expandString
+    # 固化语义:$HIP/$HIPNAME/$FPS 展开、**$OS 故意不展开**——真实会话里
+    # 全局 expandString 对 $OS 展开出的是无关值(H22.0.429 实测 "Director")
+    # 而非节点名,工具必须先按 node.name() 替换 $OS(断言里 filecache1 即
+    # 证明);$F4/$FF3/${F4} 原样保留;_to_absolute 兼容 POSIX 单斜杠绝对
+    # 形态(Py3.13 os.path.isabs 的坑)+反斜杠归一正斜杠+尾斜杠按原文保留;
+    # basename 是名称段,只展开成字面名、不拼 $HIP
+    class _FakeHouText:
+        @staticmethod
+        def expandString(text):
+            table = {"$HIP": "C:/proj/shot", "$HIPNAME": "untitled", "$FPS": "24"}
+            # 长键先替换:$HIP 是 $HIPNAME 的前缀,顺序错了会把 $HIPNAME
+            # 串改成 "C:/proj/shotNAME"
+            for key in sorted(table, key=len, reverse=True):
+                text = text.replace(key, table[key])
+            return text
+
+    class _FakeHouTextModule:
+        text = _FakeHouText
+
+    class _FCType:
+        def __init__(self, name):
+            self._name = name
+
+        def name(self):
+            return self._name
+
+    class _FCParm:
+        def __init__(self, raw, keyframes=()):
+            self._raw = raw
+            self._keyframes = keyframes
+            self.written = None
+
+        def keyframes(self):
+            return self._keyframes
+
+        def unexpandedString(self):
+            return self._raw
+
+        def set(self, value):
+            self.written = value
+
+    class _FCNode:
+        def __init__(self, type_name="filecache::2.0", parms=None,
+                     name="filecache1"):
+            self._type = _FCType(type_name)
+            self._parms = parms or {}
+            self._name = name
+
+        def type(self):
+            return self._type
+
+        def name(self):
+            return self._name
+
+        def parm(self, name):
+            return self._parms.get(name)
+
+    _saved_hou_text = sys.modules.get("hou")
+    try:
+        sys.modules["hou"] = _FakeHouTextModule
+        from houtools.tools import filecache_abs_path as fcap
+
+        # _to_absolute:$F 家族保护 + $HIP 拼接 + 归一
+        assert fcap._to_absolute("$HIP/cache/geo.$F4.bgeo.sc") == \
+            "C:/proj/shot/cache/geo.$F4.bgeo.sc"
+        assert fcap._to_absolute("$HIP/f.$FF3.bgeo") == \
+            "C:/proj/shot/f.$FF3.bgeo"
+        assert fcap._to_absolute("cache/f.$F4.bgeo") == \
+            "C:/proj/shot/cache/f.$F4.bgeo"
+        assert fcap._to_absolute("out_$FPS_$F4.txt") == \
+            "C:/proj/shot/out_24_$F4.txt"
+        # 多帧变量并存:占位符还原不串号
+        assert fcap._to_absolute("a.$F4/b.$FF3/c.$F.bgeo") == \
+            "C:/proj/shot/a.$F4/b.$FF3/c.$F.bgeo"
+        # ${F4} 花括号形态同样受保护
+        assert fcap._to_absolute("f.${F4}.bgeo") == \
+            "C:/proj/shot/f.${F4}.bgeo"
+        # /mnt 形态是 Py3.13 os.path.isabs 的坑(Windows 对单斜杠开头返
+        # False,Houdini 文件参数视 /proj 为绝对)——固化 _is_abs 兼容语义
+        assert fcap._to_absolute("/mnt/cache/f.$F4.bgeo") == \
+            "/mnt/cache/f.$F4.bgeo"
+        # Windows 反斜杠归一为 Houdini 风格正斜杠;尾斜杠按原文保留
+        assert fcap._to_absolute("C:\\proj\\f.$F4.bgeo") == \
+            "C:/proj/f.$F4.bgeo"
+        assert fcap._to_absolute("$HIP/geo/") == "C:/proj/shot/geo/"
+        assert fcap._to_absolute("$HIP/geo") == "C:/proj/shot/geo"
+
+        # 类型判定:按 :: 段匹配
+        assert fcap._is_filecache(_FCNode("filecache::2.0"))
+        assert fcap._is_filecache(_FCNode("filecache"))
+        assert fcap._is_filecache(_FCNode("vendor::filecache::1.0"))
+        assert not fcap._is_filecache(_FCNode("filenode::2.0"))
+        assert not fcap._is_filecache(_FCNode("filerose::2.0"))
+
+        # 参数缺失(旧 filecache 没有 basedir/basename)不计任何数
+        assert fcap._convert(_FCNode(), "basedir") is None
+
+        # file(完整路径段):$OS 用节点名替换(桩不展开 $OS,断言即证明)、
+        # $HIP 展开、$F4 保留
+        parm = _FCParm("$HIP/cache/$OS.$F4.bgeo.sc")
+        kind, value = fcap._convert(_FCNode(parms={"file": parm}), "file")
+        assert (kind, value) == \
+            ("converted", "C:/proj/shot/cache/filecache1.$F4.bgeo.sc")
+        assert parm.written == value
+        # basename(名称段):$HIPNAME/$OS → 字面名,不拼 $HIP
+        parm = _FCParm("$HIPNAME.$OS")
+        kind, value = fcap._convert(
+            _FCNode(parms={"basename": parm}), "basename")
+        assert (kind, value) == ("converted", "untitled.filecache1")
+        assert parm.written == value
+        # basename 纯字面量 → 无需转换不写回
+        parm = _FCParm("mycache")
+        assert fcap._convert(_FCNode(parms={"basename": parm}), "basename") == \
+            ("unchanged", "无需转换")
+        assert parm.written is None
+        # basedir(目录段):$HIP 展开;尾斜杠按原文保留
+        parm = _FCParm("$HIP/geo")
+        kind, value = fcap._convert(_FCNode(parms={"basedir": parm}), "basedir")
+        assert (kind, value) == ("converted", "C:/proj/shot/geo")
+        assert parm.written == value
+        assert fcap._convert(
+            _FCNode(parms={"basedir": _FCParm("$HIP/geo/")}),
+            "basedir")[1] == "C:/proj/shot/geo/"
+        # basedir 已绝对 → unchanged 不写回
+        parm = _FCParm("D:/geo/")
+        assert fcap._convert(_FCNode(parms={"basedir": parm}), "basedir") == \
+            ("unchanged", "已是绝对路径")
+        assert parm.written is None
+        # 跳过分类:表达式驱动/反引号/空路径/协议路径(路径段才查协议)
+        assert fcap._convert(
+            _FCNode(parms={"file": _FCParm("$HIP/x", keyframes=(1,))}),
+            "file")[0] == "skip"
+        assert fcap._convert(
+            _FCNode(parms={"file": _FCParm("$HIP/`chs(1)`.bgeo")}),
+            "file")[0] == "skip"
+        assert fcap._convert(
+            _FCNode(parms={"file": _FCParm("   ")}), "file")[0] == "skip"
+        assert fcap._convert(
+            _FCNode(parms={"file": _FCParm("opdef:/Sop/x")}), "file")[0] == \
+            "skip"
+        # basename 段不做协议判定(纯名称,带 / 也照转);$OS 替换 + $F 保留
+        assert fcap._convert(
+            _FCNode(parms={"basename": _FCParm("$OS/x.$F4")}),
+            "basename") == ("converted", "filecache1/x.$F4")
+        # $OSNAME 等带后缀形态是独立变量、不被误换(桩不展开它 → 原样不变)
+        assert fcap._convert(
+            _FCNode(parms={"basename": _FCParm("$OSNAME.$F4")}),
+            "basename") == ("unchanged", "无需转换")
+    finally:
+        if _saved_hou_text is None:
+            sys.modules.pop("hou", None)
+        else:
+            sys.modules["hou"] = _saved_hou_text
+    print("filecache_abs_path expand/convert OK")
+
     ET.parse(ROOT / "python_panels" / "Automation.pypanel")
     print("Automation.pypanel: well-formed")
 
@@ -530,6 +692,7 @@ def main():
     import houtools.tools.houtools_settings  # noqa: F401
     import houtools.tools.open_cache_folder  # noqa: F401
     import houtools.tools.copy_output_path  # noqa: F401
+    import houtools.tools.filecache_abs_path  # noqa: F401
     import houtools.tools.open_hip_folder  # noqa: F401
     import houtools.tools.capture_viewport_embed  # noqa: F401
     import houtools.tools.delete_viewport_capture  # noqa: F401
