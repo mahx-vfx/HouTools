@@ -853,6 +853,7 @@
   <a href="#paste-bounding-box">粘贴边界框</a>
   <a href="#paste-center">粘贴中心</a>
   <a href="#video-to-sequence">视频转序列图</a>
+  <a href="#package-project">打包工程</a>
   <a href="#hdr-library">HDR Library</a>
   <a href="#recipe-library">Recipe Library</a>
   <a href="#houtools-settings">HouTools Settings</a>
@@ -1016,6 +1017,24 @@
     <li>提取可随时取消(探测与转换阶段均可),取消时提示已写入帧数。</li>
   </ul>
   <div class="note">ffmpeg 优先使用 Houdini 自带的 <code>$HFS/bin/hffmpeg</code>,<strong>无需单独安装</strong>;如需指定版本,把 <code>ffmpeg.exe</code> 放到 HouTools 配置目录(包清单里 <code>HOUTOOLS_FFMPEG</code> 变量指向的位置,默认 <code>$HOUDINI_USER_PREF_DIR/../HouTools</code>,即设置目录的上级)即可优先使用。</div>
+</section>
+
+<!-- ============ Package Project ============ -->
+<section id="package-project">
+  <h2>Package Project<span class="zh">打包工程</span></h2>
+  <p class="entry">入口:<code>HouTools → Package Project</code>(主菜单与网络编辑器菜单均有)</p>
+  <p>把工程收成可搬走的一包,对应渲染农场提交前的整理:收文件 → 改相对路径 → 保存 → 打 zip。</p>
+  <ul>
+    <li><strong>手动引用就收</strong>:<code>file</code> / <code>fileName</code> / 贴图路径这类输入参数只要填了值就列出来,文件不存在也列(标「缺失」,打包时跳过);<strong><code>$HFS</code> / <code>$HH</code> 里的引用也会列出</strong>(是否打包由勾选决定),只过滤真正不是文件的值(空值、节点路径、目录、<code>shfs:</code>/<code>op:</code> 协议、<code>$HIP/galleries</code>、<code>$HIP/backup</code>)。</li>
+    <li><strong>filecache 缓存按真实路径整段收</strong>:它的 <code>file</code> 参数(<code>$HIP/geo/$HIPNAME.$OS.$F.bgeo.sc</code>)不是实际文件,工具按 <code>sopoutput</code> 求值拿首帧、glob 出整段帧,并把改写目标定为 <code>basedir</code>——下游 <code>chs("…/sopoutput")</code> 引用会自动跟着走。其它输出参数默认只收已落盘的,勾「含空输出路径」才列未生成的。</li>
+    <li><strong>全部复制进一个文件夹</strong>:<code>&lt;包根&gt;/&lt;包名&gt;/assets/…</code>。<code>$HIP</code> 内素材保留相对目录(<code>$HIP/geo/x.bgeo.sc</code> → <code>assets/geo/x.bgeo.sc</code>),包外才展平目录。参数写法按生成方式区分:另存到包目录 → <code>$HIP/assets/…</code>(hip 就住在包目录里);覆盖当前工程 → <code>$HIP/&lt;包名&gt;/assets/…</code> 或 <code>$JOB/&lt;包名&gt;/assets/…</code>。包根可选 <code>$HIP</code>(默认)或 <code>$JOB</code>,<code>$JOB</code> 未设置时自动禁用。</li>
+    <li><strong>只列用户改过的路径</strong>:参数处于默认值(<code>isAtDefault</code>)的内置路径(如 <code>karma/hoseksolarmap.rat</code>)不会列出;filecache 的 <code>basedir</code> 例外(它代表实际缓存目录)。</li>
+    <li><strong>两种生成方式</strong>:另存到包目录(默认,原工程不动)或覆盖当前工程。</li>
+    <li>帧模板 <code>foo.$F4.exr</code> 原样保留,现有帧整段收进包里;参数改写在一个 undo 组里,<strong>Ctrl+Z 可整体撤销</strong>。</li>
+    <li><strong>执行结果面板</strong>:完成 / 失败两态,逐条列出复制失败(源路径 + 原因)、改写失败(节点:参数 + 原因)、保存失败与跳过计数,并显示扫描统计。</li>
+    <li><strong>双击某行跳转到该节点</strong>;<strong>右键</strong>只有两项:「跳转到节点」「在资源管理器中打开原路径」(Shell API 定位并选中,序列取第一帧)。</li>
+    <li>「生成 zip」把包目录整体压成 <code>&lt;包根&gt;/&lt;包名&gt;.zip</code>。</li>
+  </ul>
 </section>
 
 <!-- ============ HDR Library ============ -->
