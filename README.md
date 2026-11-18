@@ -77,7 +77,7 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings.
 | 粘贴边界框 | 节点右键 `Paste Bounding Box [HT]` | Ctrl+C 复制源节点后，右键带三分量 `size`/`t` 参数的目标节点（如 box），把源节点包围盒尺寸/中心粘贴到其 `size`/`t`——绝对值或 `bbox()`/`centroid()` 表达式（同网络相对路径、跨层级绝对路径）两种模式 |
 | 粘贴中心 | 节点右键 `Paste Center [HT]` | Ctrl+C 复制源节点后右键任意目标节点，在其下方创建 transform 并启用（接管显示/渲染）：枢轴=目标中心、平移=源中心−目标中心（目标内容对齐到源中心）——绝对值或 `centroid()` 表达式两种模式 |
 | 视频转序列图 | `HouTools → Video to Sequence` | ffmpeg 提取视频为 JPG 序列（帧级进度，质量/起始帧/位数/前缀可调），EXR/PNG/TIF 静帧序列同样支持（浏览时同一序列折叠为一个选项，EXR 自动转 sRGB），相机支持在 Houdini 节点选择器中直接选取 + 一键跳转定位，相机行「匹配素材分辨率」一键把相机分辨率对齐素材（防背景拉伸），分辨率可读取/编辑（宽/高双框 + 预设），「编码器」行 ⓘ 按钮悬停/点击查看实际生效的 ffmpeg/ffprobe，可选自动设置相机 Background Image |
-| Package Project | `HouTools → Package Project`（主菜单与网络编辑器菜单） | 打包工程：只收**已启用节点**上的外部引用与节点缓存，把绝对路径的文件复制进 `$HIP/ht_package/` 并改写成 `$HIP/...`（帧模板 `$F4` 原样保留），可勾选范围；生成 `<hip>_packed.hip` 并连同包目录压成 `<hip>_package.zip`，可直接上传渲染农场 |
+| Package Project | `HouTools → Package Project`（主菜单与网络编辑器菜单） | 打包工程：只收**已启用节点**上的外部引用与节点缓存，把绝对路径的文件复制进 `$HIP/ht_package/` 并改写成 `$HIP/...`（帧模板 `$F4` 原样保留，表达式驱动参数跳过不改写），可勾选范围；另存 `<包名>/<hip>_packed.hip`（原工程不动），包目录整体压成 `<包根>/<包名>.zip`，可直接上传渲染农场 |
 | HDR Library | `HouTools → HDR Library` | HDR 环境贴图库浏览器：缩略图网格（后台生成）、子文件夹分类 + 收藏，选中灯光后双击即贴图 |
 | Recipe Library | `HouTools → Recipe Library` | recipes 资产库浏览器：官方 recipes 卡片网格浏览（缩略图/标签/主题色），树形侧栏过滤，双击/拖拽应用到网络，VEX/Python 代码块卡片（双击追加到选中节点），Markdown 文档，数据导入/导出 |
 | HouTools Settings | `HouTools → HouTools Settings...` | 设置窗口：配置目录展示（含修改方法）+ 快捷键设置（Paste as Object Merge / Copy Output Path，捕获式改键，会话即时生效） |
@@ -230,6 +230,10 @@ File > Import > Alembic Scene... / File > Import > Filmbox FBX...）：
   `chs("…/sopoutput")` 引用的节点会自动跟着走。
 - **其它输出参数默认只收已落盘的**：`sopoutput` / `vm_picture` / `picture` /
   `outputimage` 等有文件才列出；勾选顶部「含空输出路径」才把还没写出的也列出来。
+- **表达式驱动的参数不改写**：`chs()` 链接 / 表达式 / 关键帧驱动的参数自动跳过
+  ——对它写静态值等于把表达式冻成常数（同 File Cache 转绝对的拒绝语义），
+  计入执行结果的跳过统计；filecache 的 `basedir` 同查（其 `file`/`basename`
+  只是拼路径的片段，本就不单独收）。
 - **`$HIP` 内素材保留相对目录**：`$HIP/geo/x.bgeo.sc` → `assets/geo/x.bgeo.sc`；
   包外素材才用展平目录（`D:\proj\tex` → `D_proj_tex`），避免同名覆盖。
   帧模板 `$F4` 原样保留，现有帧整段收。
@@ -242,7 +246,11 @@ File > Import > Alembic Scene... / File > Import > Filmbox FBX...）：
 - **两种生成方式**：
   - **另存到包目录**（默认）：另存 `<包名>/<hip>_packed.hip`，磁盘上的原工程不动；
   - **覆盖当前工程**：把改写结果保存回当前 hip（素材已进包目录）。
+  包名默认 `ht_package`，可在窗口里改（输入会净化，Windows 禁用符与 `..`
+  被收敛，防止写出包目录之外）。
 - **一次 undo 可整体撤销**参数改写；复制失败只跳过相关条目、不牵连其他文件。
+- **复制/zip 在后台线程执行**：运行中关闭窗口即协作取消——复制停在当前
+  文件边界（取消后不进行参数改写与保存），zip 半成品（`.part`）不落盘。
 - **执行结果面板**：完成 / 失败两态，逐条列出复制失败（源路径 + 原因）、
   改写失败（节点:参数 + 原因）、保存失败与跳过计数，并显示扫描统计。
 - **生成 zip**：把包目录整体压成 `<包根>/<包名>.zip`（覆盖模式下附带的 hip 也会进包）。

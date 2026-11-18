@@ -1029,8 +1029,9 @@
     <li><strong>filecache 缓存按真实路径整段收</strong>:它的 <code>file</code> 参数(<code>$HIP/geo/$HIPNAME.$OS.$F.bgeo.sc</code>)不是实际文件,工具按 <code>sopoutput</code> 求值拿首帧、glob 出整段帧,并把改写目标定为 <code>basedir</code>——下游 <code>chs("…/sopoutput")</code> 引用会自动跟着走。其它输出参数默认只收已落盘的,勾「含空输出路径」才列未生成的。</li>
     <li><strong>全部复制进一个文件夹</strong>:<code>&lt;包根&gt;/&lt;包名&gt;/assets/…</code>。<code>$HIP</code> 内素材保留相对目录(<code>$HIP/geo/x.bgeo.sc</code> → <code>assets/geo/x.bgeo.sc</code>),包外才展平目录。参数写法按生成方式区分:另存到包目录 → <code>$HIP/assets/…</code>(hip 就住在包目录里);覆盖当前工程 → <code>$HIP/&lt;包名&gt;/assets/…</code> 或 <code>$JOB/&lt;包名&gt;/assets/…</code>。包根可选 <code>$HIP</code>(默认)或 <code>$JOB</code>,<code>$JOB</code> 未设置时自动禁用。</li>
     <li><strong>只列用户改过的路径</strong>:参数处于默认值(<code>isAtDefault</code>)的内置路径(如 <code>karma/hoseksolarmap.rat</code>)不会列出;filecache 的 <code>basedir</code> 例外(它代表实际缓存目录)。</li>
-    <li><strong>两种生成方式</strong>:另存到包目录(默认,原工程不动)或覆盖当前工程。</li>
-    <li>帧模板 <code>foo.$F4.exr</code> 原样保留,现有帧整段收进包里;参数改写在一个 undo 组里,<strong>Ctrl+Z 可整体撤销</strong>。</li>
+    <li><strong>表达式驱动的参数不改写</strong>:<code>chs()</code> 链接 / 表达式 / 关键帧驱动的参数自动跳过——对它写静态值等于把表达式冻成常数(同 File Cache 转绝对的拒绝语义),并计入执行结果的跳过统计;filecache 的 <code>basedir</code> 同查(其 <code>file</code>/<code>basename</code> 只是拼路径的片段,本就不单独收)。</li>
+    <li><strong>两种生成方式</strong>:另存到包目录(默认,原工程不动)或覆盖当前工程。包名默认 <code>ht_package</code>,可在窗口里改(输入会净化,Windows 禁用符与 <code>..</code> 被收敛,防止写出包目录之外)。</li>
+    <li>帧模板 <code>foo.$F4.exr</code> 原样保留,现有帧整段收进包里;参数改写在一个 undo 组里,<strong>Ctrl+Z 可整体撤销</strong>。复制/zip 在后台线程执行,运行中关闭窗口即协作取消——复制停在当前文件边界(取消后不进行参数改写与保存),zip 半成品(<code>.part</code>)不落盘。</li>
     <li><strong>执行结果面板</strong>:完成 / 失败两态,逐条列出复制失败(源路径 + 原因)、改写失败(节点:参数 + 原因)、保存失败与跳过计数,并显示扫描统计。</li>
     <li><strong>双击某行跳转到该节点</strong>;<strong>右键</strong>只有两项:「跳转到节点」「在资源管理器中打开原路径」(Shell API 定位并选中,序列取第一帧)。</li>
     <li>「生成 zip」把包目录整体压成 <code>&lt;包根&gt;/&lt;包名&gt;.zip</code>。</li>
