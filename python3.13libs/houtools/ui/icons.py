@@ -27,6 +27,11 @@ logger = get_logger("ui.icons")
 
 _ICONS_DIR = Path(__file__).resolve().parent.parent / "icons"
 
+# 品牌图标约定（与 docs/brand.md 一致）：20px 网格、1.5px 描边、圆角端点；
+# 14/16/20/24 四档。SVG 素材按 24 viewBox 绘制，渲染时等比缩放。
+STROKE = 1.5
+VIEWBOX = 24
+
 # 纯渲染缓存，Reload 后重建一次即可，无需 NameError 守卫（automation 同款注释）
 _SVG_ICON_CACHE: dict = {}
 

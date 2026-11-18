@@ -6,10 +6,32 @@
 
 整窗 + `_VideoSourceGroup` 双层接收拖放；`_load_media` 是浏览/拖放/手输共用入口（视频走原链，静帧走 `_load_still_sequence`）。
 
+## 文件夹拖入（2026-11 新增）
+
+- **双信号并行**：`_VideoSourceGroup` 在 `mediaDropped` 旁新增 `folderDropped`，窗口级 dropEvent 同口径路由；文件/文件夹混拖时 `_folder_from_mime` 与 `_media_path_from_mime` 各自跳过对方候选（共用 `_mime_path_candidates`），互不遮蔽。
+- **扫描 = `scan_folder_sequences`**（模块级纯函数，smoke test 直测）：scandir 单趟枚举**第一层**，`_FRAME_NUM_RE` 按 `(stem, ext 小写)` 归组，**≥2 帧才算序列**（单帧编号文件是噪音）；帧号位数取组内最大宽度；发出模式**保留首次见到的原始扩展名大小写**——归一成小写会让 `.EXR` 素材的 ffmpeg 输入模式在大小写敏感文件系统上失配（ad-hoc 实测抓到）。jpg 是输出格式不在输入白名单，不参与归组（与 `_load_media` 扩展名拒绝同口径）。
+- **产物直接喂 `_load_media`**：`stem.$F<pad>.ext` 经 parse_sequence_pattern 以声明位数重扫磁盘，两跳之间磁盘变动由"枚举不到帧"红字兜住；唯一序列直接装载，多条经 `_pick_sequence_dialog`（QDialog+QListWidget，按钮 localize，双击=确认，Esc/取消不装载）；零命中红字提示（文件夹入口只做序列，视频仍走文件拖入）。转换进行中拒绝（与 `_load_media` 换片拒绝同语义）。仅扫第一层，子目录不递归。
+
+## 品牌主题（2026-11 视觉统一）
+
+- `STYLE_SHEET = qss.window_qss(_EXTRA_QSS)`：墨黑工作区 + 品牌橙动作色；
+  不再有蓝 `#0d6399` / 紫 `#8a5cf5`。主按钮仅「开始转换」（`#convertBtn`，
+  ACCENT 底 + INK_1000 字）；`#confirmBtn`/`#presetBtn` 为次按钮。
+- `_GROUPBOX_INLINE_STYLE` 仍用部件级内联样式（Houdini 全局样式表会压过
+  窗口级类型选择器），内容改为 `INK_900` 卡片 + `LINE` 边框 + `TEXT_2` 标题。
+- 状态文字统一：提示 `WARNING_TEXT`、错误 `ERROR_TEXT`、成功 `SUCCESS_TEXT`、
+  进行中 `ACCENT`；参数标签 `TEXT_3`、值 `TEXT`。面板字体沿用原
+  Alimama ShuHeiTi Bold，不改为 mono/雅黑（用户 2026-11 拍板）。
+- 不新增 `BrandHeader`/次级品牌顶栏（用户否决）；窗口标题保持英文
+  `Video to Sequence`；根 objectName=`htWindow`。
+- **`QPushButton#presetBtn:disabled` 规则仍在 `STYLE_SHEET`**（smoke 固化：
+  「匹配素材分辨率」灰置外观依赖它）。
+- 功能/线程/相机/序列逻辑零改动。
+
 ## 图标按钮改版（2026-11 用户指定）
 
 - **两个「浏览」按钮文件夹图标化**（视频源/输出目录）：Automation flipbook 同款 22×22 无边框图标按钮，`_make_icon_button` 统一构建、`ui/icons.svg_icon` QSvgRenderer 离屏渲染（QtSvg 缺失回退文字）。**行为不变**——视频源仍走 `hou.ui.selectFile(collapse_sequences=True)` 折叠序列（Qt 对话框兜底链保留），输出目录仍走目录选择对话框；原 `QPushButton#browseBtn` 文本按钮样式随之删除。
-- **相机行「选择」改 chooser 图标按钮**（官方 `BUTTONS/chooser_node.svg` 提取件 = 参数面板 "Open floating operator chooser" 同款图标：浅色节点块 + 白光标；**不是红光标的 `chooser.svg`**——chooser 家族 7 个变体离屏渲染逐一比对定案，"node" 语义也对得上选节点器）+ 前置跳转按钮：点击 `hou.ui.selectNode(title, initial_node=当前所选, custom_node_filter_callback=_cam_filter_callback)` 原生浮动操作员选择器选相机。**返回值坑**：`multiple_select=False` 返回单个路径 str、取消/清空返回 None——勿按 tuple 处理（`houpythonportion/ui.py` 实证：`_hou` C 层只有 `ui__selectNode`，公开名在该文件以 `@_addMethod(hou.ui)` 绑定）。`_cam_filter_callback` 只放行 OBJ cam（`type().name()=="cam"` 且 category Object——SOP Camera 等同名类型不放行，所选相机要吃 `vm_background`/`resx`/`resy`，必须 OBJ 相机）。旧 `_on_pick_camera`（QInputDialog 下拉）随之删除——原生选择器列完整路径树，"同名相机按 basename 反查永远命中第一个"的问题不复存在。
+- **相机行「选择」改 chooser 图标按钮**（官方 `BUTTONS/chooser_node.svg` 提取件 = 参数面板 "Open floating operator chooser" 同款图标：浅色节点块 + 白光标；**不是红光标的 `chooser.svg`**——chooser 家族 7 个变体离屏渲染逐一比对定案，"node" 语义也对得上选节点器）+ 前置跳转按钮：点击 `hou.ui.selectNode(title, initial_node=当前所选, node_type_filter=hou.nodeTypeFilter.ObjCamera)` 原生浮动操作员选择器选相机。**返回值坑**：`multiple_select=False` 返回单个路径 str、取消/清空返回 None——勿按 tuple 处理（`houpythonportion/ui.py` 实证：`_hou` C 层只有 `ui__selectNode`，公开名在该文件以 `@_addMethod(hou.ui)` 绑定）。**过滤必须走原生 `node_type_filter`**（2026-11 用户反馈"选相机卡几秒"）：Python `custom_node_filter_callback` 会被选择器**对树里的每个节点各调一次**（官方文档措辞 "invoked for each node in the chooser dialog"），大场景几万次 HOM 往返 = 打开选择器即卡几秒；`nodeTypeFilter.ObjCamera` 枚举（getattr 容缺省）与回调版同口径只列 OBJ cam（SOP Camera 等同名类型不放行，所选相机要吃 `vm_background`/`resx`/`resy`），C++ 层过滤零回调，逐节点 Python 回调 `_cam_filter_callback` 已删（smoke test 以 `inspect.getsource` 固化"不得以实参回归"）。旧 `_on_pick_camera`（QInputDialog 下拉）已删——原生选择器列完整路径树，"同名相机按 basename 反查永远命中第一个"的问题不复存在。
 - **跳转按钮**（jump.svg，Automation 任务槽同款图标）：`ui/networknav.jump_to_node`（与 automation 同源实现，2026-11 迁出共享）定位当前所选相机（`_selected_camera_node()`，未选/已删黄字提示）。
 
 ## 静帧序列（EXR/PNG/TIF → JPG，2026-11 新增）
@@ -47,14 +69,14 @@
 - 单相机自动选中、多相机走选择对话框，两条路都经 `_set_selected_camera` → `_refresh_camera_res` 同步分辨率行。
 - **分辨率是宽/高两个独立输入框**（用户指定，不用"宽x高"合并框），显示所选相机 `resx`/`resy`（标准 cam 的分辨率就是这一对参数、无单独 `res` 参数，hython 实测），「确定」经 `parse_dimension` 逐框校验（1~5 位正整数）后写回。**写回捕 `hou.Error` 而非仅 OperationFailed**（2026-10 复审修复）：锁定参数（手动 Lock/锁定 HDA 实例）抛的 PermissionError 是兄弟类，漏捕会让异常穿出 Qt 槽、界面零反馈。
 - **「预设」下拉按钮在「确定」前**（QPushButton 挂 QMenu，`RESOLUTION_PRESETS` 常量表：1280×720~4096×2160 共 7 档），点选只把值填进宽/高两框、写回仍走「确定」。
-- **`showEvent` 里必须重读所选相机刷新分辨率行**——单例窗口关闭只是隐藏，隐藏期间分辨率可能已在 Houdini 里被改，只在选择相机时刷新会一直显示旧值（实测踩过）；showEvent 同时清掉上次会话遗留的状态栏提示（如"已设置 … 分辨率"，用户指定不带到重开后的面板）。
+- **`showEvent` 里必须重读相机（2026-11 用户拍板，实测修复"隐藏期删掉的相机重开还显示"）**：走 `_refresh_camera_selection`——所选路径在场景中仍存在 → 保留显式选择并刷新分辨率行（隐藏期间分辨率可能已在 Houdini 里被改，只在选择相机时刷新会一直显示旧值）；**已删除/为空 → 清残留路径 + `_reset_res_row`，再按"场景恰好一个相机自动选中"规则重选**（与构建期 `_auto_select_camera` 同一规则），0 个或多个相机保持未选。无 hou（无头）按"无场景"处理清残留（smoke 假 hou 打桩固化三相位：保留/改选/清空）。showEvent 同时清掉上次会话遗留的状态栏提示（如"已设置 … 分辨率"，用户指定不带到重开后的面板）。
 - 无相机/相机已删/参数缺失时输入框与按钮禁用，写回成功后状态栏绿色反馈。
 - **相机查找走 `nodeType(objNodeTypeCategory, "cam").instances()`**（原 allSubChildren() 递归全场景且在窗口构造期调用，大场景卡顿数秒）。
 - **相机选择对话框下拉直接列完整路径**（按 basename 反查 index 在重名相机下永远命中第一个、分辨率写错相机）。
 
 ## 完成后写相机背景
 
-- 转换完成后写所选相机 `vm_background`（用开工快照的原始目录文本保留 $HIP 变量）**并确保 `vm_bgenable`=1**（启用背景，用户指定）。
+- 转换完成后写所选相机 `vm_background`（用开工快照的原始目录文本构建路径，**目录部分经 `expand_houdini_path` 展开成绝对路径再填入**——2026-11 用户指定，工程挪动后背景不悬空；basename 原样保留，`$F<pad>` 是序列折叠标记，expandString 把它展开成当前帧号会让背景退化成单帧）**并确保 `vm_bgenable`=1**（启用背景，用户指定）。
 - **该步骤只捕 ImportError 曾让锁定参数的 PermissionError 掀翻 `_on_extract_finished`、"完成"弹窗永不出现**——现补 except Exception + 状态栏黄字（帧已导出，装饰性步骤失败不绑架主流程）。
 - **缺帧序列提前结束判为失败（2026-11 复审修复）**：image2 在缺口断流且 rc=0（既有记录），旧版当"成功"收尾会把全部旧序列 `.bak` 清掉——缺口后的原始帧不可恢复。现 `_ExtractWorker` 检测 `frames_done < 帧号完整范围` 走 error 路径，`_on_extract_error` 还原备份；缺口前已写帧留在输出目录由提示说明。
 - **让位失败即中止转换（同批复审）**：任一旧文件 `.bak` 让位/崩溃备份保底改名失败时，旧版只记日志继续带 `-y` 开工——失败文件无备份、取消时不可恢复。现中止整次转换、还原已让位文件并弹窗列出失败路径。

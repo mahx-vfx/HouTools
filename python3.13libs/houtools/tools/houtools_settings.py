@@ -7,6 +7,9 @@
 - 快捷键：可改键捕获式设置（按 houtools.core.hotkeys.ASSIGNABLE 登记
   表渲染，每条一行：名称 + 捕获框 + 应用/恢复默认；自定义键位持久化
   settings/hotkeys.json，uiready 每次启动应用）。
+
+视觉：沿用面板原字体 + 品牌 token（ui.theme / ui.qss），不额外加品牌
+顶栏；行为与持久化逻辑不变。
 """
 
 from PySide6.QtCore import Qt
@@ -20,6 +23,8 @@ from houtools.core import constants
 from houtools.core.log import get_logger
 from houtools.dev import status
 from houtools.ui import fonts as tool_fonts
+from houtools.ui import qss, theme
+from houtools.ui.components import apply_window_surface
 
 logger = get_logger("tools.houtools_settings")
 
@@ -50,21 +55,11 @@ class _HouToolsSettingsDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Window)
+        self.setObjectName("htWindow")
+        apply_window_surface(self)
         self.setWindowTitle("HouTools Settings")
-        self.setMinimumWidth(520)
-        self.setStyleSheet(
-            "QDialog { background-color: #1D1D20; }"
-            "QLabel { color: #e0e0e0; background: transparent; }"
-            "QKeySequenceEdit { background-color: #2d2d2d; color: #e0e0e0;"
-            " border: 1px solid #3d3d3d; border-radius: 4px; padding: 5px 8px; }"
-            "QPushButton { background-color: #2d2d2d; color: #e0e0e0;"
-            " border: 1px solid #3d3d3d; border-radius: 4px; padding: 6px 16px; }"
-            "QPushButton:hover { background-color: #3d3d3d; }"
-            "QPushButton#okBtn { background-color: #0d6399; color: white;"
-            " font-weight: bold; }"
-            "QPushButton#okBtn:hover { background-color: #0e7bc9; }"
-        )
-        tool_fonts.apply(self)   # 工具统一字体（子树继承 + ChildAdded 兜底）
+        self.setMinimumWidth(560)
+        self.setStyleSheet(qss.dialog_qss())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -72,7 +67,9 @@ class _HouToolsSettingsDialog(QDialog):
 
         # ---- 配置目录（只读展示 + 修改方法） ----
         sec1 = QLabel("配置目录")
-        sec1.setStyleSheet("font-weight: bold; font-size: 13px;")
+        sec1.setStyleSheet(
+            "color: {}; font-weight: 600; font-size: 13px;".format(
+                theme.color("TEXT")))
         layout.addWidget(sec1)
 
         if constants.settings_env_override():
@@ -81,8 +78,11 @@ class _HouToolsSettingsDialog(QDialog):
             origin = "（默认位置）"
         dir_label = QLabel("{} {}".format(constants.SETTINGS_DIR, origin))
         dir_label.setWordWrap(True)
-        # 文本可选中复制（排障时直接粘路径）
+        # 文本可选中复制（排障时直接粘路径）；路径用等宽字
         dir_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        dir_label.setStyleSheet(
+            "color: {}; background: transparent;".format(
+                theme.color("TEXT_2")))
         self._dir_label = dir_label  # smoke test 断言生效路径展示
         layout.addWidget(dir_label)
 
@@ -92,17 +92,22 @@ class _HouToolsSettingsDialog(QDialog):
             "$HOUDINI_USER_PREF_DIR/../HouTools/settings），重启 Houdini "
             "后生效。")
         tip.setWordWrap(True)
-        tip.setStyleSheet("color: #888888; font-size: 11px;")
+        tip.setStyleSheet(
+            "color: {}; font-size: 11px; background: transparent;".format(
+                theme.color("TEXT_3")))
         layout.addWidget(tip)
 
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
-        line.setStyleSheet("color: #3d3d3d;")
+        line.setStyleSheet(
+            "color: {};".format(theme.color("LINE")))
         layout.addWidget(line)
 
         # ---- 快捷键（ASSIGNABLE 登记，每条一行） ----
         sec2 = QLabel("快捷键")
-        sec2.setStyleSheet("font-weight: bold; font-size: 13px;")
+        sec2.setStyleSheet(
+            "color: {}; font-weight: 600; font-size: 13px;".format(
+                theme.color("TEXT")))
         layout.addWidget(sec2)
 
         from houtools.core import hotkeys
@@ -112,15 +117,20 @@ class _HouToolsSettingsDialog(QDialog):
                 hotkeys.ASSIGNABLE.items():
             row = QHBoxLayout()
             label = QLabel(display)
+            label.setStyleSheet(
+                "color: {}; background: transparent;".format(
+                    theme.color("TEXT_2")))
             row.addWidget(label)
             editor = QKeySequenceEdit(hotkeys.hotkey_current_key(name))
+            editor.setMinimumHeight(28)
             row.addWidget(editor, 1)
             apply_btn = QPushButton("应用")
-            apply_btn.setObjectName("okBtn")
+            apply_btn.setProperty("htRole", "primary")
             apply_btn.clicked.connect(
                 lambda checked=False, n=name: self._on_apply(n))
             row.addWidget(apply_btn)
             reset_btn = QPushButton("恢复默认")
+            reset_btn.setProperty("htRole", "ghost")
             reset_btn.clicked.connect(
                 lambda checked=False, n=name: self._on_reset(n))
             row.addWidget(reset_btn)
@@ -130,7 +140,9 @@ class _HouToolsSettingsDialog(QDialog):
         self._hint = QLabel(
             "捕获按键后点「应用」立即生效并持久化；「恢复默认」清除自定义键位。")
         self._hint.setWordWrap(True)
-        self._hint.setStyleSheet("color: #888888; font-size: 11px;")
+        self._hint.setStyleSheet(
+            "color: {}; font-size: 11px; background: transparent;".format(
+                theme.color("TEXT_3")))
         layout.addWidget(self._hint)
 
         btn_row = QHBoxLayout()
@@ -140,10 +152,14 @@ class _HouToolsSettingsDialog(QDialog):
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
 
+        tool_fonts.apply(self)   # 工具统一字体（子树继承 + ChildAdded 兜底）
+
     def _set_hint(self, text, error=False):
-        color = "#d1283e" if error else "#888888"
+        color = theme.color("ERROR_TEXT") if error else theme.color("TEXT_3")
         self._hint.setText(text)
-        self._hint.setStyleSheet("color: {}; font-size: 11px;".format(color))
+        self._hint.setStyleSheet(
+            "color: {}; font-size: 11px; background: transparent;".format(
+                color))
 
     def _on_apply(self, name):
         from houtools.core import hotkeys

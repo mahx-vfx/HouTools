@@ -41,6 +41,7 @@ from houtools.core.constants import SETTINGS_DIR
 from houtools.core.log import get_logger
 from houtools.recipelib import metadata
 from houtools.recipelib.vex_keywords import VEX_FUNCTIONS
+from houtools.ui import qss, theme
 from houtools.ui.dialogs import localize_buttons, warn
 from houtools.ui.sidebar import sidebar_icon_pixmap
 
@@ -344,15 +345,15 @@ class CodeInfo:
 # --------------------------------------------------------------------------
 
 _COLORS = {
-    "keyword": "#c586c0",
-    "type": "#4ec9b0",
-    "func": "#dcdcaa",
-    "string": "#ce9178",
-    "comment": "#6a9955",
-    "number": "#b5cea8",
-    "directive": "#c586c0",
-    "binding": "#9cdcfe",
-    "builtin": "#9cdcfe",
+    "keyword": theme.SYNTAX["keyword"],
+    "type": theme.SYNTAX["type"],
+    "func": theme.SYNTAX["func"],
+    "string": theme.SYNTAX["string"],
+    "comment": theme.SYNTAX["comment"],
+    "number": theme.SYNTAX["number"],
+    "directive": theme.SYNTAX["directive"],
+    "binding": theme.SYNTAX["binding"],
+    "builtin": theme.SYNTAX["builtin"],
 }
 
 # VEX：类型 / 保留字 / wrangle 里常读的无 @ 全局量（小写标识符那批）
@@ -635,6 +636,7 @@ class NodeCodeDialog(QtWidgets.QDialog):
     def __init__(self, parent, node_path, parm_name, language,
                  existing_code, extra_code):
         super().__init__(parent)
+        self.setStyleSheet(qss.dialog_qss())
         self._node_path = node_path
         self._parm_name = parm_name
         self._language = language if language in metadata.CODE_LANGUAGES \
@@ -647,7 +649,8 @@ class NodeCodeDialog(QtWidgets.QDialog):
                                .format(node_path,
                                        LANGUAGE_LABELS[self._language],
                                        parm_name))
-        tip.setStyleSheet("color: #9a9aa2;")
+        tip.setStyleSheet(
+            "color: {};".format(theme.color("TEXT_3")))
 
         self.editor = _CodeEditor()
         self._highlighter = None
@@ -809,8 +812,8 @@ class _CodeEditor(QtWidgets.QPlainTextEdit):
 
     def paint_number_area(self, event):
         painter = QtGui.QPainter(self._num_area)
-        painter.fillRect(event.rect(), QtGui.QColor("#141417"))
-        painter.setPen(QtGui.QColor("#55555c"))
+        painter.fillRect(event.rect(), QtGui.QColor(theme.color("INK_950")))
+        painter.setPen(QtGui.QColor(theme.color("TEXT_4")))
         block = self.firstVisibleBlock()
         num = block.blockNumber()
         top = round(self.blockBoundingGeometry(block)
@@ -848,6 +851,7 @@ class CodeEditorDialog(QtWidgets.QDialog):
 
     def __init__(self, parent, info=None):
         super().__init__(parent)
+        self.setStyleSheet(qss.dialog_qss())
         self.setWindowTitle("编辑代码块" if info is not None
                             else "新建代码块")
         self.resize(680, 520)
@@ -895,7 +899,8 @@ class CodeEditorDialog(QtWidgets.QDialog):
             self.name_edit.setReadOnly(True)   # 内部名称创建后不可改
             self.name_edit.setToolTip("内部名称仅在首次创建时可设置")
             self.name_hint.setText("内部名称创建后不可修改")
-            self.name_hint.setStyleSheet("color: #888888;")
+            self.name_hint.setStyleSheet(
+                "color: {};".format(theme.color("TEXT_3")))
             idx = self.lang_combo.findData(info.language)
             if idx >= 0:
                 self.lang_combo.setCurrentIndex(idx)
@@ -914,7 +919,8 @@ class CodeEditorDialog(QtWidgets.QDialog):
         ok, msg = validate_stem(self.name_edit.text())
         self.name_hint.setText(msg)
         self.name_hint.setStyleSheet(
-            "color: #6a9955;" if ok else "color: #d1283e;")
+            "color: {};" if ok else "color: {};".format(
+                theme.color("SUCCESS_TEXT"), theme.color("ERROR_TEXT")))
         self._ok_btn.setEnabled(ok)
 
     def _on_lang_changed(self, *_args):
@@ -950,8 +956,8 @@ class CodeEditorDialog(QtWidgets.QDialog):
 # 卡片缩略图：代码文本渲染（无自定义缩略图时的默认显示）
 # --------------------------------------------------------------------------
 
-_THUMB_BG = "#17171b"
-_TEXT_COLOR = "#d4d4d4"
+_THUMB_BG = theme.SYNTAX["thumb_bg"]
+_TEXT_COLOR = theme.SYNTAX["text"]
 
 
 def render_code_pixmap(code, language, w, h, dpr=1.0):

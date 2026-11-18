@@ -1,7 +1,7 @@
 """侧栏行绘制共享组件（Recipe Library / HDR Library 分类板块同款）。
 
-行结构：行首图标 + 名称 + 右对齐计数；选中行蓝底圆角高亮；树形视图的
-段头行带折叠箭头（收拢态整行调暗）。图标默认 QPainter 手绘的扁平线稿
+行结构：行首图标 + 名称 + 右对齐计数；选中行品牌橙淡底 + 橙描边；树形视图的
+段头行带折叠箭头（收拢态整行调暗）。图标默认中性色 QPainter 手绘扁平线稿
 （grid/star/folder/tag/level/sliders/code），toolbox/tag 为矢量文件
 渲染（icons/*.svg，QSvgRenderer，同 favorite_badge 先例），按
 (种类, 尺寸, DPR, tint) 缓存。
@@ -21,6 +21,7 @@ from pathlib import Path
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from houtools.core.log import get_logger
+from houtools.ui import theme
 
 log = get_logger("ui.sidebar")
 
@@ -37,10 +38,10 @@ _SIDEBAR_ICON_CACHE = {}    # (kind, size, dpr, tint) -> QPixmap
 
 # 矢量图标注册表：kind -> (文件, 内容 viewBox 或 None=整画布)。
 # - toolbox：用户矢量图定稿 D1 配色（去 iconfont 装饰圆），tint=None 时
-#   用文件原配色（白箱体+#F88E20 橙），tint 时全部 fill 替换（开关关闭态）
+#   用文件原配色（白箱体+品牌橙），tint 时全部 fill 替换（开关关闭态）
 # - tag：用户矢量图，**填充永远整体替换**——标签可自定义颜色（用户指定），
 #   tint=标签色（delegate 已做 readable_on_dark 提亮），无色用默认蓝；
-#   文件原配色 #FCBD3F 不参与显示
+#   文件原配色不参与显示
 # 内容均未铺满 1024 画布（~83%），viewBox 裁到内容外扩 6 单位再渲染
 _TOOLBOX_SVG_PATH = (Path(__file__).resolve().parent.parent / "icons"
                      / "toolbox.svg")
@@ -121,7 +122,7 @@ def _draw_folder_icon(p, color):
     path.quadTo(12.5, 12.0, 11.5, 12.0)
     path.lineTo(2.5, 12.0)
     path.quadTo(1.5, 12.0, 1.5, 11.0)
-    pen = QtGui.QPen(QtGui.QColor(color), 1.2)
+    pen = QtGui.QPen(QtGui.QColor(color), 1.5)
     pen.setJoinStyle(QtCore.Qt.RoundJoin)
     p.strokePath(path, pen)
 
@@ -170,7 +171,7 @@ def _draw_tag_icon(p, color):
     path.quadTo(2.0, 11.5, 2.0, 10.5)
     path.lineTo(2.0, 3.5)
     path.quadTo(2.0, 2.5, 3.0, 2.5)
-    pen = QtGui.QPen(QtGui.QColor(color), 1.2)
+    pen = QtGui.QPen(QtGui.QColor(color), 1.5)
     pen.setJoinStyle(QtCore.Qt.RoundJoin)
     p.strokePath(path, pen)
     p.drawEllipse(QtCore.QRectF(4.0, 5.9, 2.2, 2.2))
@@ -195,13 +196,14 @@ def sidebar_icon_pixmap(kind, size, dpr, tint=None):
     p = QtGui.QPainter(pm)
     p.setRenderHint(QtGui.QPainter.Antialiasing, True)
     p.scale(size / 14.0, size / 14.0)
-    color = {"grid": "#b4b4bc", "star": "#d9a544",
-             "folder": "#a4a4ac", "tag": "#5b9bd5",
-             "level": "#9b8cd9", "code": "#5aa885"}.get(kind, "#a4a4ac")
+    color = {"grid": theme.color("TEXT_2"), "star": theme.color("WARNING"),
+             "folder": theme.color("TEXT_2"), "tag": theme.color("TEXT_2"),
+             "level": theme.color("TEXT_2"),
+             "code": theme.color("TEXT_2")}.get(kind, theme.color("TEXT_2"))
     if tint:
         color = tint
     if kind == "grid":
-        pen = QtGui.QPen(QtGui.QColor(color), 1.2)
+        pen = QtGui.QPen(QtGui.QColor(color), 1.5)
         pen.setJoinStyle(QtCore.Qt.RoundJoin)
         p.setPen(pen)
         p.setBrush(QtCore.Qt.NoBrush)
@@ -226,7 +228,7 @@ def sidebar_icon_pixmap(kind, size, dpr, tint=None):
     elif kind == "sliders":
         # 参数滑块：两行滑轨，左端实心方点 + 滑轨 + 错位的空心方滑块
         # （节点参数语义，参考用户提供的参考图）
-        pen = QtGui.QPen(QtGui.QColor(color), 1.2)
+        pen = QtGui.QPen(QtGui.QColor(color), 1.5)
         pen.setCapStyle(QtCore.Qt.RoundCap)
         pen.setJoinStyle(QtCore.Qt.RoundJoin)
         for yy, knob_x in ((4.5, 8.0), (10.0, 5.0)):
@@ -239,7 +241,7 @@ def sidebar_icon_pixmap(kind, size, dpr, tint=None):
             p.drawRect(QtCore.QRectF(knob_x, yy - 1.75, 3.5, 3.5))  # 空心滑块
     elif kind == "level":
         # 迷你节点图：两个圆角方节点 + 折线连线（网络层级语义）
-        pen = QtGui.QPen(QtGui.QColor(color), 1.2)
+        pen = QtGui.QPen(QtGui.QColor(color), 1.5)
         pen.setJoinStyle(QtCore.Qt.RoundJoin)
         p.setPen(pen)
         p.setBrush(QtCore.Qt.NoBrush)
@@ -252,7 +254,7 @@ def sidebar_icon_pixmap(kind, size, dpr, tint=None):
         p.strokePath(path, pen)
     elif kind == "code":
         # 尖括号斜杠 </>（代码语义）
-        pen = QtGui.QPen(QtGui.QColor(color), 1.2)
+        pen = QtGui.QPen(QtGui.QColor(color), 1.5)
         pen.setCapStyle(QtCore.Qt.RoundCap)
         pen.setJoinStyle(QtCore.Qt.RoundJoin)
         p.setPen(pen)
@@ -312,7 +314,7 @@ class SidebarDelegate(QtWidgets.QStyledItemDelegate):
     PAD_L = 8        # 行左内边距
     PAD_R = 10       # 计数距右缘
     GAP_ICON = 6     # 图标与文字间距
-    PANEL_BG = "#26262b"   # 行底色（与所属面板侧栏底色一致）
+    PANEL_BG = theme.color("INK_900")   # 行底色（与所属面板侧栏底色一致）
 
     def sizeHint(self, option, index):
         return QtCore.QSize(60, self.ROW_H)
@@ -354,18 +356,20 @@ class SidebarDelegate(QtWidgets.QStyledItemDelegate):
         # viewport 不一致（亮暗分界），delegate 亲自铺底保证全栏同色
         painter.fillRect(rect, QtGui.QColor(self.PANEL_BG))
 
-        # 选中态：半透明蓝底 + 描边圆角（段头不可选中，理论不达）
+        # 选中态：品牌橙淡底 + 1px 橙描边（选中底色只做弱强调）
         if selected:
             path = QtGui.QPainterPath()
             path.addRoundedRect(rect.adjusted(2.0, 1.5, -2.0, -1.5), 4, 4)
-            painter.fillPath(path, QtGui.QColor(13, 99, 153, 110))
-            painter.setPen(QtGui.QPen(QtGui.QColor("#2e7cb8"), 1))
+            painter.fillPath(path, QtGui.QColor(255, 92, 56, 31))
+            painter.setPen(QtGui.QPen(QtGui.QColor(theme.color("ACCENT")), 1))
             painter.drawPath(path)
 
-        # 整栏文字加粗（用户指定，与网格卡片文字全加粗同一口味）；拷贝
-        # option.font 再改，不动调用方的字体对象
+        # 文字层级：正文 400，段头 600（不再全 Bold）
         font = QtGui.QFont(option.font)
-        font.setBold(True)
+        if is_header:
+            font.setWeight(QtGui.QFont.Weight.DemiBold)
+        else:
+            font.setWeight(QtGui.QFont.Weight.Normal)
         painter.setFont(font)
         fm = QtGui.QFontMetrics(font)
 
@@ -375,7 +379,8 @@ class SidebarDelegate(QtWidgets.QStyledItemDelegate):
         if is_header:
             draw_chevron(painter, x + 4, rect.center().y(),
                          not collapsed,
-                         "#6a6a72" if collapsed else "#8a8a92")
+                         theme.color("TEXT_4") if collapsed
+                         else theme.color("TEXT_3"))
             x += 14
         if kind:
             widget = option.widget
@@ -388,6 +393,9 @@ class SidebarDelegate(QtWidgets.QStyledItemDelegate):
             # 过暗的自定义色当线稿时勉强可见，填充大面积后必须提亮
             tint = readable_on_dark(color_hint).name() if color_hint \
                 else None
+            # 选中行的线稿图标走品牌橙（收藏星/矢量图保留自身语义色）
+            if selected and kind not in _SVG_ICONS and kind != "star":
+                tint = theme.color("ACCENT")
             pm = sidebar_icon_pixmap(kind, icon_px, dpr, tint=tint)
             painter.drawPixmap(
                 int(round(x)),
@@ -402,17 +410,20 @@ class SidebarDelegate(QtWidgets.QStyledItemDelegate):
                              max(0, int(text_w)))
         if is_header:
             if collapsed:
-                text_color, count_color = "#8f8f97", "#a8824e"
+                text_color, count_color = theme.color("TEXT_4"), \
+                    theme.color("TEXT_4")
             else:
-                text_color, count_color = "#d8d8de", "#d29a55"
+                text_color, count_color = theme.color("TEXT_2"), \
+                    theme.color("TEXT_3")
         else:
-            text_color, count_color = "#e2e2e8", "#a8a8b0"
+            text_color, count_color = theme.color("TEXT_2"), \
+                theme.color("TEXT_3")
         if color_hint and not is_header:
-            # 带色的行（标签颜色）：文字用可读化后的标签色，深色过暗
-            # 会提亮（readable_on_dark），选中态仍白字覆盖
+            # 带色的行（标签颜色）：文字用可读化后的标签色（用户内容色）
             text_color = readable_on_dark(color_hint).name()
         if selected:
-            text_color = count_color = "#ffffff"
+            text_color = theme.color("TEXT")
+            count_color = theme.color("TEXT_2")
         painter.setPen(QtGui.QColor(text_color))
         painter.drawText(
             QtCore.QRectF(x, rect.top(),

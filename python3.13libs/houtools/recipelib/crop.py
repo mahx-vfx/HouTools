@@ -7,6 +7,7 @@
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from houtools.ui import qss, theme
 from houtools.ui.dialogs import localize_buttons
 
 TARGET_RATIO = 1 / 0.66   # 选框宽/高（与卡片缩略图区 thumb_h = w*0.66 一致）
@@ -206,7 +207,7 @@ class _CropCanvas(QtWidgets.QWidget):
         # 边框 + 三分构图线：显式构造 QPen——上面 setPen(NoPen) 之后
         # pen() 取回的仍是 NoPen 样式，改色改宽不换样式、什么也画不出
         p.setBrush(QtCore.Qt.NoBrush)
-        pen = QtGui.QPen(QtGui.QColor("#ffffff"))
+        pen = QtGui.QPen(QtGui.QColor(theme.color("TEXT")))
         pen.setWidth(1)
         p.setPen(pen)
         p.drawRect(s)
@@ -219,7 +220,7 @@ class _CropCanvas(QtWidgets.QWidget):
             p.drawLine(s.left(), y, s.right(), y)
         # 四角手柄
         p.setPen(QtCore.Qt.NoPen)
-        p.setBrush(QtGui.QColor("#ffffff"))
+        p.setBrush(QtGui.QColor(theme.color("TEXT")))
         for cx, cy in ((s.left(), s.top()), (s.right(), s.top()),
                        (s.left(), s.bottom()), (s.right(), s.bottom())):
             p.drawRect(cx - HANDLE, cy - HANDLE, HANDLE * 2, HANDLE * 2)
@@ -231,9 +232,8 @@ class ThumbCropDialog(QtWidgets.QDialog):
     def __init__(self, parent, source_path, display_name, ratio=TARGET_RATIO):
         super().__init__(parent)
         self.setWindowTitle("裁剪缩略图 - {}".format(display_name))
-        self.setStyleSheet(
-            "QDialog { background-color: #18181b; }"
-            "QLabel { color: #bbbbbb; }")
+        self.setStyleSheet(qss.dialog_qss(
+            "QLabel {{ color: {}; }}".format(theme.color("TEXT_2"))))
         src = QtGui.QPixmap(source_path)
         if src.isNull():
             raise RuntimeError("无法读取图片: {}".format(source_path))
@@ -242,13 +242,15 @@ class ThumbCropDialog(QtWidgets.QDialog):
         hint = QtWidgets.QLabel(
             "拖动选框调整区域；拖四角按比例缩放；框外拖动重新框选。\n"
             "确认后存储所选区域（比例与卡片一致，铺满显示）。")
-        hint.setStyleSheet("color: #888888;")
+        hint.setStyleSheet(
+            "color: {};".format(theme.color("TEXT_3")))
 
         self._preview = QtWidgets.QLabel()
         self._preview.setFixedSize(150, int(150 / ratio))
         self._preview.setAlignment(QtCore.Qt.AlignCenter)
         self._preview.setStyleSheet(
-            "background-color: #161619; border: 1px solid #3d3d3d;")
+            "background-color: {bg}; border: 1px solid {line};".format(
+                bg=theme.color("INK_950"), line=theme.color("LINE")))
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
@@ -258,7 +260,8 @@ class ThumbCropDialog(QtWidgets.QDialog):
         bottom = QtWidgets.QHBoxLayout()
         pv_box = QtWidgets.QVBoxLayout()
         pv_label = QtWidgets.QLabel("卡片效果")
-        pv_label.setStyleSheet("color: #888888;")
+        pv_label.setStyleSheet(
+            "color: {};".format(theme.color("TEXT_3")))
         pv_box.addWidget(pv_label)
         pv_box.addWidget(self._preview)
         bottom.addLayout(pv_box)

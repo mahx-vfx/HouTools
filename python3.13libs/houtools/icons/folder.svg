@@ -74,7 +74,7 @@
          offset="0"
          id="stop9768" />
       <stop
-         style="stop-color:#729fcf;stop-opacity:1"
+         style="stop-color:#b8b8c2;stop-opacity:1"
          offset="1"
          id="stop9770" />
     </linearGradient>
@@ -286,7 +286,7 @@
        inkscape:collect="always" />
   </defs>
   <sodipodi:namedview
-     fill="#729fcf"
+     fill="#b8b8c2"
      id="base"
      pagecolor="#ffffff"
      bordercolor="#666"

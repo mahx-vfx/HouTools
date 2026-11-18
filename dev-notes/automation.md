@@ -39,7 +39,8 @@
 - **语义**（2026-11 用户拍板，翻掉原"仅 Start 落盘/关窗不保存"）：任务 JSON **改动即存**。编辑入口统一汇 `_mark_dirty`（置脏 + 600ms 单发 QTimer 防抖——连续打字每秒至多 1-2 次写，几十 KB 的原子写本地/SMB 均无感，性能不是该改动的约束）。
 - **装载守卫是第一设计点**：`_dirty_loading` 计数器（可嵌套）在程序化填充期间抑制脏标记——`_load_data` 重建槽、`_create_slot_widget` 内 populate 恢复值/类型都会触发 textChanged/currentIndexChanged，不守卫就会"打开面板即写盘"甚至把空槽覆盖回配置文件。叶子控件（parmPath/webhookUrl/flipbook 三框/saveToDisk/slotEnabled）的接线放在 populate **之后**，装载期信号天然不进脏标记；combo 的 `_on_type_changed` 走守卫（populate 恢复类型会触发它）。
 - **flush 四点**：Start（取消挂起防抖后 `_save_data` 全量写）、`_on_config_changed`/`_on_new_config` 切走前、`closeEvent` 开头。**自动保存只写 `_current_config_name`，绝不走 `_save_data`**——那会按下拉当前文本决定落盘名（可能创建新文件），输入到一半的名字会被当文件名。失败只记 warning 不弹窗（后台动作不打断编辑，下次改动再试）。
-- **容器级编辑显式标记**：增/删槽（非批量分支）、右键插入、数量调整、拖动实际换位（`_on_handle_moved` 里 mark——仅点击不换位不写盘）；批量重建由调用方统一标记。槽参数值编辑走创建期接线，无需逐点调用。
+- **容器级编辑显式标记**：增/删槽（非批量分支）、右键插入、数量调整、拖动实际换位（`_on_handle_released` 里 mark——仅点击/原地放下不写盘）；批量重建由调用方统一标记。槽参数值编辑走创建期接线，无需逐点调用。
+- **拖动重排 = 拖动期冻结、松手一次提交**（2026-11 用户指定）：拖动过程中**不移动任何槽、不刷新序号**，只按 handle 中心 Y 更新"插入缺口" `_drop_gap` 并画一条 `_drop_indicator`（`_slot_container` 的子控件绝对定位、不参与布局——若用布局内控件占位，指示线自己会把 handle 中心推偏、索引计算抖动）；松手时才 `_move_slot(gap>source ? gap-1 : gap)` + `_renumber_slots`。旧实现边拖边实时换位，序号标签跟着卡片走，拖动期各位置上的序号会不断变化（用户反馈为"实时改变序号"）。缺口语义为"插到第 i 槽之前"（0..N），原位放下对应 gap==source 或 source+1（换算后相等，no-op）。删除/清空/切配置重建时统一 `_reset_drag_state()` 复位状态并隐藏指示线。
 - **运行中编辑照常落盘**：引擎持有的是 Start 时的 TaskItem 列表，运行中的编辑不影响当前 run，落盘内容即下一轮草稿。运行中切配置/新建配置仍被既有守卫拒绝（与自动保存无关）。
 - **destroyed 兜底取消引擎（2026-11 复审修复）**：pane 直接销毁收不到 closeEvent，旧版 destroyed 只恢复 stdout——引擎被 `_LIVE_ENGINES` 持引用继续跑剩余队列且无法再取消。新增模块级 `_cancel_engine_on_destroy` 连接 destroyed（只碰 `owner._engine`，不触摸已销毁控件）；取消仍协作式（在途任务收尾后停，后续任务不再启动）。
 - **flush 返回 bool（同批）**：`_flush_dirty_tasks` 失败时脏标记保持置位；`_on_config_changed`/`_on_new_config` 检查返回值，失败阻止切换/新建（下拉回弹+提示）——旧版失败仍继续重建槽，编辑既未保存又从界面消失。

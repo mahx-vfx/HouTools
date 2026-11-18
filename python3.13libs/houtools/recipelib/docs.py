@@ -28,7 +28,7 @@ from PySide6.QtMultimediaWidgets import QVideoWidget
 from houtools.core.log import get_logger
 from houtools.dev import status
 from houtools.recipelib import metadata
-from houtools.ui import fonts as tool_fonts
+from houtools.ui import fonts as tool_fonts, qss, theme
 from houtools.ui.dialogs import localize_buttons, warn
 
 log = get_logger("recipelib.docs")
@@ -50,20 +50,13 @@ _OVERLAY_SB_QSS = (
 # 配色参考用户 vault 的 OnePage 主题暗色方案（--typo-h1..h6/bold/italic
 # 变量原值照搬）；字重一~三级按级别加粗（2026-11 用户要求）：700/600/500
 # 恰是 H21 枚举降级档的落点，两版渲染一致；H4-6 与 H3 同重，靠字号/色阶区分
-_HEAD_STYLES = {   # level: (pt, 颜色, wght 轴值, 上间距, 下间距)
-    1: (15.0, "#4F74AF", 700, 10, 4),
-    2: (12.5, "#8567BD", 600, 8, 3),
-    3: (11.25, "#4E9A8A", 500, 7, 2),
-    4: (10.5, "#C0765E", 500, 6, 2),
-    5: (10.0, "#C99B5E", 500, 6, 2),
-    6: (9.5, "#8A8478", 500, 6, 2),
-}
-_BOLD_COLOR = "#E89A60"        # OnePage --typo-bold（加粗橙）
-_ITALIC_COLOR = "#A6BA9D"      # OnePage --typo-italic（斜体灰绿）
-_LINK_COLOR = "#5eb1ef"        # 链接：导入器默认纯蓝 #0000ff 太扎眼
-_CODE_BG = "#2d2d2d"           # 行内代码/围栏块底色
-_QUOTE_BG = "#232327"          # OnePage blockquote 面板底（primary-alt 近似）
-_QUOTE_BAR = "#5a5a66"         # OnePage blockquote 左竖条（color-base-50 近似）
+_HEAD_STYLES = theme.DOC_HEADINGS   # level: (pt, 颜色, wght 轴值, 上, 下)
+_BOLD_COLOR = theme.DOC_BOLD_COLOR
+_ITALIC_COLOR = theme.DOC_ITALIC_COLOR
+_LINK_COLOR = theme.DOC_LINK_COLOR
+_CODE_BG = theme.DOC_CODE_BG
+_QUOTE_BG = theme.DOC_QUOTE_BG
+_QUOTE_BAR = theme.DOC_QUOTE_BAR
 _LINE_HEIGHT_PCT = 130         # 正文行高（比例式）
 _LIST_INDENT_PX = 8            # 列表缩进（Qt 默认 40px/级，空白过大）
 _DOC_MARGIN_PX = 10            # 文档页边距（默认 4px 太贴边）
@@ -190,9 +183,17 @@ class _DocPreview(QtWidgets.QTextBrowser):
         新鲜寻址纯写（格式编辑不挪字符位置，第一趟记的片段位置全程有效）。
         引用左线（thin space 底色）是文本插入，放最后垫底。"""
         doc = self.document()
+        # 正文默认前景：QTextDocument.setMarkdown 给正文的默认 char
+        # format 是黑色，深色面板上等于隐形；先整体刷 TEXT_2，标题/
+        # 链接/粗斜体随后按各自规则覆盖（与代码块渲染同款兜底）
+        base_cf = QtGui.QTextCharFormat()
+        base_cf.setForeground(QtGui.QColor(theme.color("TEXT_2")))
+        base_cur = QtGui.QTextCursor(doc)
+        base_cur.select(QtGui.QTextCursor.SelectionType.Document)
+        base_cur.mergeCharFormat(base_cf)
         doc.setIndentWidth(_LIST_INDENT_PX)
         doc.setDocumentMargin(_DOC_MARGIN_PX)
-        family = tool_fonts.doc_family()   # 标题沿用阅读字族的重字重
+        family = tool_fonts.doc_family()   # 标题沿用原文档字体（方圆体）
         lh_type = QtGui.QTextBlockFormat.LineHeightTypes.\
             ProportionalHeight.value
         # ---- 第一趟：纯读 ----
@@ -756,9 +757,9 @@ except NameError:
 _PIN_SVG_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "icons", "pin.svg")
-_PIN_SVG_FILL = "#e6e6e6"      # pin.svg 的原始 fill，着色时整体替换
-_PIN_COLOR_IDLE = "#555555"    # 未钉住：同 ✕/□ 的灰
-_PIN_COLOR_PINNED = "#e0533a"  # 钉住：橙红（取 📌 emoji 的观感色）
+_PIN_SVG_FILL = theme.ASSET_COLORS["pin_svg_fill"]      # pin.svg 的原始 fill，着色时整体替换
+_PIN_COLOR_IDLE = theme.color("TEXT_4")    # 未钉住：同 ✕/□ 的灰
+_PIN_COLOR_PINNED = theme.color("ACCENT")  # 钉住：橙红（取 📌 emoji 的观感色）
 _PIN_ICON_CACHE: dict = {}     # 纯渲染缓存，Reload 后重建（ui/icons 同注释）
 
 
@@ -842,24 +843,31 @@ class DocInfoPopup(QtWidgets.QFrame):
     """
 
     _QSS = (
-        "QFrame#docInfoPopup { background: #1D1D20; "
-        "border: 1px solid #3d3d3d; }"
-        "QFrame#docInfoHeader { background: #ffffff; }")
+        "QFrame#docInfoPopup {{ background: {bg}; "
+        "border: 1px solid {line}; }}"
+        "QFrame#docInfoHeader {{ background: {header}; }}".format(
+            bg=theme.color("INK_850"), line=theme.color("LINE"),
+            header=theme.color("INK_900")))
     _BTN_QSS = (
-        "QToolButton { background: transparent; border: none; "
-        "color: #555555; font-size: 13px; padding: 2px 4px; }"
-        "QToolButton:hover { background: #dcdcdc; color: #1a1a1e; "
-        "border-radius: 3px; }")
+        "QToolButton {{ background: transparent; border: none; "
+        "color: {idle}; font-size: 13px; padding: 2px 4px; }}"
+        "QToolButton:hover {{ background: {hover}; color: {text}; "
+        "border-radius: 3px; }}".format(
+            idle=theme.color("TEXT_2"), hover=theme.color("INK_800"),
+            text=theme.color("TEXT")))
     _BTN_QSS_PINNED = (
-        "QToolButton { background: transparent; border: none; "
-        "color: #0d6399; font-size: 13px; padding: 2px 4px; }"
-        "QToolButton:hover { background: #dcdcdc; "
-        "border-radius: 3px; }")
+        "QToolButton {{ background: transparent; border: none; "
+        "color: {accent}; font-size: 13px; padding: 2px 4px; }}"
+        "QToolButton:hover {{ background: {hover}; "
+        "border-radius: 3px; }}".format(
+            accent=theme.color("ACCENT"), hover=theme.color("INK_800")))
     _MAX_BTN_QSS = (
-        "QToolButton { background: transparent; border: none; "
-        "color: #555555; font-size: 17px; padding: 1px 5px; }"
-        "QToolButton:hover { background: #dcdcdc; color: #1a1a1e; "
-        "border-radius: 3px; }")
+        "QToolButton {{ background: transparent; border: none; "
+        "color: {idle}; font-size: 17px; padding: 1px 5px; }}"
+        "QToolButton:hover {{ background: {hover}; color: {text}; "
+        "border-radius: 3px; }}".format(
+            idle=theme.color("TEXT_2"), hover=theme.color("INK_800"),
+            text=theme.color("TEXT")))
     _RESIZE_MARGIN = 6          # 边缘缩放热区（px）
     _MIN_SIZE = (360, 240)      # 缩放下限
     _RESIZE_CURSORS = {
@@ -932,12 +940,14 @@ class DocInfoPopup(QtWidgets.QFrame):
         header.setMouseTracking(True)   # 顶边缩放热区在标题条范围内
         name_lbl = QtWidgets.QLabel(info.display_label)
         name_lbl.setStyleSheet(
-            "color: #1a1a1e; font-weight: bold; font-size: 13px; "
-            "background: transparent; border: none;")
+            "color: {text}; font-weight: 600; font-size: 13px; "
+            "background: transparent; border: none;".format(
+                text=theme.color("TEXT")))
         file_lbl = QtWidgets.QLabel("doc.md")
         file_lbl.setStyleSheet(
-            "color: #8a8a8a; font-size: 11px; "
-            "background: transparent; border: none;")
+            "color: {muted}; font-size: 11px; "
+            "background: transparent; border: none;".format(
+                muted=theme.color("TEXT_3")))
         self._pin_btn = QtWidgets.QToolButton()
         self._pin_btn.setCheckable(True)
         self._pin_btn.setToolTip("钉住：不再随失焦关闭")
@@ -978,7 +988,8 @@ class DocInfoPopup(QtWidgets.QFrame):
         # 绑定完成后，不粘连）
         self._view = MarkdownMediaView(metadata.doc_dir(info.name))
         self._view.setStyleSheet(
-            "color: #cccccc; background: transparent; border: none;")
+            "color: {text}; background: transparent; border: none;".format(
+                text=theme.color("TEXT_2")))
         hint = None
         if metadata.doc_exists(info.name):
             self._view.set_markdown_with_media(metadata.read_doc(info.name))
@@ -990,7 +1001,8 @@ class DocInfoPopup(QtWidgets.QFrame):
             self._view.deleteLater()
             hint = QtWidgets.QLabel("未创建文档（右键 → 编辑文档）")
             hint.setStyleSheet(
-                "color: #9a9aa2; background: transparent; border: none;")
+                "color: {muted}; background: transparent; border: none;".format(
+                    muted=theme.color("TEXT_3")))
 
         body = QtWidgets.QWidget()
         body.setStyleSheet("background: transparent; border: none;")
@@ -1003,8 +1015,8 @@ class DocInfoPopup(QtWidgets.QFrame):
             body_lay.addWidget(self._view, 1)
 
         lay = QtWidgets.QVBoxLayout(self)
-        # 零边距：白色标题条直接贴住边框——留 1px 内距会露一圈 #1D1D20
-        # 底色，看起来像标题栏外包了道黑边（2026-11 用户反馈）
+        # 零边距：标题条直接贴住边框——留 1px 内距会露一圈窗口底色，
+        # 看起来像标题栏外包了道边框
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.addWidget(header)
@@ -1207,6 +1219,7 @@ class MediaDialog(QtWidgets.QDialog):
 
     def __init__(self, parent, path):
         super().__init__(parent)
+        self.setStyleSheet(qss.dialog_qss())
         # ✕ 关闭即析构：dialog 有 C++ parent，Python 引用丢弃后对象会随
         # parent 永久滞留（QMediaPlayer/QVideoWidget，GIF 还有 CacheAll
         # 全帧缓存的 _MovieLabel）；closeEvent 已清掉单例引用，open_media
@@ -1373,6 +1386,7 @@ class DocEditorDialog(QtWidgets.QDialog):
 
     def __init__(self, parent, info, display_label=None):
         super().__init__(parent)
+        self.setStyleSheet(qss.dialog_qss())
         self.setWindowTitle("文档 - {}".format(display_label
                                               or info.display_label))
         self.setModal(False)
@@ -1393,7 +1407,8 @@ class DocEditorDialog(QtWidgets.QDialog):
         insert_media = QtWidgets.QPushButton("插入视频/GIF...")
         open_dir_btn = QtWidgets.QPushButton("打开文档文件夹")
         tip = QtWidgets.QLabel("Markdown 语法；图片/视频会复制进 assets/ 并用相对路径引用")
-        tip.setStyleSheet("color: #888888;")
+        tip.setStyleSheet(
+            "color: {};".format(theme.color("TEXT_3")))
         btns = QtWidgets.QHBoxLayout()
         btns.addWidget(tip, 1)
         btns.addWidget(insert_img)

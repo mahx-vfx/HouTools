@@ -14,8 +14,12 @@ apply_trc iec61966_2_1 后 ≈188 与 hoiiotool --colorconvert 一致。
 改 Automation flipbook 同款文件夹图标按钮（行为不变）；相机行「选择」
 改官方 BUTTONS/chooser_node.svg 图标（即参数面板 "Open floating operator
 chooser"），点击打开 Houdini 原生浮动操作员选择器（hou.ui.selectNode，
-过滤器只列 OBJ cam）选相机，前面带跳转按钮（ui/networknav.jump_to_node）
-在网络编辑器中定位所选相机。
+node_type_filter=ObjCamera 原生过滤只列 OBJ cam）选相机，前面带跳转
+按钮（ui/networknav.jump_to_node）在网络编辑器中定位所选相机。
+
+文件夹拖入（2026-11 新增）：拖入文件夹自动扫描第一层中的静帧序列
+（scan_folder_sequences 归组 stem.<数字>.ext），唯一序列直接装载，
+多条弹出列表选择；单帧编号文件不算序列。
 """
 
 import os
@@ -30,6 +34,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QSpinBox, QSlider, QGroupBox, QFormLayout,
     QFileDialog, QProgressBar, QMenu, QToolTip, QWidget,
+    QListWidget, QListWidgetItem, QDialogButtonBox,
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize
 
@@ -37,9 +42,10 @@ from houtools.videoseq.ffmpeg import find_ffprobe as _get_ffprobe_path
 from houtools.videoseq.ffmpeg import get_startup_kwargs as _get_startup_kwargs
 
 from houtools.core.log import get_logger
-from houtools.ui import dialogs
+from houtools.ui import dialogs, theme
 from houtools.ui import fonts as tool_fonts
 from houtools.ui import icons as tool_icons
+from houtools.ui.components import apply_window_surface
 from houtools.ui.networknav import jump_to_node
 logger = get_logger("videoseq.window")
 
@@ -152,6 +158,52 @@ def parse_sequence_pattern(path: str) -> Optional[SequenceSpec]:
     )
 
 
+def scan_folder_sequences(directory: str) -> list:
+    """扫描文件夹第一层中的静帧序列，返回 $F 模式路径列表（stem 名升序）。
+
+    文件夹拖入入口（2026-11 新增）：文件名 stem.<数字>.ext（扩展名不
+    区分大小写）按 (stem, ext) 归组，≥2 帧的组才算序列——单帧编号文件
+    不是序列，拖文件夹的目标是整条序列，单帧条目只会是噪音。帧号位数
+    取组内最大宽度（渲染产物宽度恒定；混合宽度是病态布局，取最宽尽力
+    匹配）。子目录与无编号静帧跳过。
+
+    归组键用小写扩展名（.EXR/.exr 混盘合并），发出模式保留首次见到的
+    原始大小写——SequenceSpec.ext 与 ffmpeg 输入模式都按磁盘字面大小写
+    生成（Linux 下区分，见 parse_still_frame 的 ext 注释）。
+
+    返回的 stem.$F<pad>.ext 模式路径可直接喂 _load_media：经
+    parse_sequence_pattern 以声明位数为准重扫磁盘（两跳之间磁盘变动
+    由"枚举不到帧"红字兜住）。目录不可读返回 []。
+    """
+    groups = {}    # (stem, ext 小写) -> [(帧号, 宽度), ...]
+    raw_ext = {}   # 同键 -> 首次见到的原始大小写扩展名
+    try:
+        with os.scandir(directory) as it:
+            entries = list(it)
+    except OSError as e:
+        logger.warning("扫描拖入文件夹失败 %s: %s", directory, e)
+        return []
+    for entry in entries:
+        if not entry.is_file():
+            continue
+        m = _FRAME_NUM_RE.match(entry.name)
+        if not m:
+            continue
+        key = (m.group("stem"), m.group("ext").lower())
+        groups.setdefault(key, []).append(
+            (int(m.group("num")), len(m.group("num"))))
+        raw_ext.setdefault(key, m.group("ext"))
+    ordered = sorted(groups.items())
+    patterns = []
+    for (stem, ext_lower), frames in ordered:
+        if len(frames) < 2:
+            continue
+        pad = max(width for _num, width in frames)
+        patterns.append(os.path.join(
+            directory, f"{stem}.$F{pad}.{raw_ext[(stem, ext_lower)]}"))
+    return patterns
+
+
 # 输出前缀禁止的字符：Windows 文件名非法字符（含路径分隔符与盘符冒号），
 # 外加 %——ffmpeg image2 把整个输出路径当 printf 模板，前缀里的 % 会与
 # 工具自拼的 ".%0Nd.jpg" 模式互相干扰，产出文件名全错且不匹配清理正则。
@@ -234,165 +286,72 @@ except NameError:
 
 # ─── Styles ──────────────────────────────────────────────────────────
 
-STYLE_SHEET = """
-QGroupBox {
-    background-color: #1D1D20;
-    border: 1px solid #3d3d3d;
-    border-radius: 8px;
-    margin-top: 14px;
-    padding: 2px 8px 6px 8px;
-    font-weight: normal;
-    font-size: 12px;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    left: 12px;
-    top: -2px;
-    padding: 0 6px;
-    color: #cccccc;
-    text-decoration: none;
-}
-QLineEdit {
-    background-color: #2d2d2d;
-    color: #ffffff;
-    border: 1px solid #3d3d3d;
-    padding: 5px 8px;
+from houtools.ui import qss as _ui_qss, theme as _theme
+
+_EXTRA_QSS = """
+QPushButton#presetBtn {{
+    background-color: {INK_850};
+    color: {TEXT};
+    border: 1px solid {LINE};
+    border-radius: 4px;
+    padding: 0 10px;
+    min-height: 28px;
+}}
+QPushButton#presetBtn:hover {{
+    background-color: {INK_800};
+    border-color: {LINE_STRONG};
+}}
+QPushButton#presetBtn:pressed {{ background-color: {INK_900}; }}
+QPushButton#presetBtn:disabled {{
+    background-color: {INK_900};
+    color: {TEXT_4};
+    border: 1px solid {LINE};
+}}
+QSlider#qualitySlider::groove:horizontal {{
+    height: 3px;
+    background: {LINE};
+    border-radius: 2px;
+}}
+QSlider#qualitySlider::sub-page:horizontal {{
+    background: {ACCENT};
+    border-radius: 2px;
+}}
+QSlider#qualitySlider::handle:horizontal {{
+    background: {TEXT};
+    width: 12px;
+    height: 12px;
+    margin: -5px 0;
     border-radius: 6px;
-}
-QLineEdit:focus {
-    border: 1px solid #0d6399;
-}
-QSpinBox {
-    background-color: #2d2d2d;
-    color: #ffffff;
-    border: 1px solid #3d3d3d;
-    padding: 4px 8px;
-    border-radius: 6px;
-    min-width: 60px;
-}
-QSpinBox:focus {
-    border: 1px solid #0d6399;
-}
-QProgressBar {
-    border: 1px solid #3d3d3d;
-    border-radius: 6px;
-    text-align: center;
-    background-color: #2d2d2d;
-    color: #ffffff;
-    min-height: 22px;
-}
-QProgressBar::chunk {
-    background-color: #0d6399;
-    border-radius: 5px;
-}
-QPushButton#confirmBtn {
-    background-color: #0d6399;
-    color: white;
-    padding: 5px 14px;
-    border-radius: 8px;
-    min-width: 50px;
-    font-weight: bold;
-}
-QPushButton#confirmBtn:hover {
-    background-color: #0a4d7a;
-}
-QPushButton#confirmBtn:disabled {
-    background-color: #3d3d3d;
-    color: #888888;
-}
-QPushButton#convertBtn {
-    background-color: #0d6399;
-    color: white;
-    padding: 10px 30px;
-    border-radius: 10px;
-    min-width: 200px;
-    font-size: 14px;
-    font-weight: bold;
-}
-QPushButton#convertBtn:hover {
-    background-color: #0a4d7a;
-}
-QPushButton#convertBtn:disabled {
-    background-color: #3d3d3d;
-    color: #888888;
-}
-QPushButton#cancelBtn {
-    background-color: #d1283e;
-    color: white;
-    padding: 6px 20px;
-    border-radius: 8px;
-    min-width: 60px;
-}
-QPushButton#cancelBtn:hover {
-    background-color: #b82235;
-}
-QPushButton#presetBtn {
-    background-color: #2d2d2d;
-    color: #ffffff;
-    border: 1px solid #3d3d3d;
-    padding: 5px 10px;
-    border-radius: 6px;
-}
-QPushButton#presetBtn:hover {
-    border: 1px solid #0d6399;
-}
-QPushButton#presetBtn:pressed {
-    background-color: #3d3d3d;
-}
-QPushButton#presetBtn:disabled {
-    background-color: #232323;
-    color: #666666;
-    border: 1px solid #2f2f2f;
-}
-QSlider#qualitySlider {
-    background-color: transparent;
-    border: none;
-}
-QSlider#qualitySlider::groove:horizontal {
-    border: none;
-    height: 6px;
-    background-color: #000000;
-    border-radius: 3px;
-}
-QSlider#qualitySlider::sub-page:horizontal {
-    background-color: #8a5cf5;
-    border-radius: 3px;
-}
-QSlider#qualitySlider::handle:horizontal {
-    background-color: #ffffff;
-    border: 1px solid #8a5cf5;
-    width: 14px;
-    height: 14px;
-    margin: -4px 0;
-    border-radius: 7px;
-}
-QSlider#qualitySlider::handle:horizontal:hover {
-    background-color: #ffffff;
-}
-"""
+}}
+QSlider#qualitySlider::handle:horizontal:hover {{ background: {ACCENT}; }}
+QSlider#qualitySlider::handle:horizontal:pressed {{
+    background: {ACCENT_PRESSED};
+}}
+""".format(**_theme.TOKENS)
+
+STYLE_SHEET = _ui_qss.window_qss(_EXTRA_QSS)
 
 # QGroupBox 内联样式，确保覆盖 Houdini 全局样式，消除标题下划线
-_GROUPBOX_INLINE_STYLE = (
-    "QGroupBox {"
-    "  background-color: #1D1D20;"
-    "  border: 1px solid #3d3d3d;"
-    "  border-radius: 8px;"
-    "  margin-top: 18px;"
-    "  padding: 2px 8px 6px 8px;"
-    "  font-weight: normal;"
-    "  font-size: 12px;"
-    "}"
-    "QGroupBox::title {"
-    "  subcontrol-origin: margin;"
-    "  subcontrol-position: top left;"
-    "  left: 12px;"
-    "  top: -2px;"
-    "  padding: 0 6px;"
-    "  color: #cccccc;"
-    "  text-decoration: none;"
-    "}"
-)
+_GROUPBOX_INLINE_STYLE = """
+QGroupBox {{
+  background-color: {INK_900};
+  border: 1px solid {LINE};
+  border-radius: 8px;
+  margin-top: 16px;
+  padding: 2px 8px 6px 8px;
+  font-size: 12px;
+}}
+QGroupBox::title {{
+  subcontrol-origin: margin;
+  subcontrol-position: top left;
+  left: 12px;
+  top: -2px;
+  padding: 0 6px;
+  color: {TEXT_2};
+  background: {INK_950};
+  text-decoration: none;
+}}
+""".format(**_theme.TOKENS)
 
 
 # ─── Data Classes ────────────────────────────────────────────────────
@@ -420,6 +379,19 @@ class VideoInfo:
 
 # ─── Helper Functions（实现在 houtools/videoseq/ffmpeg.py）───────────────
 
+def _mime_path_candidates(mime) -> list:
+    """拖放数据里的候选路径（资源管理器 URL 在前、纯文本路径在后，含
+    引号剥离与首尾空白清理）。"""
+    candidates = []
+    if mime.hasUrls():
+        candidates.extend(url.toLocalFile() for url in mime.urls())
+    if mime.hasText():
+        text = mime.text().strip().strip('"').strip()
+        if text:
+            candidates.append(text)
+    return candidates
+
+
 def _media_path_from_mime(mime) -> str:
     """从拖放数据提取第一个有效的媒体文件路径，无则返回空串。
 
@@ -428,14 +400,7 @@ def _media_path_from_mime(mime) -> str:
     2026-11 用户拍板）。兼容资源管理器（URL）与纯文本路径（含引号
     包裹）；扩展名不在白名单或文件不存在返回空串。
     """
-    candidates = []
-    if mime.hasUrls():
-        candidates.extend(url.toLocalFile() for url in mime.urls())
-    if mime.hasText():
-        text = mime.text().strip().strip('"').strip()
-        if text:
-            candidates.append(text)
-    for path in candidates:
+    for path in _mime_path_candidates(mime):
         ext = os.path.splitext(path)[1].lower()
         if os.path.isfile(path) and (ext in VIDEO_EXTENSIONS
                                      or ext in SEQUENCE_EXTENSIONS):
@@ -443,23 +408,36 @@ def _media_path_from_mime(mime) -> str:
     return ""
 
 
-class _VideoSourceGroup(QGroupBox):
-    """媒体源分组框 —— 支持把视频/静帧文件直接拖入。
+def _folder_from_mime(mime) -> str:
+    """拖放数据里的第一个文件夹路径（含序列的文件夹拖入入口），无则
+    返回空串。文件/文件夹混拖时 URL 列表序决定命中谁——文件夹匹配
+    跳过文件候选，文件匹配跳过文件夹候选，互不遮蔽。"""
+    for path in _mime_path_candidates(mime):
+        if os.path.isdir(path):
+            return path
+    return ""
 
-    识别逻辑见模块级 ``_media_path_from_mime``（视频整段转换、静帧只
-    收单个具体帧）；子控件忽略的拖放事件会沿父链传播到这里，拖到组内
-    任意位置都生效。窗口级（``_VideoToSequenceWindow``）也接收拖放作为
-    兜底。
+
+class _VideoSourceGroup(QGroupBox):
+    """媒体源分组框 —— 支持把视频/静帧文件或含序列的文件夹直接拖入。
+
+    文件识别见模块级 ``_media_path_from_mime``（视频整段转换、静帧只
+    收单个具体帧）；文件夹识别见 ``_folder_from_mime``，经 folderDropped
+    交窗口扫描序列（scan_folder_sequences）。子控件忽略的拖放事件会沿
+    父链传播到这里，拖到组内任意位置都生效。窗口级
+    （``_VideoToSequenceWindow``）也接收拖放作为兜底。
     """
 
     mediaDropped = Signal(str)
+    folderDropped = Signal(str)
 
     def __init__(self, title, parent=None):
         super().__init__(title, parent)
         self.setAcceptDrops(True)
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 — Qt 命名约定
-        if _media_path_from_mime(event.mimeData()):
+        if (_folder_from_mime(event.mimeData())
+                or _media_path_from_mime(event.mimeData())):
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -469,6 +447,11 @@ class _VideoSourceGroup(QGroupBox):
         event.acceptProposedAction()
 
     def dropEvent(self, event) -> None:  # noqa: N802 — Qt 命名约定
+        folder = _folder_from_mime(event.mimeData())
+        if folder:
+            self.folderDropped.emit(folder)
+            event.acceptProposedAction()
+            return
         path = _media_path_from_mime(event.mimeData())
         if path:
             self.mediaDropped.emit(path)
@@ -1100,12 +1083,46 @@ def _make_icon_button(rel_name, tooltip, fallback_text):
     return btn
 
 
-def _cam_filter_callback(node):
-    """浮动操作员选择器过滤器：只列 OBJ cam（与 _find_scene_cameras 的
-    objNodeTypeCategory "cam" instances() 同口径；SOP Camera 等同名类型
-    不放行，所选相机要吃 vm_background/resx/resy，必须 OBJ 相机）。"""
-    return (node.type().name() == "cam"
-            and node.type().category().name() == "Object")
+def _pick_sequence_dialog(parent, folder, patterns):
+    """多条序列选择对话框：列表单选 + 确认/取消（按钮中文化，双击=确认）。
+
+    文件夹拖入扫描到多条序列时让用户挑一条装载；返回所选模式路径，
+    取消 / Esc / 关窗返回 None（不装载）。默认选中第一条，Enter=确认。
+    """
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("发现多条序列")
+    dlg.setStyleSheet(_ui_qss.dialog_qss("""
+QListWidget::item {{ padding: 4px 6px; }}
+"""))
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(12, 12, 12, 12)
+    lay.setSpacing(8)
+    hint = QLabel(
+        f"拖入的文件夹中找到 {len(patterns)} 条静帧序列，"
+        "请选择要装载的一条：")
+    hint.setWordWrap(True)
+    lay.addWidget(hint)
+    folder_lbl = QLabel(folder)
+    folder_lbl.setStyleSheet("color: {}; font-size: 11px;".format(_theme.color("TEXT_3")))
+    folder_lbl.setWordWrap(True)
+    lay.addWidget(folder_lbl)
+    lst = QListWidget()
+    for path in patterns:
+        lst.addItem(QListWidgetItem(path))
+    lst.setCurrentRow(0)
+    lst.itemDoubleClicked.connect(lambda _item: dlg.accept())
+    lay.addWidget(lst, 1)
+    bbox = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    bbox.accepted.connect(dlg.accept)
+    bbox.rejected.connect(dlg.reject)
+    lay.addWidget(bbox)
+    dialogs.localize_buttons(dlg)
+    dlg.resize(520, 360)
+    ok = dlg.exec_() == QDialog.Accepted
+    row = lst.currentRow()
+    chosen = patterns[row] if ok and 0 <= row < len(patterns) else None
+    dlg.deleteLater()
+    return chosen
 
 
 def show_video_to_sequence_window():
@@ -1128,7 +1145,9 @@ class _VideoToSequenceWindow(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Window)
-        self.setWindowTitle("视频转序列图")
+        self.setObjectName("htWindow")
+        apply_window_surface(self)
+        self.setWindowTitle("Video to Sequence")
         self.setMinimumSize(500, 560)
         self.resize(540, 600)
 
@@ -1189,6 +1208,7 @@ class _VideoToSequenceWindow(QDialog):
         group = _VideoSourceGroup("视频源")
         group.setStyleSheet(_GROUPBOX_INLINE_STYLE)
         group.mediaDropped.connect(self._load_media)
+        group.folderDropped.connect(self._on_folder_dropped)
         layout = QVBoxLayout(group)
         layout.setContentsMargins(8, 10, 8, 6)
         layout.setSpacing(6)
@@ -1198,6 +1218,8 @@ class _VideoToSequenceWindow(QDialog):
         self._path_edit.setPlaceholderText("请选择、拖入或粘贴视频/序列路径...")
         self._path_edit.setToolTip(
             "支持把视频或静帧（EXR/PNG/TIF）文件直接拖进本区域；\n"
+            "拖入文件夹会自动扫描其中的序列帧（仅第一层，多条序列弹出"
+            "列表选择）；\n"
             "静帧序列请点「浏览」在 Houdini 文件选择器中按折叠序列选择；\n"
             "拖入单个静帧只转换该帧。\n"
             "也可手动编辑路径，按 Enter 或移开焦点后加载，清空则重置"
@@ -1228,8 +1250,8 @@ class _VideoToSequenceWindow(QDialog):
         form.setSpacing(4)
         form.setLabelAlignment(Qt.AlignRight)
 
-        label_style = "color: #888888; font-weight: normal;"
-        value_style = "color: #ffffff; font-weight: normal;"
+        label_style = "color: {}; font-weight: normal;".format(_theme.color("TEXT_3"))
+        value_style = "color: {}; font-weight: normal;".format(_theme.color("TEXT"))
 
         self._info_labels = {}
         info_items = [
@@ -1278,7 +1300,7 @@ class _VideoToSequenceWindow(QDialog):
         # 相机选择行
         cam_row = QHBoxLayout()
         cam_lbl = QLabel("选择相机:")
-        cam_lbl.setStyleSheet("color: #888888; min-width: 80px;")
+        cam_lbl.setStyleSheet("color: {}; min-width: 80px;".format(_theme.color("TEXT_3")))
         self._camera_edit = QLineEdit()
         self._camera_edit.setReadOnly(True)
         self._camera_edit.setPlaceholderText("未选择相机...")
@@ -1312,7 +1334,7 @@ class _VideoToSequenceWindow(QDialog):
         # 「预设」下拉点选只填两框，仍需「确定」写回相机
         res_row = QHBoxLayout()
         res_lbl = QLabel("分辨率:")
-        res_lbl.setStyleSheet("color: #888888; min-width: 80px;")
+        res_lbl.setStyleSheet("color: {}; min-width: 80px;".format(_theme.color("TEXT_3")))
         self._res_w_edit = QLineEdit()
         self._res_w_edit.setPlaceholderText("宽")
         self._res_w_edit.setToolTip("所选相机的渲染分辨率宽（resx）")
@@ -1358,7 +1380,7 @@ class _VideoToSequenceWindow(QDialog):
         # 质量
         quality_row = QHBoxLayout()
         quality_lbl = QLabel("JPG 质量:")
-        quality_lbl.setStyleSheet("color: #888888; min-width: 80px;")
+        quality_lbl.setStyleSheet("color: {}; min-width: 80px;".format(_theme.color("TEXT_3")))
         self._quality_slider = QSlider(Qt.Horizontal)
         self._quality_slider.setObjectName("qualitySlider")
         self._quality_slider.setRange(1, 100)
@@ -1377,12 +1399,12 @@ class _VideoToSequenceWindow(QDialog):
         # 起始帧 + 帧号位数
         frame_row = QHBoxLayout()
         start_lbl = QLabel("起始帧号:")
-        start_lbl.setStyleSheet("color: #888888; min-width: 80px;")
+        start_lbl.setStyleSheet("color: {}; min-width: 80px;".format(_theme.color("TEXT_3")))
         self._start_frame_spin = QSpinBox()
         self._start_frame_spin.setRange(0, 999999)
         self._start_frame_spin.setValue(self._get_rfstart())
         padding_lbl = QLabel("帧号位数:")
-        padding_lbl.setStyleSheet("color: #888888;")
+        padding_lbl.setStyleSheet("color: {};".format(_theme.color("TEXT_3")))
         self._padding_spin = QSpinBox()
         self._padding_spin.setRange(1, 8)
         self._padding_spin.setValue(4)
@@ -1396,7 +1418,7 @@ class _VideoToSequenceWindow(QDialog):
         # 文件名前缀
         prefix_row = QHBoxLayout()
         prefix_lbl = QLabel("文件名前缀:")
-        prefix_lbl.setStyleSheet("color: #888888; min-width: 80px;")
+        prefix_lbl.setStyleSheet("color: {}; min-width: 80px;".format(_theme.color("TEXT_3")))
         self._prefix_edit = QLineEdit("cam")
         self._prefix_edit.setPlaceholderText("例如: cam, render, plate")
         prefix_row.addWidget(prefix_lbl)
@@ -1406,7 +1428,7 @@ class _VideoToSequenceWindow(QDialog):
         # 输出目录
         dir_row = QHBoxLayout()
         dir_lbl = QLabel("输出目录:")
-        dir_lbl.setStyleSheet("color: #888888; min-width: 80px;")
+        dir_lbl.setStyleSheet("color: {}; min-width: 80px;".format(_theme.color("TEXT_3")))
         self._output_dir_edit = QLineEdit()
         self._output_dir_edit.setPlaceholderText(
             "$HIP/images/{视频或序列名}/"
@@ -1424,7 +1446,7 @@ class _VideoToSequenceWindow(QDialog):
             "输出路径示例: $HIP/images/{视频或序列名}/cam.1001.jpg"
         )
         self._output_path_label.setStyleSheet(
-            "color: #888888; font-size: 11px; padding: 2px 0;"
+            "color: {}; font-size: 11px; padding: 2px 0;".format(_theme.color("TEXT_3"))
         )
         self._output_path_label.setWordWrap(True)
         layout.addWidget(self._output_path_label)
@@ -1438,7 +1460,7 @@ class _VideoToSequenceWindow(QDialog):
 
     def _build_progress_section(self, parent_layout):
         self._status_label = QLabel("")
-        self._status_label.setStyleSheet("color: #888888; font-size: 11px;")
+        self._status_label.setStyleSheet("color: {}; font-size: 11px;".format(_theme.color("TEXT_3")))
         self._status_label.setVisible(False)
         parent_layout.addWidget(self._status_label)
 
@@ -1507,11 +1529,13 @@ class _VideoToSequenceWindow(QDialog):
 
     # ── Event Handlers ───────────────────────────────────────────────
 
-    def _show_status_hint(self, text, color="#d29a55"):
+    def _show_status_hint(self, text, color=None):
         """底部状态条非阻塞提示（黄字=预期内拒绝，红字=环境不可用）。"""
         self._status_label.setVisible(True)
         self._status_label.setText(text)
-        self._status_label.setStyleSheet(f"color: {color}; font-size: 12px;")
+        self._status_label.setStyleSheet(
+            "color: {}; font-size: 12px;".format(
+                color or _theme.color("WARNING_TEXT")))
 
     def _on_browse(self):
         """浏览按钮：优先 Houdini 文件选择器——collapse_sequences 把同一
@@ -1572,7 +1596,7 @@ class _VideoToSequenceWindow(QDialog):
             self._status_label.setText(
                 "转换进行中，请先完成或取消当前转换再更换媒体")
             self._status_label.setStyleSheet(
-                "color: #d29a55; font-size: 12px;")
+                "color: {}; font-size: 12px;".format(_theme.color("WARNING_TEXT")))
             self._path_edit.setText(self._current_video_path)
             return
         self._reset_video_state()
@@ -1592,7 +1616,7 @@ class _VideoToSequenceWindow(QDialog):
                     "、".join(VIDEO_EXTENSIONS),
                     "、".join(SEQUENCE_EXTENSIONS)))
             self._status_label.setStyleSheet(
-                "color: #d1283e; font-size: 12px;")
+                "color: {}; font-size: 12px;".format(_theme.color("ERROR_TEXT")))
             return
         if ext not in VIDEO_EXTENSIONS:
             # image2 demuxer 对输入路径同样按 printf 模板展开（与输出侧
@@ -1605,7 +1629,7 @@ class _VideoToSequenceWindow(QDialog):
                     "序列/静帧路径不能包含 %（ffmpeg 会把整条输入路径当 "
                     "printf 模板二次解释），请更换目录或文件名后重试")
                 self._status_label.setStyleSheet(
-                    "color: #d1283e; font-size: 12px;")
+                    "color: {}; font-size: 12px;".format(_theme.color("ERROR_TEXT")))
                 return
             self._load_still_sequence(expanded, display_path=media_path)
             return
@@ -1636,7 +1660,7 @@ class _VideoToSequenceWindow(QDialog):
                 self._status_label.setText(
                     "序列模式未匹配到磁盘帧文件（检查前缀与目录后重试）")
                 self._status_label.setStyleSheet(
-                    "color: #d1283e; font-size: 12px;")
+                    "color: {}; font-size: 12px;".format(_theme.color("ERROR_TEXT")))
                 return
         info = VideoInfo(
             filepath=path,
@@ -1684,7 +1708,7 @@ class _VideoToSequenceWindow(QDialog):
             self._status_label.setText(
                 "转换进行中，请先完成或取消当前转换再更改路径")
             self._status_label.setStyleSheet(
-                "color: #d29a55; font-size: 12px;")
+                "color: {}; font-size: 12px;".format(_theme.color("WARNING_TEXT")))
             return
         if self._probe_worker is not None and self._probe_worker.isRunning():
             # 不取消会留下孤儿探测（串行跑完最长 450s 的子进程链），期间
@@ -1748,12 +1772,13 @@ class _VideoToSequenceWindow(QDialog):
         self._status_label.setVisible(True)
         self._status_label.setText(
             "路径无效或不是支持的视频/序列格式，已恢复")
-        self._status_label.setStyleSheet("color: #d1283e; font-size: 12px;")
+        self._status_label.setStyleSheet("color: {}; font-size: 12px;".format(_theme.color("ERROR_TEXT")))
 
     # ── 拖放（整窗接收；光标落在视频源分组框内时由分组框优先处理）──
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 — Qt 命名约定
-        if _media_path_from_mime(event.mimeData()):
+        if (_folder_from_mime(event.mimeData())
+                or _media_path_from_mime(event.mimeData())):
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -1763,10 +1788,42 @@ class _VideoToSequenceWindow(QDialog):
         event.acceptProposedAction()
 
     def dropEvent(self, event) -> None:  # noqa: N802 — Qt 命名约定
+        folder = _folder_from_mime(event.mimeData())
+        if folder:
+            event.acceptProposedAction()
+            self._on_folder_dropped(folder)
+            return
         path = _media_path_from_mime(event.mimeData())
         if path:
             event.acceptProposedAction()
             self._load_media(path)
+
+    def _on_folder_dropped(self, folder: str):
+        """拖入文件夹：扫描第一层静帧序列并装载（2026-11 新增）。
+
+        唯一序列直接装载；多条经 _pick_sequence_dialog 弹列表选择，
+        取消不装载；一条都扫不到红字提示（文件夹入口只做序列，视频
+        仍走文件拖入）。转换进行中拒绝——与 _load_media 换片拒绝同
+        语义（重置会让面板与仍在写盘的旧转换互不相认）。
+        """
+        if self._extract_worker is not None \
+                and self._extract_worker.isRunning():
+            self._show_status_hint(
+                "转换进行中，请先完成或取消当前转换再拖入文件夹")
+            return
+        patterns = scan_folder_sequences(folder)
+        if not patterns:
+            self._show_status_hint(
+                "文件夹中未找到静帧序列（仅扫描第一层的 EXR/PNG/TIF "
+                "编号序列，单帧文件不算；视频请直接拖入文件）：" + folder,
+                _theme.color("ERROR"))
+            return
+        if len(patterns) == 1:
+            self._load_media(patterns[0])
+            return
+        chosen = _pick_sequence_dialog(self, folder, patterns)
+        if chosen:
+            self._load_media(chosen)
 
     def _on_browse_output_dir(self):
         directory = QFileDialog.getExistingDirectory(self, "选择输出目录")
@@ -1953,7 +2010,7 @@ class _VideoToSequenceWindow(QDialog):
         self._status_label.setText(
             f"正在提取 {total} 帧 (质量: {quality}%, 起始帧: {start_frame})..."
         )
-        self._status_label.setStyleSheet("color: #0d6399; font-size: 12px;")
+        self._status_label.setStyleSheet("color: {}; font-size: 12px;".format(_theme.color("ACCENT")))
 
         self._extract_worker = _ExtractWorker(
             self._current_video_path, output_dir, ffmpeg_path,
@@ -2009,7 +2066,7 @@ class _VideoToSequenceWindow(QDialog):
             self._reset_convert_ui()
             self._status_label.setVisible(True)
             self._status_label.setText("已取消")
-            self._status_label.setStyleSheet("color: #d1283e; font-size: 12px;")
+            self._status_label.setStyleSheet("color: {}; font-size: 12px;".format(_theme.color("ERROR_TEXT")))
             return
         # 「停止中」：不立即复位按钮（对齐 Automation 的停止语义）——
         # ffmpeg 收尾（terminate + 有界等待）需要时间，此刻二次 Start 会
@@ -2019,7 +2076,7 @@ class _VideoToSequenceWindow(QDialog):
         self._cancel_btn.setEnabled(False)
         self._status_label.setVisible(True)
         self._status_label.setText("停止中…（正在结束 ffmpeg）")
-        self._status_label.setStyleSheet("color: #d1283e; font-size: 12px;")
+        self._status_label.setStyleSheet("color: {}; font-size: 12px;".format(_theme.color("ERROR_TEXT")))
 
     # ── Probe Callbacks ──────────────────────────────────────────────
 
@@ -2030,7 +2087,7 @@ class _VideoToSequenceWindow(QDialog):
         if not ffmpeg_path:
             self._status_label.setVisible(True)
             self._status_label.setText("错误: 未找到 ffmpeg")
-            self._status_label.setStyleSheet("color: #d1283e; font-size: 12px;")
+            self._status_label.setStyleSheet("color: {}; font-size: 12px;".format(_theme.color("ERROR_TEXT")))
             return
 
         # 取消之前的探测任务：协作式置标志后不等待——探测线程阻塞在不可
@@ -2044,7 +2101,7 @@ class _VideoToSequenceWindow(QDialog):
 
         self._status_label.setVisible(True)
         self._status_label.setText("正在分析视频/序列信息...")
-        self._status_label.setStyleSheet("color: #e0cb56; font-size: 12px;")
+        self._status_label.setStyleSheet("color: {}; font-size: 12px;".format(_theme.color("WARNING_TEXT")))
 
         self._probe_worker = _ProbeWorker(
             filepath, ffmpeg_path, sequence_info=sequence_info)
@@ -2091,14 +2148,14 @@ class _VideoToSequenceWindow(QDialog):
 
         self._status_label.setVisible(True)
         self._status_label.setText("视频信息已获取")
-        self._status_label.setStyleSheet("color: #87cc8e; font-size: 12px;")
+        self._status_label.setStyleSheet("color: {}; font-size: 12px;".format(_theme.color("SUCCESS_TEXT")))
 
     def _on_probe_error(self, error_msg):
         if self.sender() is not self._probe_worker:
             return  # 迟到的旧探测错误——丢弃
         self._status_label.setVisible(True)
         self._status_label.setText(f"分析失败: {error_msg}")
-        self._status_label.setStyleSheet("color: #d1283e; font-size: 12px;")
+        self._status_label.setStyleSheet("color: {}; font-size: 12px;".format(_theme.color("ERROR_TEXT")))
         logger.error("Video probe failed: %s", error_msg)
 
     # ── Extract Callbacks ────────────────────────────────────────────
@@ -2122,7 +2179,7 @@ class _VideoToSequenceWindow(QDialog):
         self._status_label.setText(
             f"转换完成！共提取 {total_frames} 帧"
         )
-        self._status_label.setStyleSheet("color: #87cc8e; font-size: 12px;")
+        self._status_label.setStyleSheet("color: {}; font-size: 12px;".format(_theme.color("SUCCESS_TEXT")))
 
         # 若选择了相机，设置其 Background Image 参数（读开工快照：转换
         # 期间用户可能已切换相机，不能把上一轮的背景路径写到新选的相机
@@ -2147,15 +2204,19 @@ class _VideoToSequenceWindow(QDialog):
             prefix = getattr(self, "_last_prefix", "cam")
             padding = getattr(self, "_last_padding", 4)
 
-            # 用开工时快照的原始目录文本构建路径（保留 $HIP 等变量，渲染
-            # 时展开）——完成后用户可能已改动 UI 里的目录
+            # 用开工时快照的原始目录文本构建路径——完成后用户可能已改动
+            # UI 里的目录。目录部分经 expand_houdini_path 展开：$HIP 等
+            # 变量落成绝对路径再填入（2026-11 用户指定，工程挪动后背景
+            # 不悬空）；basename 原样保留——$F<pad> 是序列折叠标记，
+            # expandString 会把它展开成当前帧号、把整条序列退化成单帧
             raw_dir = (getattr(self, "_last_output_dir", "")
                        or self._output_dir_edit.text().strip())
             if not raw_dir:
                 return
             if not raw_dir.endswith("/"):
                 raw_dir += "/"
-            bg_path = f"{raw_dir}{prefix}.$F{padding}.jpg"
+            bg_path = expand_houdini_path(
+                f"{raw_dir}{prefix}.$F{padding}.jpg")
 
             # 设置 background 参数
             bg_parm = cam.parm("vm_background")
@@ -2178,7 +2239,7 @@ class _VideoToSequenceWindow(QDialog):
             logger.warning("设置相机背景失败 %s: %s", cam_path, exc)
             self._status_label.setVisible(True)
             self._status_label.setText(f"帧已导出，但设置相机背景失败：{exc}")
-            self._status_label.setStyleSheet("color: #d29a55; font-size: 12px;")
+            self._status_label.setStyleSheet("color: {}; font-size: 12px;".format(_theme.color("WARNING_TEXT")))
 
     def _on_extract_error(self, error_msg):
         if self.sender() is not self._extract_worker:
@@ -2200,7 +2261,7 @@ class _VideoToSequenceWindow(QDialog):
         else:
             self._status_label.setText(f"转换失败: {error_msg}")
             dialogs.warn(self, "错误", f"转换失败:\n{error_msg}")
-        self._status_label.setStyleSheet("color: #d1283e; font-size: 12px;")
+        self._status_label.setStyleSheet("color: {}; font-size: 12px;".format(_theme.color("ERROR_TEXT")))
 
     # ── Helpers ──────────────────────────────────────────────────────
 
@@ -2242,6 +2303,32 @@ class _VideoToSequenceWindow(QDialog):
         if len(cameras) == 1:
             self._set_selected_camera(cameras[0])
 
+    def _refresh_camera_selection(self):
+        """窗口重开（showEvent）时从场景重读相机（2026-11 用户拍板）。
+
+        单例窗口关闭只是隐藏：隐藏期间所选相机可能已被删除，残留路径
+        会让"已选相机"显示失效节点（实测踩过）。规则：所选路径在场景
+        中仍存在 → 保留（显式选择优先）并刷新分辨率行；已删除/为空 →
+        清掉残留路径与分辨率行，再按"场景恰好一个相机自动选中"规则
+        重选（与构建期 _auto_select_camera 同一规则）；0 个或多个相机
+        时保持未选状态。
+        """
+        path = self._camera_edit.text().strip()
+        if path:
+            try:
+                import hou
+            except ImportError:
+                hou = None
+            if hou is not None and hou.node(path) is not None:
+                self._refresh_camera_res()
+                self._update_match_btn_state()
+                return
+            # 相机已被删除（或无 hou 会话）：清残留，走重选规则
+            self._camera_edit.setText("")
+            self._reset_res_row()
+        self._auto_select_camera()
+        self._update_match_btn_state()
+
     def _on_jump_to_camera(self):
         """跳转按钮：在网络编辑器中定位所选相机（houtools/ui/networknav
         的 jump_to_node，与 Automation 任务槽跳转同款实现）。"""
@@ -2255,10 +2342,15 @@ class _VideoToSequenceWindow(QDialog):
         """选择按钮：Houdini 原生浮动操作员选择器选相机（2026-11 用户
         指定，取代旧 QInputDialog 下拉对话框）。
 
-        过滤器只列 OBJ cam（与 _find_scene_cameras 同口径，模块级
-        _cam_filter_callback）；取消/清空不动任何状态。
-        hou.ui.selectNode 在 multiple_select=False 时返回单个路径 str、
-        取消/清空返回 None（houpythonportion/ui.py 实证，勿按 tuple 处理）。
+        过滤走原生 node_type_filter=ObjCamera（C++ 层只列 OBJ cam，
+        与 _find_scene_cameras 的 "cam" instances() 同口径，SOP Camera
+        等同名类型不放行）。原先的 Python custom_node_filter_callback
+        会被选择器对树里的每个节点各调一次（官方文档措辞 "invoked for
+        each node in the chooser dialog"），大场景几万次 HOM 往返 =
+        打开选择器即卡几秒（2026-11 用户反馈），换原生枚举零回调。
+        取消/清空不动任何状态。hou.ui.selectNode 在 multiple_select=
+        False 时返回单个路径 str、取消/清空返回 None
+        （houpythonportion/ui.py 实证，勿按 tuple 处理）。
         """
         try:
             import hou
@@ -2268,12 +2360,16 @@ class _VideoToSequenceWindow(QDialog):
             # ImportError=纯 python 无头；无 ui 属性=hython 等无 UI 会话
             # （hou.ui 模块只在 GUI 会话挂载，hasattr(hou, "ui") 才安全）
             self._show_status_hint(
-                "Houdini 会话不可用，无法打开节点选择器", "#d1283e")
+                "Houdini 会话不可用，无法打开节点选择器", _theme.color("ERROR"))
             return
+        # 能力探测双层兜底：hou.nodeTypeFilter / ObjCamera 任一缺失
+        # （极端环境）退化为不过滤，选择器仍可用
+        cam_filter = getattr(
+            getattr(hou, "nodeTypeFilter", None), "ObjCamera", None)
         picked = hou.ui.selectNode(
             title="选择相机",
             initial_node=self._selected_camera_node(),
-            custom_node_filter_callback=_cam_filter_callback,
+            node_type_filter=cam_filter,
         )
         if not picked:
             return   # 用户取消/清空
@@ -2377,7 +2473,7 @@ class _VideoToSequenceWindow(QDialog):
         self._status_label.setVisible(True)
         self._status_label.setText(
             f"已设置 {cam.path()} 分辨率为 {width}x{height}")
-        self._status_label.setStyleSheet("color: #87cc8e; font-size: 12px;")
+        self._status_label.setStyleSheet("color: {}; font-size: 12px;".format(_theme.color("SUCCESS_TEXT")))
 
     def _on_match_source_resolution(self):
         """「匹配素材分辨率」：把所选相机分辨率直接设为当前素材的宽高。
@@ -2422,7 +2518,7 @@ class _VideoToSequenceWindow(QDialog):
         self._status_label.setVisible(True)
         self._status_label.setText(
             f"已把 {cam.path()} 分辨率匹配为素材 {width}x{height}")
-        self._status_label.setStyleSheet("color: #87cc8e; font-size: 12px;")
+        self._status_label.setStyleSheet("color: {}; font-size: 12px;".format(_theme.color("SUCCESS_TEXT")))
 
     def _reset_info_labels(self):
         for lbl in self._info_labels.values():
@@ -2488,9 +2584,10 @@ class _VideoToSequenceWindow(QDialog):
             self._pending_close = False
             if self._close_poll is not None:
                 self._close_poll.stop()
-        # 单例窗口关闭只是隐藏：隐藏期间相机分辨率可能已在 Houdini 里被改，
-        # 重开时必须重读所选相机（只在选择相机时刷新会一直显示旧值）
-        self._refresh_camera_res()
+        # 单例窗口关闭只是隐藏：重开必须从场景重读相机——所选相机在
+        # 隐藏期间可能已被删除（残留路径不能带进新会话），分辨率也可能
+        # 已在 Houdini 里被改（只在选择相机时刷新会一直显示旧值，实测）
+        self._refresh_camera_selection()
         # 上次会话遗留的状态提示（如"已设置 … 分辨率"）不带到重开后的面板
         self._status_label.setVisible(False)
         self._status_label.setText("")

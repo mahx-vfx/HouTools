@@ -32,8 +32,7 @@ notify.clear()                            # 立即收掉全部（各自渐透）
 
 - 位置：左下角第一条贴状态栏，向上堆叠（间距 6px）；同屏上限 4 条，
   超出最旧的先进入渐透
-- 视觉：整条等级色底（success `#285C43` / info `#0d6399` / warning
-  `#80601E` / error `#d1283e`）+ 白字 9pt + SVG 徽标（亮色圆牌/三角）
+- 视觉（品牌统一 2026-11）：`INK_850` 面 + 1px `LINE` 描边 + 左侧 2px 语义色条（success `SUCCESS #45b06e` / info `TEXT_2` / warning `WARNING #f2a33c` / error `ERROR #d1283e`）+ `TEXT` 字 9pt + SVG 徽标；**只换颜色/图标，结构/时序/槽位/渐透/补位一律不动**
 - 行为：hover 暂停倒计时（离开按剩余时间继续，至少再给 800ms）、点击
   立即渐透、`WA_ShowWithoutActivating` 不抢焦点
 - 动画：入场自下 8px 上滑（**无淡入**，用户拍板——全透明度出现）+
@@ -47,7 +46,7 @@ notify.clear()                            # 立即收掉全部（各自渐透）
 
 | # | 坑 | 结论 |
 |---|---|---|
-| 1 | **半透明顶层窗（`WA_TranslucentBackground`）上 QSS `background` 不渲染**——文字（QLabel 子控件）正常、QFrame 自身底色消失 | 底色必须 `paintEvent` 手绘圆角矩形（`rect().adjusted(0,0,-1,-1)` 防抗锯齿边被窗口边界裁掉）；H21/H22 同病 |
+| 1 | **半透明顶层窗（`WA_TranslucentBackground`）上 QSS `background` 不渲染**——文字（QLabel 子控件）正常、QFrame 自身底色消失 | 底色必须 `paintEvent` 手绘圆角矩形（`rect().adjusted(0,0,-1,-1)` 防抗锯齿边被窗口边界裁掉）；品牌版同时画 1px 描边 + 左侧 2px 语义色条（裁进圆角路径）；H21/H22 同病 |
 | 2 | **`QGraphicsOpacityEffect` 撞 QSS**——动画在跑、画面不动（"属性在动但画面不动"，两轮盲修被它骗过） | 淡入淡出走 `windowOpacity`（系统合成通道，必然生效）；**子部件没有 windowOpacity**，这就是 toast 必须做成顶层窗的原因 |
 | 3 | **Houdini Qt 不渲染 COLR 彩色 emoji**——`Segoe UI Emoji` 显式指定也只出单色轮廓（✅⚠️❌💡 全变线框） | 图标走 SVG（`icons/toast_*.svg` 经 `ui.icons.svg_icon` 缓存）；`svg_icon` 返回 QIcon，取 32 档 `pixmap` 后 `setDevicePixelRatio(2.0)` 缩到 16 逻辑像素；渲染失败回退文字 glyph |
 | 4 | **补位时机错误 = "瞬间消失"**——渐透开始就让位，上方 toast 立刻下移，恰好压住还在原地渐透的 toast（实测：不透明 warning y=1003 盖住 65% 透明的 info y=1004，差 1px；被盖的 fade 数据全程正常，纯视觉谋杀） | **槽位保留到渐透结束**：`_fadeout` 只原地淡出，`_gone`（动画 finished、C++ 对象真没了）才从 `_ACTIVE` 摘除并让上方下滑补位 |

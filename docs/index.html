@@ -5,105 +5,122 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HouTools — 使用手册</title>
 <style>
-  /* HouTools 暗色主题(暖色系,参考项目主题色板),零外部依赖、完全离线可用 */
+  /* HouTools 品牌主题（深夜技术工作台）：墨黑 + 品牌橙 + 深绿蓝图网格。
+     零外部依赖、完全离线可用（字体/截图/图片全部本地）。 */
+  @font-face {
+    font-family: 'DingTalk JinBuTi';
+    src: url('fonts/DingTalk-JinBuTi.woff2') format('woff2');
+    font-weight: 100 900;
+    /* block：字体就绪前不绘制品牌字，避免刷新时先用回退字再跳成
+       钉钉进步体的 FOUT（本字体随包、本地加载，block 期极短） */
+    font-display: block;
+  }
   :root {
-    --bg: #1a1514;
-    --card: #211a19;
-    --border: #3a2d2a;
-    --accent: #c8102e;
-    --accent-bright: #f2a33c;
-    --warm: #e2571b;
-    --text: #ece5df;
-    --muted: #a89e96;
+    --ink-1000: #05050a;
+    --ink-950: #0a0a0f;
+    --ink-900: #101017;
+    --ink-850: #15151c;
+    --ink-800: #1c1c25;
+    --line: #262631;
+    --line-strong: #34343f;
+    --text: #f0f0f3;
+    --text-2: #b8b8c2;
+    --text-3: #8a8a92;
+    --text-4: #5c5c66;
+    --accent: #ff5c38;
+    --accent-hover: #ff7454;
+    --accent-pressed: #e64a2a;
+    --accent-soft: rgba(255, 92, 56, .12);
+    --success: #45b06e;
+    --warning: #f2a33c;
+    --error: #d1283e;
+    --bg: var(--ink-1000);
+    --card: var(--ink-900);
+    --border: var(--line);
+    --muted: var(--text-3);
     --mono: Consolas, "Courier New", monospace;
+    --brand: "DingTalk JinBuTi", "Microsoft YaHei", sans-serif;
+    --sans: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
   }
   * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
   body {
     margin: 0;
-    background: var(--bg);
+    background-color: var(--bg);
+    background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='48'%20height='48'%3E%3Cpath%20d='M0,.5H48M.5,0V48'%20fill='none'%20stroke='%232e8b57'%20stroke-opacity='.10'%20stroke-width='1'%20stroke-dasharray='4%208'/%3E%3Ccircle%20cx='0'%20cy='0'%20r='1.5'%20fill='%2345b06e'%20fill-opacity='.18'/%3E%3C/svg%3E");
+    background-size: 48px 48px;
     color: var(--text);
-    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-family: var(--sans);
     font-size: 15px;
     line-height: 1.75;
     position: relative;
   }
-  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px 64px; }
+  ::selection { background: var(--accent); color: var(--ink-1000); }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px 64px; }
 
-  /* ---- 头部横幅(宣传图铺满全宽,左暗区放标题,右下毛玻璃面板放仓库链接) ---- */
+  /* ---- 头部：真实 UI 截图拼贴 + 品牌字标 + 蓝图网格 ---- */
   .hero {
     position: relative;
-    min-height: 470px;
     overflow: hidden;
-    background: #14100f;
-  }
-  /* 底层:清晰原图。与磨砂层同几何(inset 同值、同 background),渐变过渡处两份图才逐像素对齐 */
-  .hero-bg {
-    position: absolute;
-    inset: -44px;
-    background: url("assets/hero.png") center 38% / cover no-repeat;
-    filter: saturate(1.1) brightness(1.03);
-  }
-  /* 磨砂层:同图高斯模糊,水平渐变蒙版从左往右淡出——左侧毛玻璃、右侧清晰。
-     大blur+提亮提饱和,让左侧暗区的霓虹光透过霜层泛出来,和右侧清晰区拉开差距 */
-  .hero-frost {
-    position: absolute;
-    inset: -44px;
-    background: url("assets/hero.png") center 38% / cover no-repeat;
-    filter: blur(16px) saturate(1.45) brightness(1.18);
-    -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 44%, transparent 58%);
-    mask-image: linear-gradient(90deg, #000 0%, #000 44%, transparent 58%);
-  }
-  /* 磨砂罩:底部渐隐放最上层(底边与页面底色逐像素一致,头部与内容间无分界)
-     + 左侧页面底色罩(与磨砂蒙版同梯度从左往右淡出,中和霜层泛白,让左侧贴近正文背景)
-     + 均匀暗雾 + 顶部过渡 */
-  .hero-shade {
-    position: absolute;
-    inset: 0;
+    border-bottom: 1px solid var(--line);
     background:
-      linear-gradient(180deg, rgba(26, 21, 20, 0) 62%, rgba(26, 21, 20, 0.72) 84%, #1a1514 92%, #1a1514 100%),
-      linear-gradient(90deg, rgba(26, 21, 20, 0.62) 0%, rgba(26, 21, 20, 0.38) 44%, rgba(26, 21, 20, 0) 58%),
-      linear-gradient(rgba(26, 21, 20, 0.10), rgba(26, 21, 20, 0.10)),
-      linear-gradient(180deg, rgba(26, 21, 20, 0.32) 0%, rgba(26, 21, 20, 0) 22%);
-    pointer-events: none;
+      radial-gradient(ellipse 55% 60% at 78% 38%, rgba(255, 92, 56, .10), transparent 68%),
+      linear-gradient(180deg, var(--ink-1000), var(--bg) 72%);
   }
   .hero-inner {
     position: relative;
-    max-width: 1150px;
+    max-width: 1180px;
     margin: 0 auto;
-    padding: 0 28px 104px;
+    padding: 52px 28px 48px;
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr);
+    gap: 40px;
+    align-items: center;
   }
   .hero-kicker {
-    padding-top: clamp(38px, 6.5vw, 66px);
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 3px;
-    color: var(--accent-bright);
-    text-shadow: 0 1px 12px rgba(0, 0, 0, 0.65);
+    color: var(--accent);
+    margin-bottom: 10px;
   }
   .hero h1 {
     display: flex;
     align-items: center;
     gap: 12px;
-    margin: 8px 0;
-    font-size: clamp(32px, 4.4vw, 46px);
-    letter-spacing: 1px;
-    text-shadow: 0 2px 26px rgba(0, 0, 0, 0.7);
+    margin: 0 0 8px;
+    font-family: var(--brand);
+    font-size: clamp(34px, 4.4vw, 48px);
+    font-weight: 600;
+    letter-spacing: .04em;
+    line-height: 1.1;
+  }
+  .hero h1 .wordmark {
+    display: block;
+    height: 1em;
+    width: auto;
+  }
+  .wordmark-sm {
+    display: inline-block;
+    height: 1em;
+    width: auto;
+    vertical-align: -0.12em;
   }
   .hero h1 .v {
-    font-size: 13px;
-    font-weight: normal;
-    color: #f0e2cf;
-    background: rgba(20, 16, 15, 0.45);
-    border: 1px solid rgba(255, 255, 255, 0.28);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--text-3);
+    background: var(--ink-850);
+    border: 1px solid var(--line);
     border-radius: 999px;
     padding: 2px 11px;
-    text-shadow: none;
+    letter-spacing: 0;
   }
   .hero p.sub {
-    margin: 0 0 16px;
-    color: #e6dcd2;
+    margin: 0 0 18px;
+    color: var(--text-2);
     font-size: 15.5px;
-    text-shadow: 0 1px 14px rgba(0, 0, 0, 0.75);
   }
   .badges { display: flex; flex-wrap: wrap; gap: 8px; }
   .badge {
@@ -111,12 +128,11 @@
     padding: 2px 12px;
     border-radius: 999px;
     font-size: 12.5px;
-    background: rgba(24, 24, 27, 0.55);
-    border: 1px solid rgba(255, 255, 255, 0.22);
-    color: #e8ebef;
+    background: rgba(255, 255, 255, .05);
+    border: 1px solid var(--line);
+    color: var(--text-2);
   }
 
-  /* 毛玻璃面板:流式排在徽章下方(标题区左下),backdrop 模糊透出磨砂层的光斑 */
   .hero-glass {
     width: fit-content;
     margin-top: 20px;
@@ -125,68 +141,66 @@
     align-items: flex-start;
     gap: 8px;
     padding: 14px 18px 16px;
-    border-radius: 14px;
-    background: rgba(24, 18, 16, 0.42);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    backdrop-filter: blur(18px) saturate(1.35);
-    -webkit-backdrop-filter: blur(18px) saturate(1.35);
-    box-shadow: 0 12px 42px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    background: rgba(21, 21, 28, .72);
+    border: 1px solid var(--line-strong);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
   }
 
-  /* 下载按钮:暖色渐变主按钮,图标为内联 SVG(离线可渲染,仅点击下载这个动作本身需要联网) */
+  /* 主按钮：品牌橙底 + 墨黑字，唯一高饱和动作色 */
   .dl-btn {
     display: inline-flex;
     align-items: center;
     gap: 8px;
     padding: 7px 16px;
-    border-radius: 8px;
-    background: linear-gradient(135deg, #e2571b, #c8102e);
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    color: #fff;
+    border-radius: 4px;
+    background: var(--accent);
+    border: none;
+    color: var(--ink-1000);
     font-size: 13.5px;
     font-weight: 600;
     text-decoration: none;
-    box-shadow: 0 4px 14px rgba(200, 16, 46, 0.35);
   }
-  .dl-btn:hover { filter: brightness(1.12); }
+  .dl-btn:hover { background: var(--accent-hover); }
   .dl-btn svg { width: 15px; height: 15px; flex: none; }
 
-  /* 打赏按钮:琥珀描边幽灵按钮,与下载主按钮并排 */
+  /* 打赏按钮：琥珀描边幽灵按钮，与下载主按钮并排 */
   .hero-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .donate-btn {
     display: inline-flex;
     align-items: center;
     gap: 7px;
     padding: 7px 16px;
-    border-radius: 8px;
-    background: rgba(242, 163, 60, 0.12);
-    border: 1px solid rgba(242, 163, 60, 0.5);
-    color: var(--accent-bright);
+    border-radius: 4px;
+    background: transparent;
+    border: 1px solid rgba(242, 163, 60, .5);
+    color: var(--warning);
     font-size: 13.5px;
     font-weight: 600;
     cursor: pointer;
   }
-  .donate-btn:hover { background: rgba(242, 163, 60, 0.22); }
+  .donate-btn:hover { background: rgba(242, 163, 60, .12); }
   .donate-btn svg { width: 15px; height: 15px; flex: none; }
 
-  /* 论坛按钮:中性描边幽灵按钮(与徽章同款白描边),点击跳 GitCode 讨论区 */
+  /* 论坛按钮：中性描边幽灵按钮 */
   .forum-btn {
     display: inline-flex;
     align-items: center;
     gap: 7px;
     padding: 7px 16px;
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.28);
-    color: #e8ebef;
+    border-radius: 4px;
+    background: transparent;
+    border: 1px solid var(--line-strong);
+    color: var(--text-2);
     font-size: 13.5px;
     font-weight: 600;
     text-decoration: none;
   }
-  .forum-btn:hover { background: rgba(255, 255, 255, 0.16); }
+  .forum-btn:hover { background: rgba(255, 255, 255, .05); color: var(--text); }
   .forum-btn svg { width: 15px; height: 15px; flex: none; }
 
-  /* 打赏弹窗:点按钮弹出赞赏码,遮罩点击 / × / Esc 关闭 */
+  /* 打赏弹窗：点按钮弹出赞赏码，遮罩点击 / × / Esc 关闭 */
   .donate-modal {
     position: fixed;
     inset: 0;
@@ -197,20 +211,20 @@
     padding: 24px;
   }
   .donate-modal[hidden] { display: none; }
-  .donate-backdrop { position: absolute; inset: 0; background: rgba(12, 9, 8, 0.72); }
+  .donate-backdrop { position: absolute; inset: 0; background: rgba(5, 5, 10, .78); }
   .donate-card {
     position: relative;
     margin: 0;
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 14px;
+    border-radius: 12px;
     padding: 16px;
     max-width: min(340px, 88vw);
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
+    box-shadow: 0 24px 80px rgba(0, 0, 0, .6);
   }
   .donate-modal:not([hidden]) .donate-card { animation: donate-pop 0.18s ease-out; }
   @keyframes donate-pop { from { transform: scale(0.92); opacity: 0; } }
-  .donate-card img { display: block; width: 100%; height: auto; border-radius: 10px; background: #fff; }
+  .donate-card img { display: block; width: 100%; height: auto; border-radius: 8px; background: rgb(255, 255, 255); }
   .donate-card figcaption { margin-top: 10px; text-align: center; font-size: 13px; color: var(--muted); }
   .donate-close {
     position: absolute;
@@ -218,15 +232,15 @@
     width: 28px; height: 28px;
     border-radius: 50%;
     border: 1px solid var(--border);
-    background: rgba(20, 16, 15, 0.72);
+    background: var(--ink-850);
     color: var(--text);
     font-size: 16px;
     line-height: 1;
     cursor: pointer;
   }
-  .donate-close:hover { border-color: var(--accent-bright); color: var(--accent-bright); }
+  .donate-close:hover { border-color: var(--accent); color: var(--accent); }
 
-  /* 仓库地址条(完整 URL 可见,点击跳转,新标签打开;上下排列) */
+  /* 仓库地址条 */
   .repo-row {
     display: flex;
     flex-direction: column;
@@ -238,39 +252,70 @@
     align-items: center;
     gap: 9px;
     padding: 5px 14px;
-    border-radius: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.22);
-    background: rgba(14, 12, 12, 0.5);
-    color: #f2e8da;
+    border-radius: 4px;
+    border: 1px solid var(--line);
+    background: var(--ink-900);
+    color: var(--text-2);
     text-decoration: none;
     font-size: 13px;
   }
-  .repo-link:hover { border-color: var(--accent-bright); }
+  .repo-link:hover { border-color: var(--accent); color: var(--text); }
   .repo-link svg { width: 15px; height: 15px; fill: currentColor; flex: none; }
   .repo-link .repo-url {
     font-family: var(--mono);
     font-size: 12.5px;
-    color: var(--accent-bright);
+    color: var(--warning);
   }
-  .repo-link:hover .repo-url { color: #ffd08a; }
+  .repo-link:hover .repo-url { color: var(--warning); }
   .repo-tag {
     font-size: 11px;
     padding: 1px 9px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.13);
-    color: #d8cdc2;
+    background: rgba(255, 255, 255, .08);
+    color: var(--text-3);
   }
   .repo-label {
     font-size: 13px;
     font-weight: 600;
-    color: #d8cdc2;
+    color: var(--text-2);
   }
+
+  /* ---- 截图拼贴：2×2 真实窗口截图，四角标记点 ---- */
+  .hero-collage {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    transform: rotate(-1.2deg);
+  }
+  .shot {
+    position: relative;
+    margin: 0;
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--ink-900);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, .45);
+  }
+  .shot::before, .shot::after {
+    content: "";
+    position: absolute;
+    width: 4px; height: 4px;
+    border-radius: 50%;
+    background: var(--accent);
+    z-index: 2;
+  }
+  .shot::before { top: -2px; left: -2px; }
+  .shot::after { right: -2px; bottom: -2px; }
+  .shot img { display: block; width: 100%; height: auto;
+    aspect-ratio: 1080 / 620; object-fit: cover; }
+  .shot:nth-child(1) { transform: translateY(14px); }
+  .shot:nth-child(4) { transform: translateY(-10px); }
 
   /* ---- 目录 ---- */
   nav {
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 8px;
     padding: 14px 18px;
     margin: 22px 0 8px;
   }
@@ -281,47 +326,56 @@
     padding: 3px 12px;
     border-radius: 999px;
     border: 1px solid var(--border);
-    color: var(--text);
+    color: var(--text-2);
     text-decoration: none;
     font-size: 13.5px;
   }
-  nav a:hover { border-color: var(--accent-bright); color: var(--accent-bright); }
+  nav a:hover { border-color: var(--accent); color: var(--accent); }
 
   /* ---- 章节 ---- */
   section {
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 8px;
     padding: 22px 26px;
     margin: 22px 0;
   }
   section:target { border-color: var(--accent); }
   h2 {
     margin: 0 0 4px;
-    font-size: 21px;
+    font-family: var(--brand);
+    font-size: 22px;
+    font-weight: 600;
     line-height: 1.4;
+    letter-spacing: .02em;
   }
-  h2 .zh { font-size: 14.5px; font-weight: normal; color: var(--muted); margin-left: 10px; }
+  h2 .zh { font-family: var(--sans); font-size: 14.5px; font-weight: 400; color: var(--muted); margin-left: 10px; }
   .entry {
     margin: 10px 0 4px;
     font-size: 13.5px;
     color: var(--muted);
   }
-  .entry code { color: var(--accent-bright); }
-  h3 { font-size: 15.5px; margin: 18px 0 6px; }
+  .entry code { color: var(--warning); }
+  h3 {
+    font-family: var(--brand);
+    font-size: 16px;
+    font-weight: 600;
+    margin: 18px 0 6px;
+  }
   ul { margin: 8px 0; padding-left: 22px; }
   li { margin: 4px 0; }
-  li::marker { color: var(--warm); }
+  li::marker { color: var(--accent); }
   code {
     font-family: var(--mono);
     font-size: 13px;
-    background: var(--bg);
+    background: var(--ink-950);
     border: 1px solid var(--border);
     border-radius: 4px;
     padding: 1px 6px;
     white-space: nowrap;
   }
-  a { color: var(--accent-bright); }
+  a { color: var(--warning); }
+  a:hover { color: var(--accent-hover); }
 
   table {
     width: 100%;
@@ -335,17 +389,17 @@
     text-align: left;
     vertical-align: top;
   }
-  th { background: #2a2220; color: #ded6cf; font-weight: 600; }
+  th { background: var(--ink-850); color: var(--text); font-weight: 600; }
   td code { white-space: normal; }
 
   .note {
-    border-left: 3px solid var(--warm);
-    background: #2a201c;
-    border-radius: 0 6px 6px 0;
+    border-left: 3px solid var(--accent);
+    background: var(--ink-850);
+    border-radius: 0 8px 8px 0;
     padding: 8px 14px;
     margin: 12px 0;
     font-size: 13.5px;
-    color: #cfcfd6;
+    color: var(--text-2);
   }
 
   /* ---- 页脚 ---- */
@@ -365,34 +419,39 @@
     height: 40px;
     border-radius: 50%;
     background: var(--accent);
-    color: #fff;
+    color: var(--ink-1000);
     text-align: center;
     line-height: 40px;
     text-decoration: none;
     font-size: 18px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+    font-weight: 700;
   }
-  .top-link:hover { background: var(--accent-bright); }
+  .top-link:hover { background: var(--accent-hover); }
 
-  /* ---- 工具轮播(纯内联 SVG 示意图,零外部资源) ---- */
+  /* ---- 工具轮播（真实截图 + 内联 SVG 示意，零外部资源） ---- */
   .carousel {
     position: relative;
     overflow: hidden;
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 8px;
     margin: 18px 0 0;
+    aspect-ratio: 1080 / 620;
   }
-  .car-track { display: flex; transition: transform 0.5s ease; }
+  .car-track { display: flex; height: 100%; transition: transform 0.5s ease; }
   .slide {
     flex: 0 0 100%;
     min-width: 0;
+    height: 100%;
     display: block;
     position: relative;
     text-decoration: none;
   }
-  .slide svg { display: block; width: 100%; height: auto; }
-  .slide img { display: block; width: 100%; height: auto; background: #241d1c; }
+  .slide svg { display: block; width: 100%; height: 100%; }
+  .slide img {
+    display: block; width: 100%; height: 100%;
+    object-fit: contain; background: var(--ink-950);
+  }
   .slide-cap {
     position: absolute;
     left: 0; right: 0; bottom: 0;
@@ -400,10 +459,15 @@
     align-items: baseline;
     gap: 12px;
     padding: 48px 26px 14px;
-    background: linear-gradient(rgba(26, 21, 20, 0), rgba(26, 21, 20, 0.92) 65%);
+    background: linear-gradient(rgba(5, 5, 10, 0), rgba(5, 5, 10, .94) 65%);
   }
-  .slide-cap strong { font-size: 18px; color: var(--text); }
-  .slide-cap span { font-size: 13.5px; color: var(--muted); }
+  .slide-cap strong {
+    font-family: var(--brand);
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .slide-cap span { font-size: 13.5px; color: var(--text-2); }
   .car-btn {
     position: absolute;
     top: 42%;
@@ -411,14 +475,14 @@
     width: 36px; height: 36px;
     border-radius: 50%;
     border: 1px solid var(--border);
-    background: rgba(20, 15, 14, 0.72);
+    background: rgba(10, 10, 15, .78);
     color: var(--text);
     font-size: 20px;
     line-height: 1;
     cursor: pointer;
     opacity: 0.72;
   }
-  .car-btn:hover { opacity: 1; border-color: var(--accent-bright); color: var(--accent-bright); }
+  .car-btn:hover { opacity: 1; border-color: var(--accent); color: var(--accent); }
   .car-prev { left: 12px; }
   .car-next { right: 12px; }
   .car-dots {
@@ -432,21 +496,29 @@
     padding: 0;
     border: none;
     border-radius: 50%;
-    background: #5c4b43;
+    background: var(--line-strong);
     cursor: pointer;
   }
-  .car-dot.on { background: var(--accent-bright); }
+  .car-dot.on { background: var(--accent); }
+
+  @media (max-width: 900px) {
+    .hero-inner { grid-template-columns: 1fr; padding-top: 36px; gap: 28px; }
+    .hero-collage { max-width: 620px; transform: none; }
+    .shot:nth-child(1), .shot:nth-child(4) { transform: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .car-track { transition: none; }
+  }
 </style>
 </head>
 <body>
 
 <header class="hero">
-  <div class="hero-bg" aria-hidden="true"></div>
-  <div class="hero-frost" aria-hidden="true"></div>
-  <div class="hero-shade" aria-hidden="true"></div>
   <div class="hero-inner">
+    <div class="hero-copy">
     <div class="hero-kicker">HOUDINI 21 / 22 · PLUGIN SUITE</div>
-    <h1>HouTools<span class="v">v1.10.2</span></h1>
+    <h1><img class="wordmark" src="brand/houtools-wordmark.png" alt="HouTools" width="1851" height="480"><span class="v">v1.10.2</span></h1>
     <p class="sub">Houdini 21/22 插件工具集 — 使用手册</p>
     <div class="badges">
       <span class="badge">Houdini 21 / 22</span>
@@ -483,6 +555,13 @@
         </button>
       </div>
     </div>
+    </div>
+    <div class="hero-collage" aria-hidden="true">
+      <figure class="shot"><img src="about_shots/automation.png" alt=""></figure>
+      <figure class="shot"><img src="about_shots/videoseq.png" alt=""></figure>
+      <figure class="shot"><img src="about_shots/hdr.png" alt=""></figure>
+      <figure class="shot"><img src="about_shots/recipe.png" alt=""></figure>
+    </div>
   </div>
 </header>
 
@@ -501,33 +580,33 @@
       <svg viewBox="0 0 880 320" role="img" aria-label="粘贴为 Object Merge 界面示意">
         <defs>
           <linearGradient id="c2-line" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0" stop-color="#e2571b"/><stop offset="1" stop-color="#c8102e"/>
+            <stop offset="0" stop-color="#ff5c38"/><stop offset="1" stop-color="#ff5c38"/>
           </linearGradient>
         </defs>
-        <rect width="880" height="320" fill="#241d1c"/>
-        <rect width="880" height="40" fill="#201a19"/>
-        <circle cx="22" cy="20" r="6" fill="#d1283e" opacity=".8"/><circle cx="42" cy="20" r="6" fill="#c9a53e" opacity=".8"/><circle cx="62" cy="20" r="6" fill="#3f9d58" opacity=".8"/>
-        <text x="88" y="26" font-family="Segoe UI, sans-serif" font-size="14" fill="#c9c9d0">Network Editor — Paste as Object Merge</text>
-        <g stroke="#2d2d2d" stroke-width="1">
+        <rect width="880" height="320" fill="#0a0a0f"/>
+        <rect width="880" height="40" fill="#101017"/>
+        <circle cx="22" cy="20" r="6" fill="#d1283e" opacity=".8"/><circle cx="42" cy="20" r="6" fill="#f2a33c" opacity=".8"/><circle cx="62" cy="20" r="6" fill="#45b06e" opacity=".8"/>
+        <text x="88" y="26" font-family="DingTalk JinBuTi, Microsoft YaHei, sans-serif" font-size="14" fill="#b8b8c2">Network Editor — Paste as Object Merge</text>
+        <g stroke="#262631" stroke-width="1">
           <path d="M0 80 H880 M0 140 H880 M0 200 H880 M0 260 H880"/>
           <path d="M110 40 V320 M260 40 V320 M410 40 V320 M560 40 V320 M710 40 V320"/>
         </g>
-        <g font-family="Segoe UI, sans-serif" font-size="13">
-          <rect x="70" y="112" width="170" height="76" rx="6" fill="#2a2a2f" stroke="#e2571b" stroke-width="2"/>
-          <rect x="70" y="112" width="170" height="24" rx="6" fill="#e2571b" opacity=".3"/>
-          <text x="82" y="129" fill="#e4e4e7">grid1</text>
-          <circle cx="76" cy="158" r="4" fill="#6a6a72"/><circle cx="76" cy="174" r="4" fill="#6a6a72"/>
+        <g font-family="DingTalk JinBuTi, Microsoft YaHei, sans-serif" font-size="13">
+          <rect x="70" y="112" width="170" height="76" rx="6" fill="#101017" stroke="#ff5c38" stroke-width="2"/>
+          <rect x="70" y="112" width="170" height="24" rx="6" fill="#ff5c38" opacity=".3"/>
+          <text x="82" y="129" fill="#f0f0f3">grid1</text>
+          <circle cx="76" cy="158" r="4" fill="#5c5c66"/><circle cx="76" cy="174" r="4" fill="#5c5c66"/>
           <path d="M240 150 C 290 150, 285 150, 334 150" stroke="url(#c2-line)" stroke-width="2.5" fill="none"/>
-          <rect x="334" y="112" width="200" height="76" rx="6" fill="#2a2a2f" stroke="#c8102e" stroke-width="2"/>
-          <rect x="334" y="112" width="200" height="24" rx="6" fill="#c8102e" opacity=".3"/>
-          <text x="346" y="129" fill="#e4e4e7">Merge_grid1</text>
-          <circle cx="340" cy="150" r="4" fill="#6a6a72"/><circle cx="340" cy="170" r="4" fill="#6a6a72"/>
-          <path d="M534 150 C 580 150, 575 150, 618 150" stroke="#6a6a72" stroke-width="2" fill="none"/>
-          <rect x="618" y="112" width="180" height="76" rx="6" fill="#2a2a2f" stroke="#5c5c66" stroke-width="2"/>
+          <rect x="334" y="112" width="200" height="76" rx="6" fill="#101017" stroke="#ff5c38" stroke-width="2"/>
+          <rect x="334" y="112" width="200" height="24" rx="6" fill="#ff5c38" opacity=".3"/>
+          <text x="346" y="129" fill="#f0f0f3">Merge_grid1</text>
+          <circle cx="340" cy="150" r="4" fill="#5c5c66"/><circle cx="340" cy="170" r="4" fill="#5c5c66"/>
+          <path d="M534 150 C 580 150, 575 150, 618 150" stroke="#5c5c66" stroke-width="2" fill="none"/>
+          <rect x="618" y="112" width="180" height="76" rx="6" fill="#101017" stroke="#5c5c66" stroke-width="2"/>
           <rect x="618" y="112" width="180" height="24" rx="6" fill="#5c5c66" opacity=".3"/>
-          <text x="630" y="129" fill="#e4e4e7">OUT</text>
-          <circle cx="624" cy="150" r="4" fill="#6a6a72"/>
-          <rect x="640" y="238" width="200" height="34" rx="17" fill="#26262b" stroke="#c8102e"/>
+          <text x="630" y="129" fill="#f0f0f3">OUT</text>
+          <circle cx="624" cy="150" r="4" fill="#5c5c66"/>
+          <rect x="640" y="238" width="200" height="34" rx="17" fill="#15151c" stroke="#ff5c38"/>
           <text x="740" y="260" text-anchor="middle" font-size="14" fill="#f2a33c">Ctrl + Shift + V</text>
           <text x="70" y="260" font-size="12" fill="#8a8a92">引用而非副本 · 颜色随源 · 单 undo 槽</text>
         </g>
@@ -537,27 +616,27 @@
 
     <a class="slide" href="#dragdrop-import">
       <svg viewBox="0 0 880 320" role="img" aria-label="拖放导入 .abc/.fbx/.usd 界面示意">
-        <rect width="880" height="320" fill="#241d1c"/>
-        <rect width="880" height="40" fill="#201a19"/>
-        <circle cx="22" cy="20" r="6" fill="#d1283e" opacity=".8"/><circle cx="42" cy="20" r="6" fill="#c9a53e" opacity=".8"/><circle cx="62" cy="20" r="6" fill="#3f9d58" opacity=".8"/>
-        <text x="88" y="26" font-family="Segoe UI, sans-serif" font-size="14" fill="#c9c9d0">External Drag &amp; Drop — .abc / .fbx / .usd</text>
-        <g font-family="Segoe UI, sans-serif">
-          <rect x="80" y="90" width="170" height="140" rx="10" fill="#2a2a2f" stroke="#e2571b" stroke-width="2" stroke-dasharray="7 5"/>
-          <path d="M214 90 L250 90 L250 126 Z" fill="#3f3f47"/>
-          <text x="165" y="168" text-anchor="middle" font-size="24" font-weight="bold" fill="#f5c9a8">.abc</text>
-          <text x="165" y="198" text-anchor="middle" font-size="24" font-weight="bold" fill="#f5c9a8">.fbx</text>
+        <rect width="880" height="320" fill="#0a0a0f"/>
+        <rect width="880" height="40" fill="#101017"/>
+        <circle cx="22" cy="20" r="6" fill="#d1283e" opacity=".8"/><circle cx="42" cy="20" r="6" fill="#f2a33c" opacity=".8"/><circle cx="62" cy="20" r="6" fill="#45b06e" opacity=".8"/>
+        <text x="88" y="26" font-family="DingTalk JinBuTi, Microsoft YaHei, sans-serif" font-size="14" fill="#b8b8c2">External Drag &amp; Drop — .abc / .fbx / .usd</text>
+        <g font-family="DingTalk JinBuTi, Microsoft YaHei, sans-serif">
+          <rect x="80" y="90" width="170" height="140" rx="10" fill="#101017" stroke="#ff5c38" stroke-width="2" stroke-dasharray="7 5"/>
+          <path d="M214 90 L250 90 L250 126 Z" fill="#262631"/>
+          <text x="165" y="168" text-anchor="middle" font-size="24" font-weight="bold" fill="#ffd0c4">.abc</text>
+          <text x="165" y="198" text-anchor="middle" font-size="24" font-weight="bold" fill="#ffd0c4">.fbx</text>
           <text x="165" y="222" text-anchor="middle" font-size="12" fill="#8a8a92">building_v3</text>
           <path d="M290 160 L420 160" stroke="#f2a33c" stroke-width="3" stroke-dasharray="9 7" fill="none"/>
           <polygon points="420,150 444,160 420,170" fill="#f2a33c"/>
           <text x="367" y="142" text-anchor="middle" font-size="12" fill="#8a8a92">drop</text>
-          <rect x="470" y="70" width="300" height="62" rx="6" fill="#2a2a2f" stroke="#c8102e" stroke-width="2"/>
-          <rect x="470" y="70" width="300" height="22" rx="6" fill="#c8102e" opacity=".3"/>
-          <text x="484" y="87" font-size="13" fill="#e4e4e7">building_v3</text>
+          <rect x="470" y="70" width="300" height="62" rx="6" fill="#101017" stroke="#ff5c38" stroke-width="2"/>
+          <rect x="470" y="70" width="300" height="22" rx="6" fill="#ff5c38" opacity=".3"/>
+          <text x="484" y="87" font-size="13" fill="#f0f0f3">building_v3</text>
           <text x="484" y="119" font-size="11" fill="#8a8a92">Alembic Archive / FBX 子网 / LOP sublayer · 自动命名</text>
-          <g font-size="12" fill="#b8b8c0">
-            <rect x="496" y="150" width="220" height="30" rx="5" fill="#2f2f35"/><circle cx="510" cy="165" r="4" fill="#6a6a72"/><text x="524" y="170">facade_geo</text>
-            <rect x="496" y="188" width="220" height="30" rx="5" fill="#2f2f35"/><circle cx="510" cy="203" r="4" fill="#6a6a72"/><text x="524" y="208">interior_geo</text>
-            <rect x="496" y="226" width="220" height="30" rx="5" fill="#2f2f35"/><circle cx="510" cy="241" r="4" fill="#6a6a72"/><text x="524" y="246">cam_rig</text>
+          <g font-size="12" fill="#b8b8c2">
+            <rect x="496" y="150" width="220" height="30" rx="5" fill="#15151c"/><circle cx="510" cy="165" r="4" fill="#5c5c66"/><text x="524" y="170">facade_geo</text>
+            <rect x="496" y="188" width="220" height="30" rx="5" fill="#15151c"/><circle cx="510" cy="203" r="4" fill="#5c5c66"/><text x="524" y="208">interior_geo</text>
+            <rect x="496" y="226" width="220" height="30" rx="5" fill="#15151c"/><circle cx="510" cy="241" r="4" fill="#5c5c66"/><text x="524" y="246">cam_rig</text>
           </g>
         </g>
       </svg>
@@ -568,35 +647,35 @@
       <svg viewBox="0 0 880 320" role="img" aria-label="视窗截图嵌入节点界面示意">
         <defs>
           <linearGradient id="c4-sky" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stop-color="#3c2f4a"/><stop offset="1" stop-color="#b0563a"/>
+            <stop offset="0" stop-color="#2e8b57"/><stop offset="1" stop-color="#ff5c38"/>
           </linearGradient>
         </defs>
-        <rect width="880" height="320" fill="#241d1c"/>
-        <rect width="880" height="40" fill="#201a19"/>
-        <circle cx="22" cy="20" r="6" fill="#d1283e" opacity=".8"/><circle cx="42" cy="20" r="6" fill="#c9a53e" opacity=".8"/><circle cx="62" cy="20" r="6" fill="#3f9d58" opacity=".8"/>
-        <text x="88" y="26" font-family="Segoe UI, sans-serif" font-size="14" fill="#c9c9d0">Network Editor — Capture Viewport to Node</text>
-        <g stroke="#2d2d2d" stroke-width="1">
+        <rect width="880" height="320" fill="#0a0a0f"/>
+        <rect width="880" height="40" fill="#101017"/>
+        <circle cx="22" cy="20" r="6" fill="#d1283e" opacity=".8"/><circle cx="42" cy="20" r="6" fill="#f2a33c" opacity=".8"/><circle cx="62" cy="20" r="6" fill="#45b06e" opacity=".8"/>
+        <text x="88" y="26" font-family="DingTalk JinBuTi, Microsoft YaHei, sans-serif" font-size="14" fill="#b8b8c2">Network Editor — Capture Viewport to Node</text>
+        <g stroke="#262631" stroke-width="1">
           <path d="M0 80 H880 M0 140 H880 M0 200 H880 M0 260 H880"/>
           <path d="M110 40 V320 M260 40 V320 M410 40 V320 M560 40 V320 M710 40 V320"/>
         </g>
-        <g font-family="Segoe UI, sans-serif">
-          <rect x="500" y="72" width="272" height="158" rx="6" fill="#1a1514" stroke="#e2571b" stroke-width="2"/>
+        <g font-family="DingTalk JinBuTi, Microsoft YaHei, sans-serif">
+          <rect x="500" y="72" width="272" height="158" rx="6" fill="#0a0a0f" stroke="#ff5c38" stroke-width="2"/>
           <rect x="508" y="80" width="256" height="118" fill="url(#c4-sky)"/>
-          <circle cx="716" cy="104" r="14" fill="#f5c86a"/>
-          <polygon points="508,198 586,120 648,198" fill="#241d1c" opacity=".85"/>
-          <polygon points="600,198 668,132 764,198" fill="#161211"/>
-          <rect x="508" y="198" width="256" height="24" fill="#2a2220"/>
-          <text x="636" y="214" text-anchor="middle" font-size="10" fill="#a89e96">$HIP/HouTools_cfg/captures/rop_cache1.jpg</text>
-          <rect x="240" y="212" width="180" height="72" rx="6" fill="#2a2a2f" stroke="#c8102e" stroke-width="2"/>
-          <rect x="240" y="212" width="180" height="22" rx="6" fill="#c8102e" opacity=".3"/>
-          <text x="252" y="228" font-size="13" fill="#e4e4e7">rop_cache1</text>
-          <circle cx="246" cy="252" r="4" fill="#6a6a72"/><circle cx="246" cy="268" r="4" fill="#6a6a72"/>
+          <circle cx="716" cy="104" r="14" fill="#ffd08a"/>
+          <polygon points="508,198 586,120 648,198" fill="#0a0a0f" opacity=".85"/>
+          <polygon points="600,198 668,132 764,198" fill="#05050a"/>
+          <rect x="508" y="198" width="256" height="24" fill="#15151c"/>
+          <text x="636" y="214" text-anchor="middle" font-size="10" fill="#8a8a92">$HIP/HouTools_cfg/captures/rop_cache1.jpg</text>
+          <rect x="240" y="212" width="180" height="72" rx="6" fill="#101017" stroke="#ff5c38" stroke-width="2"/>
+          <rect x="240" y="212" width="180" height="22" rx="6" fill="#ff5c38" opacity=".3"/>
+          <text x="252" y="228" font-size="13" fill="#f0f0f3">rop_cache1</text>
+          <circle cx="246" cy="252" r="4" fill="#5c5c66"/><circle cx="246" cy="268" r="4" fill="#5c5c66"/>
           <path d="M500 222 C 460 232, 446 236, 420 240" stroke="#f2a33c" stroke-width="2" stroke-dasharray="6 5" fill="none"/>
           <circle cx="500" cy="222" r="4" fill="#f2a33c"/>
           <g transform="translate(96,84)">
-            <rect x="0" y="8" width="44" height="32" rx="6" fill="#2f2a28" stroke="#8a5cf5" stroke-width="2"/>
-            <polygon points="44,16 60,8 60,40 44,32" fill="#2f2a28" stroke="#8a5cf5" stroke-width="2"/>
-            <circle cx="22" cy="24" r="8" fill="none" stroke="#8a5cf5" stroke-width="2"/>
+            <rect x="0" y="8" width="44" height="32" rx="6" fill="#15151c" stroke="#45b06e" stroke-width="2"/>
+            <polygon points="44,16 60,8 60,40 44,32" fill="#15151c" stroke="#45b06e" stroke-width="2"/>
+            <circle cx="22" cy="24" r="8" fill="none" stroke="#45b06e" stroke-width="2"/>
           </g>
           <text x="96" y="150" font-size="12" fill="#8a8a92">3D Viewport</text>
           <text x="70" y="300" font-size="12" fill="#8a8a92">右键节点 → Capture Viewport to Node</text>
@@ -608,36 +687,36 @@
 
     <a class="slide" href="#paste-bounding-box">
       <svg viewBox="0 0 880 320" role="img" aria-label="粘贴边界框界面示意">
-        <rect width="880" height="320" fill="#241d1c"/>
-        <rect width="880" height="40" fill="#201a19"/>
-        <circle cx="22" cy="20" r="6" fill="#d1283e" opacity=".8"/><circle cx="42" cy="20" r="6" fill="#c9a53e" opacity=".8"/><circle cx="62" cy="20" r="6" fill="#3f9d58" opacity=".8"/>
-        <text x="88" y="26" font-family="Segoe UI, sans-serif" font-size="14" fill="#c9c9d0">Network Editor — Paste Bounding Box</text>
-        <g stroke="#2d2d2d" stroke-width="1">
+        <rect width="880" height="320" fill="#0a0a0f"/>
+        <rect width="880" height="40" fill="#101017"/>
+        <circle cx="22" cy="20" r="6" fill="#d1283e" opacity=".8"/><circle cx="42" cy="20" r="6" fill="#f2a33c" opacity=".8"/><circle cx="62" cy="20" r="6" fill="#45b06e" opacity=".8"/>
+        <text x="88" y="26" font-family="DingTalk JinBuTi, Microsoft YaHei, sans-serif" font-size="14" fill="#b8b8c2">Network Editor — Paste Bounding Box</text>
+        <g stroke="#262631" stroke-width="1">
           <path d="M0 80 H880 M0 140 H880 M0 200 H880 M0 260 H880"/>
           <path d="M110 40 V320 M260 40 V320 M410 40 V320 M560 40 V320 M710 40 V320"/>
         </g>
-        <g font-family="Segoe UI, sans-serif">
+        <g font-family="DingTalk JinBuTi, Microsoft YaHei, sans-serif">
           <text x="252" y="96" font-size="11" fill="#f2a33c">bbox(box1)</text>
           <rect x="56" y="90" width="188" height="92" fill="none" stroke="#f2a33c" stroke-width="1.5" stroke-dasharray="6 4"/>
-          <rect x="72" y="104" width="156" height="64" rx="6" fill="#2a2a2f" stroke="#e2571b" stroke-width="2"/>
-          <rect x="72" y="104" width="156" height="22" rx="6" fill="#e2571b" opacity=".3"/>
-          <text x="84" y="120" font-size="13" fill="#e4e4e7">box1</text>
-          <circle cx="78" cy="142" r="4" fill="#6a6a72"/><circle cx="78" cy="158" r="4" fill="#6a6a72"/>
+          <rect x="72" y="104" width="156" height="64" rx="6" fill="#101017" stroke="#ff5c38" stroke-width="2"/>
+          <rect x="72" y="104" width="156" height="22" rx="6" fill="#ff5c38" opacity=".3"/>
+          <text x="84" y="120" font-size="13" fill="#f0f0f3">box1</text>
+          <circle cx="78" cy="142" r="4" fill="#5c5c66"/><circle cx="78" cy="158" r="4" fill="#5c5c66"/>
           <text x="84" y="156" font-size="10" fill="#8a8a92">源 · Ctrl+C 复制</text>
           <path d="M236 136 C 270 136, 280 136, 312 136" stroke="#f2a33c" stroke-width="2.5" stroke-dasharray="7 5" fill="none"/>
           <polygon points="312,130 328,136 312,142" fill="#f2a33c"/>
           <text x="278" y="122" text-anchor="middle" font-size="11" fill="#f2a33c">size / t</text>
-          <rect x="334" y="104" width="188" height="64" rx="6" fill="#2a2a2f" stroke="#8a5cf5" stroke-width="2"/>
-          <rect x="334" y="104" width="188" height="22" rx="6" fill="#8a5cf5" opacity=".3"/>
-          <text x="346" y="120" font-size="13" fill="#e4e4e7">box2</text>
-          <text x="346" y="142" font-size="10" fill="#b8a8e8">size ← bbox(../box1)</text>
-          <text x="346" y="158" font-size="10" fill="#b8a8e8">t ← centroid(../box1)</text>
-          <rect x="592" y="72" width="252" height="96" rx="6" fill="#2f2f35" stroke="#5c5c66"/>
-          <text x="606" y="94" font-size="12" fill="#c9c9d0">Paste Bounding Box [HT]</text>
-          <path d="M592 104 H844" stroke="#4a4a52" stroke-width="1"/>
-          <rect x="598" y="112" width="240" height="24" rx="4" fill="#0d6399"/>
-          <text x="612" y="128" font-size="12" fill="#ffffff">Paste Absolute Values [HT]</text>
-          <text x="612" y="156" font-size="12" fill="#e4e4e7">Paste Expressions [HT]</text>
+          <rect x="334" y="104" width="188" height="64" rx="6" fill="#101017" stroke="#45b06e" stroke-width="2"/>
+          <rect x="334" y="104" width="188" height="22" rx="6" fill="#45b06e" opacity=".3"/>
+          <text x="346" y="120" font-size="13" fill="#f0f0f3">box2</text>
+          <text x="346" y="142" font-size="10" fill="#6ee7b7">size ← bbox(../box1)</text>
+          <text x="346" y="158" font-size="10" fill="#6ee7b7">t ← centroid(../box1)</text>
+          <rect x="592" y="72" width="252" height="96" rx="6" fill="#15151c" stroke="#5c5c66"/>
+          <text x="606" y="94" font-size="12" fill="#b8b8c2">Paste Bounding Box [HT]</text>
+          <path d="M592 104 H844" stroke="#34343f" stroke-width="1"/>
+          <rect x="598" y="112" width="240" height="24" rx="4" fill="#ff5c38"/>
+          <text x="612" y="128" font-size="12" fill="#f0f0f3">Paste Absolute Values [HT]</text>
+          <text x="612" y="156" font-size="12" fill="#f0f0f3">Paste Expressions [HT]</text>
           <text x="592" y="196" font-size="11" fill="#8a8a92">仅带全三分量 size/t 参数的节点显示菜单</text>
           <text x="70" y="300" font-size="12" fill="#8a8a92">Ctrl+C 复制源 → 右键目标 → Paste Bounding Box</text>
           <text x="810" y="300" text-anchor="end" font-size="12" fill="#8a8a92">表达式实时跟随 · 锁定参数跳过 · 单 undo 槽</text>
@@ -648,41 +727,41 @@
 
     <a class="slide" href="#paste-center">
       <svg viewBox="0 0 880 320" role="img" aria-label="粘贴中心界面示意">
-        <rect width="880" height="320" fill="#241d1c"/>
-        <rect width="880" height="40" fill="#201a19"/>
-        <circle cx="22" cy="20" r="6" fill="#d1283e" opacity=".8"/><circle cx="42" cy="20" r="6" fill="#c9a53e" opacity=".8"/><circle cx="62" cy="20" r="6" fill="#3f9d58" opacity=".8"/>
-        <text x="88" y="26" font-family="Segoe UI, sans-serif" font-size="14" fill="#c9c9d0">Network Editor — Paste Center</text>
-        <g stroke="#2d2d2d" stroke-width="1">
+        <rect width="880" height="320" fill="#0a0a0f"/>
+        <rect width="880" height="40" fill="#101017"/>
+        <circle cx="22" cy="20" r="6" fill="#d1283e" opacity=".8"/><circle cx="42" cy="20" r="6" fill="#f2a33c" opacity=".8"/><circle cx="62" cy="20" r="6" fill="#45b06e" opacity=".8"/>
+        <text x="88" y="26" font-family="DingTalk JinBuTi, Microsoft YaHei, sans-serif" font-size="14" fill="#b8b8c2">Network Editor — Paste Center</text>
+        <g stroke="#262631" stroke-width="1">
           <path d="M0 80 H880 M0 140 H880 M0 200 H880 M0 260 H880"/>
           <path d="M110 40 V320 M260 40 V320 M410 40 V320 M560 40 V320 M710 40 V320"/>
         </g>
-        <g font-family="Segoe UI, sans-serif">
-          <rect x="56" y="72" width="188" height="64" rx="6" fill="#2a2a2f" stroke="#e2571b" stroke-width="2"/>
-          <rect x="56" y="72" width="188" height="22" rx="6" fill="#e2571b" opacity=".3"/>
-          <text x="68" y="88" font-size="13" fill="#e4e4e7">box1</text>
+        <g font-family="DingTalk JinBuTi, Microsoft YaHei, sans-serif">
+          <rect x="56" y="72" width="188" height="64" rx="6" fill="#101017" stroke="#ff5c38" stroke-width="2"/>
+          <rect x="56" y="72" width="188" height="22" rx="6" fill="#ff5c38" opacity=".3"/>
+          <text x="68" y="88" font-size="13" fill="#f0f0f3">box1</text>
           <text x="68" y="110" font-size="10" fill="#8a8a92">源 · Ctrl+C 复制</text>
           <circle cx="150" cy="124" r="4" fill="#f2a33c"/>
           <path d="M150 124 H244" stroke="#f2a33c" stroke-width="1.5" stroke-dasharray="5 4"/>
-          <rect x="334" y="72" width="188" height="64" rx="6" fill="#2a2a2f" stroke="#8a5cf5" stroke-width="2"/>
-          <rect x="334" y="72" width="188" height="22" rx="6" fill="#8a5cf5" opacity=".3"/>
-          <text x="346" y="88" font-size="13" fill="#e4e4e7">box2</text>
-          <circle cx="428" cy="124" r="4" fill="#b8a8e8"/>
-          <path d="M428 124 C 350 150, 300 140, 252 126" stroke="#b8a8e8" stroke-width="2" stroke-dasharray="6 4" fill="none"/>
-          <polygon points="256,120 244,125 255,131" fill="#b8a8e8"/>
-          <text x="330" y="152" text-anchor="end" font-size="11" fill="#b8a8e8">内容对齐源中心</text>
-          <path d="M428 136 V176" stroke="#3f9d58" stroke-width="2"/>
-          <rect x="334" y="180" width="188" height="72" rx="6" fill="#2a2a2f" stroke="#3f9d58" stroke-width="2"/>
-          <rect x="334" y="180" width="188" height="22" rx="6" fill="#3f9d58" opacity=".3"/>
-          <text x="346" y="196" font-size="13" fill="#e4e4e7">transform1</text>
-          <text x="346" y="218" font-size="10" fill="#8fd4a0">t ← centroid(A) − centroid(B)</text>
-          <text x="346" y="236" font-size="10" fill="#8fd4a0">p ← centroid(B)</text>
+          <rect x="334" y="72" width="188" height="64" rx="6" fill="#101017" stroke="#45b06e" stroke-width="2"/>
+          <rect x="334" y="72" width="188" height="22" rx="6" fill="#45b06e" opacity=".3"/>
+          <text x="346" y="88" font-size="13" fill="#f0f0f3">box2</text>
+          <circle cx="428" cy="124" r="4" fill="#6ee7b7"/>
+          <path d="M428 124 C 350 150, 300 140, 252 126" stroke="#6ee7b7" stroke-width="2" stroke-dasharray="6 4" fill="none"/>
+          <polygon points="256,120 244,125 255,131" fill="#6ee7b7"/>
+          <text x="330" y="152" text-anchor="end" font-size="11" fill="#6ee7b7">内容对齐源中心</text>
+          <path d="M428 136 V176" stroke="#45b06e" stroke-width="2"/>
+          <rect x="334" y="180" width="188" height="72" rx="6" fill="#101017" stroke="#45b06e" stroke-width="2"/>
+          <rect x="334" y="180" width="188" height="22" rx="6" fill="#45b06e" opacity=".3"/>
+          <text x="346" y="196" font-size="13" fill="#f0f0f3">transform1</text>
+          <text x="346" y="218" font-size="10" fill="#6ee7b7">t ← centroid(A) − centroid(B)</text>
+          <text x="346" y="236" font-size="10" fill="#6ee7b7">p ← centroid(B)</text>
           <text x="346" y="248" font-size="10" fill="#8a8a92">接管显示/渲染 · 已启用</text>
-          <rect x="592" y="72" width="252" height="96" rx="6" fill="#2f2f35" stroke="#5c5c66"/>
-          <text x="606" y="94" font-size="12" fill="#c9c9d0">Paste Center [HT]</text>
-          <path d="M592 104 H844" stroke="#4a4a52" stroke-width="1"/>
-          <rect x="598" y="112" width="240" height="24" rx="4" fill="#0d6399"/>
-          <text x="612" y="128" font-size="12" fill="#ffffff">Paste Absolute Values [HT]</text>
-          <text x="612" y="156" font-size="12" fill="#e4e4e7">Paste Expressions [HT]</text>
+          <rect x="592" y="72" width="252" height="96" rx="6" fill="#15151c" stroke="#5c5c66"/>
+          <text x="606" y="94" font-size="12" fill="#b8b8c2">Paste Center [HT]</text>
+          <path d="M592 104 H844" stroke="#34343f" stroke-width="1"/>
+          <rect x="598" y="112" width="240" height="24" rx="4" fill="#ff5c38"/>
+          <text x="612" y="128" font-size="12" fill="#f0f0f3">Paste Absolute Values [HT]</text>
+          <text x="612" y="156" font-size="12" fill="#f0f0f3">Paste Expressions [HT]</text>
           <text x="592" y="196" font-size="11" fill="#8a8a92">所有节点可见 · SOP/LOP/COP 建 transform</text>
           <text x="70" y="300" font-size="12" fill="#8a8a92">Ctrl+C 复制源 → 右键目标 → Paste Center</text>
           <text x="810" y="300" text-anchor="end" font-size="12" fill="#8a8a92">枢轴=目标中心 · 表达式实时跟随 · 单 undo 槽</text>
@@ -693,36 +772,36 @@
 
     <a class="slide" href="#filecache-absolute">
       <svg viewBox="0 0 880 320" role="img" aria-label="File Cache 路径转绝对示意">
-        <rect width="880" height="320" fill="#241d1c"/>
-        <rect width="880" height="40" fill="#201a19"/>
-        <circle cx="22" cy="20" r="6" fill="#d1283e" opacity=".8"/><circle cx="42" cy="20" r="6" fill="#c9a53e" opacity=".8"/><circle cx="62" cy="20" r="6" fill="#3f9d58" opacity=".8"/>
-        <text x="88" y="26" font-family="Segoe UI, sans-serif" font-size="14" fill="#c9c9d0">Network Editor — File Cache Paths to Absolute</text>
-        <g stroke="#2d2d2d" stroke-width="1">
+        <rect width="880" height="320" fill="#0a0a0f"/>
+        <rect width="880" height="40" fill="#101017"/>
+        <circle cx="22" cy="20" r="6" fill="#d1283e" opacity=".8"/><circle cx="42" cy="20" r="6" fill="#f2a33c" opacity=".8"/><circle cx="62" cy="20" r="6" fill="#45b06e" opacity=".8"/>
+        <text x="88" y="26" font-family="DingTalk JinBuTi, Microsoft YaHei, sans-serif" font-size="14" fill="#b8b8c2">Network Editor — File Cache Paths to Absolute</text>
+        <g stroke="#262631" stroke-width="1">
           <path d="M0 80 H880 M0 140 H880 M0 200 H880 M0 260 H880"/>
           <path d="M110 40 V320 M260 40 V320 M410 40 V320 M560 40 V320 M710 40 V320"/>
         </g>
-        <g font-family="Segoe UI, sans-serif">
-          <rect x="48" y="104" width="170" height="64" rx="6" fill="#2a2a2f" stroke="#0d6399" stroke-width="2"/>
-          <rect x="48" y="104" width="170" height="22" rx="6" fill="#0d6399" opacity=".3"/>
-          <text x="60" y="120" font-size="13" fill="#e4e4e7">filecache1</text>
+        <g font-family="DingTalk JinBuTi, Microsoft YaHei, sans-serif">
+          <rect x="48" y="104" width="170" height="64" rx="6" fill="#101017" stroke="#ff5c38" stroke-width="2"/>
+          <rect x="48" y="104" width="170" height="22" rx="6" fill="#ff5c38" opacity=".3"/>
+          <text x="60" y="120" font-size="13" fill="#f0f0f3">filecache1</text>
           <text x="60" y="142" font-size="10" fill="#8a8a92">File Cache · 当前层级全部处理</text>
-          <path d="M218 136 H332" stroke="#8a5cf5" stroke-width="2" stroke-dasharray="6 4"/>
-          <polygon points="334,130 346,136 334,142" fill="#8a5cf5"/>
-          <text x="230" y="124" font-size="10" fill="#b8a8e8">一键转换</text>
-          <rect x="346" y="56" width="500" height="196" rx="6" fill="#2f2f35" stroke="#5c5c66"/>
-          <text x="360" y="78" font-size="12" fill="#c9c9d0">File Cache Paths to Absolute</text>
-          <path d="M346 88 H846" stroke="#4a4a52" stroke-width="1"/>
+          <path d="M218 136 H332" stroke="#45b06e" stroke-width="2" stroke-dasharray="6 4"/>
+          <polygon points="334,130 346,136 334,142" fill="#45b06e"/>
+          <text x="230" y="124" font-size="10" fill="#6ee7b7">一键转换</text>
+          <rect x="346" y="56" width="500" height="196" rx="6" fill="#15151c" stroke="#5c5c66"/>
+          <text x="360" y="78" font-size="12" fill="#b8b8c2">File Cache Paths to Absolute</text>
+          <path d="M346 88 H846" stroke="#34343f" stroke-width="1"/>
           <text x="360" y="112" font-size="10" fill="#8a8a92">basedir</text>
           <text x="422" y="112" font-size="10" fill="#8a8a92">$HIP/geo/</text>
           <text x="496" y="112" font-size="10" fill="#8a8a92">→</text>
-          <text x="512" y="112" font-size="10" fill="#8fd4a0">D:/shots/SA01/geo/</text>
+          <text x="512" y="112" font-size="10" fill="#6ee7b7">D:/shots/SA01/geo/</text>
           <text x="360" y="136" font-size="10" fill="#8a8a92">basename</text>
           <text x="422" y="136" font-size="10" fill="#8a8a92">$HIPNAME.$OS</text>
           <text x="496" y="136" font-size="10" fill="#8a8a92">→</text>
-          <text x="512" y="136" font-size="10" fill="#8fd4a0">untitled.filecache1</text>
+          <text x="512" y="136" font-size="10" fill="#6ee7b7">untitled.filecache1</text>
           <text x="360" y="160" font-size="10" fill="#8a8a92">file</text>
           <text x="422" y="160" font-size="10" fill="#8a8a92">$HIP/geo/$HIPNAME.$OS.$F.bgeo.sc</text>
-          <text x="422" y="180" font-size="10" fill="#8fd4a0">D:/shots/SA01/geo/untitled.filecache1.<tspan fill="#c9a53e">$F</tspan>.bgeo.sc</text>
+          <text x="422" y="180" font-size="10" fill="#6ee7b7">D:/shots/SA01/geo/untitled.filecache1.<tspan fill="#f2a33c">$F</tspan>.bgeo.sc</text>
           <text x="360" y="212" font-size="10" fill="#8a8a92">$F 帧变量保留 · $OS 按节点名冻结 · 表达式/锁定参数跳过</text>
           <text x="70" y="300" font-size="12" fill="#8a8a92">网络编辑器 HouTools 菜单 → File Cache Paths to Absolute</text>
           <text x="810" y="300" text-anchor="end" font-size="12" fill="#8a8a92">$F 保留 · 三参数一次转换 · 单 undo 槽</text>
@@ -737,8 +816,8 @@
     </a>
 
     <a class="slide" href="#hdr-library">
-      <img src="about_shots/hdr.png" alt="Hdr Library 界面截图:HDR 缩略图网格与分类侧栏">
-      <div class="slide-cap"><strong>Hdr Library</strong><span>缩略图网格浏览,双击赋给选中灯光</span></div>
+      <img src="about_shots/hdr.png" alt="HDR Library 界面截图:HDR 缩略图网格与分类侧栏">
+      <div class="slide-cap"><strong>HDR Library</strong><span>缩略图网格浏览,双击赋给选中灯光</span></div>
     </a>
 
     <a class="slide" href="#recipe-library">
@@ -763,10 +842,9 @@
   <a href="#paste-bounding-box">粘贴边界框</a>
   <a href="#paste-center">粘贴中心</a>
   <a href="#video-to-sequence">视频转序列图</a>
-  <a href="#hdr-library">Hdr Library</a>
+  <a href="#hdr-library">HDR Library</a>
   <a href="#recipe-library">Recipe Library</a>
   <a href="#houtools-settings">HouTools Settings</a>
-  <a href="#open-hip-folder">打开工程文件夹</a>
   <a href="#open-cache-folder">Open Cache Folder</a>
   <a href="#reload-dev">Reload Modules (Dev)</a>
   <a href="#install">安装</a>
@@ -819,7 +897,7 @@
     <li>未列出的组合一律跳过(状态栏提示)。</li>
     <li>整次操作占用单个 undo 槽,<code>Ctrl+Z</code> 一步撤回。</li>
     <li>源路径取 OS 剪贴板文本;文本失效时状态栏按原因提示重新复制(不粘贴副本)。</li>
-    <li>键位在 <code>HouTools → HouTools Settings…</code> 修改,也可用 Houdini 自带 Hotkey Manager(符号 <code>h.pane.wsheet.houtools_paste_as_object_merge</code>)。</li>
+    <li>键位在 <code>HouTools → HouTools Settings...</code> 修改,也可用 Houdini 自带 Hotkey Manager(符号 <code>h.pane.wsheet.houtools_paste_as_object_merge</code>)。</li>
   </ul>
 </section>
 
@@ -833,7 +911,7 @@
     <li>取值与节点右键 <code>Open Cache Folder [HT]</code> 同源:<code>$HIP</code>/<code>$OS</code> 等变量展开后的绝对路径。</li>
     <li>目录尚未写出(缓存未落盘)时<strong>不复制</strong>,左下角红色错误通知;各类失败反馈只走通知模块、不刷控制台。</li>
     <li>多选时把命中节点的目录去重后逐行合并复制,未命中的节点忽略。</li>
-    <li>键位在 <code>HouTools → HouTools Settings…</code> 修改,也可用 Houdini 自带 Hotkey Manager(符号 <code>h.pane.wsheet.houtools_copy_output_path</code>)。</li>
+    <li>键位在 <code>HouTools → HouTools Settings...</code> 修改,也可用 Houdini 自带 Hotkey Manager(符号 <code>h.pane.wsheet.houtools_copy_output_path</code>)。</li>
   </ul>
 </section>
 
@@ -929,10 +1007,10 @@
   <div class="note">ffmpeg 优先使用 Houdini 自带的 <code>$HFS/bin/hffmpeg</code>,<strong>无需单独安装</strong>;如需指定版本,把 <code>ffmpeg.exe</code> 放到 HouTools 配置目录(包清单里 <code>HOUTOOLS_FFMPEG</code> 变量指向的位置,默认 <code>$HOUDINI_USER_PREF_DIR/../HouTools</code>,即设置目录的上级)即可优先使用。</div>
 </section>
 
-<!-- ============ Hdr Library ============ -->
+<!-- ============ HDR Library ============ -->
 <section id="hdr-library">
-  <h2>Hdr Library<span class="zh">HDR 环境贴图库</span></h2>
-  <p class="entry">入口:<code>HouTools → Hdr Library</code>(独立窗口,进任务栏,可全局置顶)</p>
+  <h2>HDR Library<span class="zh">HDR 环境贴图库</span></h2>
+  <p class="entry">入口:<code>HouTools → HDR Library</code>(独立窗口,进任务栏,可全局置顶)</p>
   <p>HDR 环境贴图库浏览器:缩略图网格浏览、按文件夹分类、收藏,选中灯光后双击即完成贴图。</p>
   <h3>库组织</h3>
   <ul>
@@ -1000,7 +1078,7 @@
 <!-- ============ HouTools Settings ============ -->
 <section id="houtools-settings">
   <h2>HouTools Settings<span class="zh">设置</span></h2>
-  <p class="entry">入口:<code>HouTools → HouTools Settings…</code></p>
+  <p class="entry">入口:<code>HouTools → HouTools Settings...</code></p>
   <p>HouTools 的统一设置窗口,当前包含两块:</p>
   <ul>
     <li><strong>配置目录</strong>:只读展示当前生效的配置目录(全部用户配置——快捷键、
@@ -1016,17 +1094,6 @@
   <ul>
     <li>自定义键优先;其次尊重 Hotkey Manager 中已有的键位;最后落默认值(Paste as Object Merge <code>Ctrl+Shift+V</code>、Copy Output Path <code>Ctrl+Shift+C</code>)。</li>
     <li>设置保存在本机配置目录下,换电脑或重装后重新设置一次即可。</li>
-  </ul>
-</section>
-
-<!-- ============ 打开工程文件夹 ============ -->
-<section id="open-hip-folder">
-  <h2>Open Hip Folder<span class="zh">打开工程文件夹</span></h2>
-  <p class="entry">入口:<code>HouTools → Open Hip Folder</code>(主菜单与网络编辑器菜单均有)</p>
-  <p>用资源管理器直接打开当前 hip 文件所在的文件夹——找工程目录里的缓存、贴图、版本文件不用再翻 File 菜单看路径。</p>
-  <ul>
-    <li>打开的是 hip 文件<strong>所在文件夹</strong>(等价 <code>$HIP</code> 的实际目录)。</li>
-    <li>工程尚未保存时打开默认的 <code>$HIP</code> 文件夹(<code>untitled.hip</code> 所在目录)。</li>
   </ul>
 </section>
 
@@ -1066,7 +1133,10 @@
 </section>
 
 <footer>
-  <p>HouTools 以 <a href="https://jxself.org/translations/gpl-3.zh.shtml">GPL-3.0</a> 协议开源,Copyright (c) 2026 mahx_vfx。二次分发须同样以 GPL-3.0 开源并保留版权声明。</p>
+  <p><img class="wordmark-sm" src="brand/houtools-wordmark.png" alt="HouTools" width="1851" height="480"> v1.10.2 · <a href="https://jxself.org/translations/gpl-3.zh.shtml">GPL-3.0</a> ·
+    <a href="https://gitcode.com/mahx-vfx/HouTools" target="_blank" rel="noopener">GitCode</a> ·
+    <a href="https://github.com/mahx-vfx/HouTools" target="_blank" rel="noopener">GitHub</a></p>
+  <p>HouTools 以 GPL-3.0 协议开源,Copyright (c) 2026 mahx_vfx。二次分发须同样以 GPL-3.0 开源并保留版权声明。</p>
   <p>本项目为个人开发的第三方工具,与 SideFX 无关、非官方产品;Houdini 及相关商标归 SideFX Software 所有。运行本项目需要使用者自行持有合法的 Houdini 授权。</p>
 </footer>
 

@@ -4,8 +4,8 @@
 
 ## 库与侧栏
 
-- 菜单 Hdr Library；递归扫描 `.hdr/.hdri/.exr`，第一级子文件夹即分类（左侧侧栏切换 全部/收藏/各分类，侧栏右键可新建/打开分类文件夹，空分类也列出）。
-- 侧栏行样式与 Recipe Library 分类板块同款（共享 `houtools/ui/sidebar.py` 的 SidebarDelegate：行首图标 grid/star/folder + 名称 + 右对齐计数、选中蓝底圆角，计数/图标经 ItemRole 携带，行底色/视口同色 #26262b）。
+- 菜单 HDR Library；递归扫描 `.hdr/.hdri/.exr`，第一级子文件夹即分类（左侧侧栏切换 全部/收藏/各分类，侧栏右键可新建/打开分类文件夹，空分类也列出）。
+- 侧栏行样式与 Recipe Library 分类板块同款（共享 `houtools/ui/sidebar.py` 的 SidebarDelegate：行首图标 grid/star/folder + 名称 + 右对齐计数、选中品牌橙淡底+橙描边，计数/图标经 ItemRole 携带，行底色/视口同色 INK_900（theme））。
 - 右键收藏 HDR（存配置目录 `hdr_library.json` 的 `favorites`，normcase 路径），侧栏"★ 收藏"过滤。
 - **收藏标识 = 缩略图右上角角标**（与 Recipe Library 共用 `ui/badge.py` 的 FavoriteBadge，名字不加前缀；过滤重建与后台批量补图两条路径都经 _item_icon 合成角标）。
 - **侧栏「新建分类」的名称校验面与 automation `_sanitize_config_name` 对齐**（分隔符之外还须拒 NUL、纯点号——".." 不含非法字符却会"建出"指向库目录上级的分类——与 Windows 保留名）。

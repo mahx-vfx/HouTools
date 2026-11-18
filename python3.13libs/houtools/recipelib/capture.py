@@ -31,20 +31,21 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from houtools.core.log import get_logger
 from houtools.recipelib.crop import HANDLE, MIN_SEL, TARGET_RATIO
+from houtools.ui import theme
 
 log = get_logger("recipelib.capture")
 
 HIDE_DELAY_MS = 200   # 面板隐藏后等 DWM 重绘完再抓屏（急了会把面板截进去）
 DIM_ALPHA = 110       # 选框外压暗度（与 crop.py 同观感）
 CHIP_BG = (20, 20, 24, 210)   # 提示条/尺寸标签/按钮条底色
-CHIP_FG = "#e2e2e8"
+CHIP_FG = theme.color("TEXT")
 # 微信式 ✓/✗ 按钮条：左叉右勾，贴选框下缘右对齐，选框贴底翻到上缘
 BAR_BTN = 32      # 单个按钮格（正方形）
 BAR_PAD = 5       # 按钮条内边距
 BAR_GAP = 4       # 两格间距
 BAR_MARGIN = 8    # 按钮条与选框边缘的间距（与尺寸标签同距）
-BAR_CHECK = "#2fbf71"
-BAR_CROSS = "#e5484d"
+BAR_CHECK = theme.color("SUCCESS")
+BAR_CROSS = theme.color("ERROR")
 
 
 def _scaled_span(lo, hi, dpr):
@@ -120,7 +121,7 @@ class _ScreenOverlay(QtWidgets.QWidget):
             # 曾因此边框/三分线不可见）；选框跨屏时超界部分被本窗口裁剪，
             # 属于邻屏的边由那块屏的遮罩画出
             p.setBrush(QtCore.Qt.NoBrush)
-            pen = QtGui.QPen(QtGui.QColor("#ffffff"))
+            pen = QtGui.QPen(QtGui.QColor(theme.color("TEXT")))
             pen.setWidth(1)
             p.setPen(pen)
             p.drawRect(s)
@@ -133,7 +134,7 @@ class _ScreenOverlay(QtWidgets.QWidget):
                 p.drawLine(s.left(), y, s.right(), y)
             # 四角手柄（同 crop.py：白色实心方块，热区见会话 _handle_at）
             p.setPen(QtCore.Qt.NoPen)
-            p.setBrush(QtGui.QColor("#ffffff"))
+            p.setBrush(QtGui.QColor(theme.color("TEXT")))
             for cx, cy in ((s.left(), s.top()), (s.right(), s.top()),
                            (s.left(), s.bottom()), (s.right(), s.bottom())):
                 p.drawRect(cx - HANDLE, cy - HANDLE, HANDLE * 2, HANDLE * 2)

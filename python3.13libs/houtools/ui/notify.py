@@ -30,6 +30,7 @@ houtools.dev.status 是既有调用点的稳定入口：按调用 import_module 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from houtools.core.log import get_logger
+from houtools.ui import theme
 from houtools.ui.fonts import apply as _apply_tool_font
 from houtools.ui.icons import svg_icon
 
@@ -47,12 +48,14 @@ _ENTER_SLIDE_PX = 8    # 入场上滑距离
 _SHIFT_MS = 170        # 补位下滑时长
 
 COLORS = {
-    "success": "#285C43",
-    "info": "#0d6399",
-    "warning": "#80601E",
-    "error": "#d1283e",
+    "success": theme.color("SUCCESS"),
+    "info": theme.color("TEXT_2"),
+    "warning": theme.color("WARNING"),
+    "error": theme.color("ERROR"),
 }
-_TEXT_COLOR = "#FFFFFF"
+_BG_COLOR = theme.color("INK_850")
+_BORDER_COLOR = theme.color("LINE")
+_TEXT_COLOR = theme.color("TEXT")
 
 # svg_icon 失败（QtSvg 缺失/坏文件）时的文字 glyph 兜底
 _GLYPHS = {"success": "✓", "info": "i", "warning": "⚠", "error": "✕"}
@@ -207,7 +210,7 @@ class _Toast(QtWidgets.QFrame):
                          QtCore.Qt.WindowType.Tool
                          | QtCore.Qt.WindowType.FramelessWindowHint
                          | QtCore.Qt.WindowType.WindowStaysOnTopHint)
-        self._bg = COLORS.get(level, COLORS["info"])
+        self._accent = COLORS.get(level, COLORS["info"])
         self._level = level if level in COLORS else "info"
         self.setObjectName("HtToast")
         # WA_TranslucentBackground：圆角外透明（逐像素 alpha 走 DWM 合成）
@@ -270,13 +273,27 @@ class _Toast(QtWidgets.QFrame):
         self._fade_duration = _fade_ms(self._level, duration)
 
     # ---- 手绘底色（半透明顶层窗上 QSS background 不渲染，必须 paintEvent）
+    #      品牌定稿：INK_850 面 + 1px LINE 描边 + 左侧 2px 语义色条；
+    #      不再整块高饱和底色（结构/时序未动，只换外观）
     def paintEvent(self, event):
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        rect = QtCore.QRectF(self.rect().adjusted(0, 0, -1, -1))
+        # 底色 + 描边
+        p.setPen(QtGui.QPen(QtGui.QColor(_BORDER_COLOR), 1))
+        p.setBrush(QtGui.QColor(_BG_COLOR))
+        p.drawRoundedRect(rect, 4, 4)
+        # 左侧语义色条：裁进圆角内，只占最左 2px
         p.setPen(QtCore.Qt.PenStyle.NoPen)
-        p.setBrush(QtGui.QColor(self._bg))
-        # 右/下各收 1px：抗锯齿边不贴窗口边界被裁
-        p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 3, 3)
+        p.setBrush(QtGui.QColor(self._accent))
+        p.save()
+        clip = QtGui.QPainterPath()
+        clip.addRoundedRect(rect, 4, 4)
+        p.setClipPath(clip)
+        p.drawRect(QtCore.QRectF(rect.left(), rect.top(), 2.0,
+                                 rect.height()))
+        p.restore()
+        p.end()
 
     # ---- 布局：左下角第一条贴状态栏，向上堆叠（顶层窗用全局坐标）；
     #      终点记入 _target_y（入场动画的落点、后续补位的记账基准）

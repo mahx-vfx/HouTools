@@ -1,14 +1,29 @@
-# HouTools (Houdini 21/22 · Python 3.11/3.13)
+![HouTools 品牌头图](docs/brand/houtools-banner.png)
 
-![Houdini 21/22](https://img.shields.io/badge/Houdini-21.0%20%7C%2022.0-FF4747?logo=sidefx&logoColor=white) ![Python 3.11/3.13](https://img.shields.io/badge/Python-3.11%20%7C%203.13-3776AB?logo=python&logoColor=white) ![PySide6](https://img.shields.io/badge/PySide6-6.8.3-41CD52?logo=qt&logoColor=white) ![Platform Windows](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows11&logoColor=white) ![License GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue?logo=gnu&logoColor=white)
+![Houdini 21 / 22](docs/brand/badge-houdini.png) ![Python 3.11 / 3.13](docs/brand/badge-python.png) ![PySide6 6.8](docs/brand/badge-pyside6.png) ![GPL-3.0](docs/brand/badge-gpl.png)
 
 Houdini 21/22 插件工具集——一份代码两版通用（21.0 走 Python 3.11 入口壳，22.0 走 Python 3.13），开发期支持**手动热加载**：改完代码无需重启 Houdini。
 
 > 仅支持 Windows：Automation 的窗口置顶用 Win32 API，部分工具的"打开所在文件夹"依赖 explorer。
 
+## 界面
+
+| Automation | Video to Sequence |
+|---|---|
+| ![Automation](docs/about_shots/automation.png) | ![Video to Sequence](docs/about_shots/videoseq.png) |
+| **HDR Library** | **Recipe Library** |
+| ![HDR Library](docs/about_shots/hdr.png) | ![Recipe Library](docs/about_shots/recipe.png) |
+
+统一视觉：墨黑工作区 + 品牌橙动作色 + 深绿蓝图点缀；窗口、图标、Toast、
+Settings 与离线手册共用同一套 token（`houtools/ui/theme.py`）。工具面板
+沿用原阿里妈妈数黑体 Bold（功能优先，不额外加品牌顶栏）；钉钉进步体只用于
+docs/README 品牌字标，Recipe 文档用方圆体 VF。品牌手册见
+[docs/brand.md](docs/brand.md)。
+
+
 ## 安装
 
-[![下载 HouTools.zip](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-HouTools.zip-0d6399?style=for-the-badge)](https://gitcode.com/mahx-vfx/HouTools/releases/download/latest/HouTools.zip)
+**[下载 HouTools.zip](https://gitcode.com/mahx-vfx/HouTools/releases/download/latest/HouTools.zip)**（GitCode Releases）
 
 1. 点击上方按钮下载 HouTools.zip，整个解压到 `Documents/houdiniXX.X/packages/`（Houdini 21.0 / 22.0 同一个包直装两版）——解压后该目录下即有 `HouTools` 文件夹与 `HouTools.json`；
 2. 启动 Houdini，顶部菜单即出现 **HouTools**。
@@ -21,7 +36,7 @@ Houdini 21/22 插件工具集——一份代码两版通用（21.0 走 Python 3.
 应用级配置等）存放在**配置目录**，默认 `Documents\HouTools\settings`（Houdini 21/22 共用
 一份）。要改位置：编辑 `HouTools.json` 包清单，把 env 里的 `HOUTOOLS_SETTINGS_DIR` 改为
 目标目录的**绝对路径**（默认值 `$HOUDINI_USER_PREF_DIR/../HouTools/settings`），重启
-Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings…` 窗口查看。
+Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings...` 窗口查看。
 
 > 团队共享部署：把 `HouTools` 文件夹放到网络盘，每人自己的 `HouTools.json` 用 `path`
 > 指向它即可；配置目录保持各自本机默认——配置永不落共享盘，互不干扰。
@@ -54,18 +69,17 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings�
 | 工具 | 菜单项 / 键位 | 说明 |
 |------|--------|------|
 | Automation | `HouTools → Automation`（Python Panel） | 自动化批处理：节点按钮点击 / Flipbook 拍屏 / HomeAssistant Webhook / 打开DW |
-| 粘贴为 Object Merge | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+V` | 复制节点后，按"目标上下文 × 源类别"在鼠标位置粘贴引用节点；键位在 `HouTools → HouTools Settings…` 修改 |
+| 粘贴为 Object Merge | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+V` | 复制节点后，按"目标上下文 × 源类别"在鼠标位置粘贴引用节点；键位在 `HouTools → HouTools Settings...` 修改 |
 | 复制输出路径 | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+C` | 选中带输出路径参数的节点（与右键 Open Cache Folder 同规则：filecache / mantra / karma / usdrender / rop geometry 等，第三方 Arnold 节点亦支持），把输出文件**所在的文件夹**（展开后的绝对路径，不含文件名）复制到系统剪贴板；目录未落盘时不复制并红色报错；多选时去重逐行合并 |
 | File Cache 路径转绝对 | 网络编辑器 `HouTools` 菜单 → `File Cache Paths to Absolute` | 一键把当前层级所有 File Cache 节点的三个路径参数（basedir/basename/file）展开成绝对路径（`$HIP`/`$HIPNAME`/`$OS` 等变量冻结成字面值、相对路径按工程目录拼接），**帧变量 `$F`/`$FF` 原样保留**（帧号不冻结）；已绝对/表达式驱动/锁定参数等自动跳过；整批单个 undo 槽 |
-| 打开工程文件夹 | `HouTools → Open Hip Folder`（主菜单与网络编辑器菜单） | 用资源管理器打开当前 hip 文件所在的文件夹；工程尚未保存时打开默认的 `$HIP` 文件夹（`untitled.hip` 所在目录） |
 | 拖放导入 Alembic / FBX / USD | 拖 `.abc`/`.fbx`/`.usd` 等文件到网络编辑器 | 松手即在鼠标位置创建导入节点：obj 层级 = Alembic Archive（自动构建层级）/ FBX 子网（官方导入器），SOP 层级 = alembic / file 节点，LOP 层级（`.usd`/`.usda`/`.usdc`/`.usdz`）= sublayer 节点；支持多文件混拖（基于 Houdini 官方 externaldragdrop 钩子） |
 | 视窗截图嵌入 | 节点右键 `Capture Viewport to Node [HT]` | 截取当前 3D 视窗存为 JPG（`$HIP/HouTools_cfg/captures/`），作为网络编辑器背景图钉在节点旁，随节点移动/改名跟随；只存路径引用不进 hip；右键 `Delete Viewport Capture [HT]` 删除截图 |
 | 粘贴边界框 | 节点右键 `Paste Bounding Box [HT]` | Ctrl+C 复制源节点后，右键带三分量 `size`/`t` 参数的目标节点（如 box），把源节点包围盒尺寸/中心粘贴到其 `size`/`t`——绝对值或 `bbox()`/`centroid()` 表达式（同网络相对路径、跨层级绝对路径）两种模式 |
 | 粘贴中心 | 节点右键 `Paste Center [HT]` | Ctrl+C 复制源节点后右键任意目标节点，在其下方创建 transform 并启用（接管显示/渲染）：枢轴=目标中心、平移=源中心−目标中心（目标内容对齐到源中心）——绝对值或 `centroid()` 表达式两种模式 |
 | 视频转序列图 | `HouTools → Video to Sequence` | ffmpeg 提取视频为 JPG 序列（帧级进度，质量/起始帧/位数/前缀可调），EXR/PNG/TIF 静帧序列同样支持（浏览时同一序列折叠为一个选项，EXR 自动转 sRGB），相机支持在 Houdini 节点选择器中直接选取 + 一键跳转定位，相机行「匹配素材分辨率」一键把相机分辨率对齐素材（防背景拉伸），分辨率可读取/编辑（宽/高双框 + 预设），「编码器」行 ⓘ 按钮悬停/点击查看实际生效的 ffmpeg/ffprobe，可选自动设置相机 Background Image |
-| Hdr Library | `HouTools → Hdr Library` | HDR 环境贴图库浏览器：缩略图网格（后台生成）、子文件夹分类 + 收藏，选中灯光后双击即贴图 |
+| HDR Library | `HouTools → HDR Library` | HDR 环境贴图库浏览器：缩略图网格（后台生成）、子文件夹分类 + 收藏，选中灯光后双击即贴图 |
 | Recipe Library | `HouTools → Recipe Library` | recipes 资产库浏览器：官方 recipes 卡片网格浏览（缩略图/标签/主题色），树形侧栏过滤，双击/拖拽应用到网络，VEX/Python 代码块卡片（双击追加到选中节点），Markdown 文档，数据导入/导出 |
-| HouTools Settings | `HouTools → HouTools Settings…` | 设置窗口：配置目录展示（含修改方法）+ 快捷键设置（Paste as Object Merge / Copy Output Path，捕获式改键，会话即时生效） |
+| HouTools Settings | `HouTools → HouTools Settings...` | 设置窗口：配置目录展示（含修改方法）+ 快捷键设置（Paste as Object Merge / Copy Output Path，捕获式改键，会话即时生效） |
 | About HouTools | `HouTools → About HouTools` | 用默认浏览器打开离线使用手册（`docs/index.html` + 本地截图，零外部网络资源）：全部工具的功能与用法 |
 
 ### Automation
@@ -90,7 +104,7 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings�
 
 网络编辑器里 Ctrl+C 复制节点后，切到目标网络按 `Ctrl+Shift+V`（或点网络
 编辑器的 `HouTools` 菜单），在鼠标位置创建引用节点，颜色随源节点。键位在
-主菜单 `HouTools → HouTools Settings…` 的快捷键区修改（捕获式输入，保存到
+主菜单 `HouTools → HouTools Settings...` 的快捷键区修改（捕获式输入，保存到
 配置目录的 `hotkeys.json`，每次启动自动应用）；也可在 Houdini 自带
 Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_paste_as_object_merge`。
 
@@ -114,7 +128,7 @@ Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_paste_as_object_mer
 
 ### 复制输出路径
 
-网络编辑器里选中节点按 `Ctrl+Shift+C`（或点网络编辑器的 `HouTools` 菜单），把该节点输出文件**所在的文件夹**复制到系统剪贴板（如 `C:\...\render\TTT`，不含文件名），直接粘进文件对话框或其他软件。对与右键 `Open Cache Folder [HT]` **同一批节点**生效（按输出参数命中：filecache / mantra / karma / usdrender / rop geometry 等，第三方 Arnold 节点带相应参数即支持），取值与节点右键 `Open Cache Folder [HT]` 同源——`$HIP`/`$OS` 等变量展开后的绝对路径。目录尚未写出（缓存未落盘）时**不复制**，左下角红色错误通知；各类失败反馈只走通知模块、不刷控制台。多选时把命中节点的目录去重后逐行合并复制；键位在 `HouTools → HouTools Settings…` 修改（捕获式输入，保存到配置目录的 `hotkeys.json`，每次启动自动应用），也可在 Houdini 自带 Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_copy_output_path`。
+网络编辑器里选中节点按 `Ctrl+Shift+C`（或点网络编辑器的 `HouTools` 菜单），把该节点输出文件**所在的文件夹**复制到系统剪贴板（如 `C:\...\render\TTT`，不含文件名），直接粘进文件对话框或其他软件。对与右键 `Open Cache Folder [HT]` **同一批节点**生效（按输出参数命中：filecache / mantra / karma / usdrender / rop geometry 等，第三方 Arnold 节点带相应参数即支持），取值与节点右键 `Open Cache Folder [HT]` 同源——`$HIP`/`$OS` 等变量展开后的绝对路径。目录尚未写出（缓存未落盘）时**不复制**，左下角红色错误通知；各类失败反馈只走通知模块、不刷控制台。多选时把命中节点的目录去重后逐行合并复制；键位在 `HouTools → HouTools Settings...` 修改（捕获式输入，保存到配置目录的 `hotkeys.json`，每次启动自动应用），也可在 Houdini 自带 Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_copy_output_path`。
 
 ffmpeg 说明：优先使用 Houdini 自带的 `$HFS/bin/hffmpeg`，**无需单独安装**；如需指定版本，
 把 `ffmpeg.exe` 放到 HouTools 配置目录即可优先使用（包清单 `HouTools.json` 里
@@ -197,7 +211,7 @@ File > Import > Alembic Scene... / File > Import > Filmbox FBX...）：
   整次操作单个 undo 槽；源或目标有 cook 错误时不创建；源与目标是同一
   节点时跳过
 
-### Hdr Library
+### HDR Library
 
 HDR 环境贴图库浏览器（独立窗口，进任务栏）。库按"总目录 / 一级分类子文件夹"组织，
 第一级子文件夹即分类，左侧栏切换 全部 / ★ 收藏 / 各分类（侧栏右键可新建/打开分类文件夹，
@@ -278,7 +292,7 @@ _houtools_dispatcher.run("<tool_id>")
 
 - **窗口**：所有 PySide6 顶层窗口必须经 `houtools.ui.window_manager.open_window(tool_id, factory)`
   创建（单例 + 登记），否则 Reload 无法自动关闭旧窗口，会残留旧代码引用。
-- **任务栏常驻**：独立工具窗口（videoseq / Hdr Library）构造时调
+- **任务栏常驻**：独立工具窗口（videoseq / HDR Library）构造时调
   `houtools.ui.taskbar.apply_appwindow_flags(self)`；不要用进程级 AppUserModelID
   （会连 Houdini 主窗的任务栏分组一起改）。
 - **日志**：`from houtools.core.log import get_logger`，`get_logger("tools.xxx")`。
@@ -297,8 +311,17 @@ _houtools_dispatcher.run("<tool_id>")
 ```
 
 （按本机 Houdini 安装位置调整路径，须用 Houdini 自带的 Python 3.13。）
-无头验证菜单 XML、全包导入、各窗口实例化（Automation / 视频转序列图 / Hdr Library / Recipe Library）、
+无头验证菜单 XML、全包导入、各窗口实例化（Automation / 视频转序列图 / HDR Library / Recipe Library）、
 拖放导入的 .abc/.fbx 过滤与节点名清洗，以及 `reload_all()`。
+
+视觉回归：
+
+```text
+python tests/test_theme_tokens.py   # 禁止 theme.py 之外裸 hex（允许 SVG 内容色）
+python tests/test_fonts.py          # 品牌字/UI/等宽/文档字角色与回退
+python tests/gen_about_shots.py     # 重生成 docs/about_shots/*.png
+python tests/gen_brand_assets.py    # 重生成 README 品牌头图与徽章
+```
 
 ## 结构
 
@@ -309,7 +332,10 @@ HouTools/
 ├── HouTools.json                # 包清单副本（生效的一份在 packages/ 下）
 ├── scripts/externaldragdrop.py  # 官方拖放钩子分发器（拖 .abc/.fbx 导入，逻辑在 houtools/dragdrop.py）
 ├── docs/                         # 离线使用手册（About HouTools 菜单用默认浏览器打开，零外部网络资源）
-│   ├── index.html                # 手册页面（样式/轮播 JS 内联，轮播含工具截图）
+│   ├── index.html                # 手册页面（品牌 token / 字体 / 轮播 JS 全部内联或本地）
+│   ├── brand.md                  # 品牌手册（token / 组件 / 图标 / 文案 do&don't）
+│   ├── brand/                    # README 品牌头图 + 本地徽章（tests/gen_brand_assets.py 生成）
+│   ├── fonts/                    # 钉钉进步体 woff2（离线 @font-face）
 │   └── about_shots/              # 轮播工具截图（tests/gen_about_shots.py 离屏生成，窗口 UI 变更后重跑）
 ├── python_panels/Automation.pypanel  # Automation 的 Python Panel 界面
 ├── python3.13libs/
@@ -317,16 +343,22 @@ HouTools/
 │   └── houtools/
 │       ├── dev/                   # 热加载框架（reloader / dispatcher，不参与重载）
 │       ├── core/                  # 路径常量 / 日志 / JSON 设置
-│       ├── ui/                    # window_manager 窗口登记 + taskbar 任务栏常驻 + 字体/对话框/侧栏/角标等共享组件
+│       ├── ui/                    # theme（唯一 token 源）/ qss（样式表）/ components（品牌头/区块标题/空状态）
+│       │                          # + window_manager / taskbar / fonts（角色化）/ dialogs / sidebar / badge / notify
 │       ├── automation/            # Automation（任务类型/持久化/执行引擎/窗口）
 │       ├── dragdrop.py            # 外部拖放导入 .abc（obj 层级 Alembic Archive / SOP 层级 alembic）
 │       ├── videoseq/              # 视频转序列图（ffmpeg 查找 + 窗口）
-│       ├── hdrlight/              # Hdr Library（HDR 库浏览 + 缩略图 + 灯光赋值）
+│       ├── hdrlight/              # HDR Library（HDR 库浏览 + 缩略图 + 灯光赋值）
 │       ├── recipelib/             # Recipe Library（资产库浏览/元数据/文档/数据导入导出/缩略图裁剪）
-│       ├── icons/                 # UI 图标（SVG）
-│       ├── fonts/                 # 工具统一显示字体（阿里妈妈数黑体 Bold）
+│       ├── icons/                 # UI 图标（SVG，1.5px 线稿 / 品牌产品图标）
+│       ├── fonts/                 # 品牌字（钉钉进步体 TTF）+ 文档阅读字体回退
 │       └── tools/                 # 工具入口（<tool_id>.py 暴露 run()）
-├── tests/smoke_test.py
+├── tests/
+│   ├── smoke_test.py             # 无头回归（菜单/导入/窗口实例化/行为断言）
+│   ├── test_theme_tokens.py      # token lint（禁止 theme.py 之外裸 hex）
+│   ├── test_fonts.py             # 字体文件/角色回退/加载
+│   ├── gen_about_shots.py        # 离屏重生成 About 截图
+│   └── gen_brand_assets.py       # 离屏重生成 README 品牌头图与徽章
 ```
 
 配置目录（默认 `Documents\HouTools\settings`，不在仓库内；开发机旧版在插件根 `settings/`，
@@ -336,7 +368,7 @@ HouTools/
 settings/
 ├── Automation_Config.json     # Automation 的 DW 软件路径等配置（缺失时自动补建）
 ├── hotkeys.json               # HouTools Settings 自定义键位
-├── hdr_library.json           # Hdr Library 的库目录/缩略图大小/收藏
+├── hdr_library.json           # HDR Library 的库目录/缩略图大小/收藏
 ├── recipelib.json             # Recipe Library 的库目录与元数据（标签/收藏/颜色/显示名）
 ├── recipe_thumbs/             # Recipe Library 缩略图
 ├── recipe_docs/               # Recipe Library Markdown 文档
@@ -350,7 +382,3 @@ settings/
 
 > 本项目为个人开发的第三方工具，与 SideFX 无关、非官方产品；Houdini 及相关商标归
 > SideFX Software 所有。运行本项目需要使用者自行持有合法的 Houdini 授权。
-
-## Stargazers over time
-
-![Stargazers over time](https://gitcode.com/mahx-vfx/HouTools/starcharts.svg?variant=adaptive)

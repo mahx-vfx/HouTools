@@ -171,14 +171,63 @@ def _collect_user_hdrs():
     return found
 
 
+def _write_demo_hdr_library(root: Path):
+    """无真实 HDR 库时生成演示库（渐变 Radiance HDR，OIIO 可读）。
+
+    截图脚本要能在任意机器重跑；用户未配置 HDR 库时用合成图保证
+    hdr.png 仍是最新品牌视觉，而不是留着旧截图。
+    """
+    import math
+
+    specs = [
+        ("Sunset", "sunset_01.hdr", (0.95, 0.38, 0.12)),
+        ("Sunset", "sunset_02.hdr", (0.85, 0.25, 0.18)),
+        ("Studio", "studio_softbox.hdr", (0.55, 0.62, 0.78)),
+        ("Studio", "studio_rim.hdr", (0.78, 0.70, 0.55)),
+        ("Night", "night_city.hdr", (0.08, 0.12, 0.30)),
+        ("Interior", "interior_warm.hdr", (0.62, 0.42, 0.28)),
+    ]
+
+    def _rgbe(r, g, b):
+        m = max(r, g, b)
+        if m < 1e-6:
+            return (0, 0, 0, 0)
+        e = math.frexp(m)[1]
+        s = math.ldexp(1.0, e - 8)
+        return (int(r / s), int(g / s), int(b / s), e + 128)
+
+    picks = []
+    for cat, name, base in specs:
+        path = root / cat / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        w, h = 128, 64
+        with path.open("wb") as f:
+            f.write(b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n")
+            f.write(("-Y %d +X %d\n" % (h, w)).encode())
+            for y in range(h):
+                for x in range(w):
+                    u, v = x / w, y / h
+                    sky = max(0.0, 1.0 - v)
+                    # 简单环境球观感：天顶亮、地平线暗、右上角一轮光源
+                    sun = math.exp(-(((u - 0.72) ** 2
+                                      + (v - 0.30) ** 2) / 0.008))
+                    ground = 0.22 if v > 0.62 else 1.0
+                    r = (base[0] * (0.35 + 0.85 * sky) + 1.4 * sun) * ground
+                    g = (base[1] * (0.30 + 0.70 * sky) + 1.2 * sun) * ground
+                    b = (base[2] * (0.40 + 0.75 * sky) + 0.9 * sun) * ground
+                    f.write(bytes(_rgbe(r, g, b)))
+        picks.append((path, cat))
+    return picks
+
+
 def shot_hdr(tmp: Path):
     from houtools.core.settings import JsonStore
     from houtools.hdrlight import browser as hdr_browser
 
     picks = _collect_user_hdrs()
     if not picks:
-        print("shot hdr SKIP: no HDR files in user lib")
-        return False
+        print("shot hdr: no user HDR lib, using synthetic demo library")
+        picks = _write_demo_hdr_library(tmp / "demo_hdr_src")
     # 组间轮转取 6 个,保证侧栏出现多个分类
     by_cat = {}
     for p, c in picks:
@@ -268,8 +317,8 @@ def shot_recipe(tmp: Path):
                             label="Cache Wedge", category="tool",
                             submenu="HouTools", net_category="Sop"),
     ]
-    palette = ["#c8102e", "#e2571b", "#f5a01c", "#8a2438", "#d97a2a",
-               "#a83a4a"]
+    palette = ["#ff5c38", "#e2571b", "#f2a33c", "#45b06e",
+               "#2e8b57", "#d16a7a"]
 
     with patch.object(rl_meta, "_SETTINGS", store), \
          patch.object(rl_meta, "THUMBS_DIR", thumbs), \
@@ -319,12 +368,15 @@ print("renamed %d nodes" % len(hou.selectedNodes()))
         rl_meta.set_display_name("batch_rename", "批量重命名")
         rl_meta.set_tags("packed_normal", ["vex", "常用"])
         rl_meta.set_tags("batch_rename", ["python"])
-        rl_meta.set_color("packed_normal", "#0d6399")
+        rl_meta.set_color("packed_normal", "#45b06e")
 
         win = rl_browser._RecipeLibraryWindow()
         win.resize(SHOT_W, SHOT_H)
         win.show()
         win.reload()
+        # 选中第一张卡：截图同时展示预览/元信息/标签面板
+        if win.list.count():
+            win.list.setCurrentRow(0)
         _settle(win, 500)
         ok = _grab(win, "recipe.png")
         win.deleteLater()
@@ -341,17 +393,19 @@ def _save_tmp_png(tmp: Path, pm: QtGui.QPixmap) -> str:
 def main():
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     # 离屏环境没有 Houdini 的全局暗色样式,Qt 默认调色板是浅色的——
-    # 未显式铺底的窗口(如 Automation 主背景)会发白,这里模拟暗色主题
-    # (暖黑,与 index.html 的 --bg/--card 色系一致)
+    # 未显式铺底的窗口(如 Automation 主背景)会发白,这里模拟品牌暗色
+    # 主题（墨黑 + 品牌橙,与 ui/theme.py 同一套 token 色值）
     pal = app.palette()
-    pal.setColor(QtGui.QPalette.Window, QtGui.QColor("#201a19"))
-    pal.setColor(QtGui.QPalette.WindowText, QtGui.QColor("#ece5df"))
-    pal.setColor(QtGui.QPalette.Base, QtGui.QColor("#241d1c"))
-    pal.setColor(QtGui.QPalette.AlternateBase, QtGui.QColor("#282020"))
-    pal.setColor(QtGui.QPalette.Text, QtGui.QColor("#ece5df"))
-    pal.setColor(QtGui.QPalette.Button, QtGui.QColor("#322826"))
-    pal.setColor(QtGui.QPalette.ButtonText, QtGui.QColor("#ece5df"))
-    pal.setColor(QtGui.QPalette.PlaceholderText, QtGui.QColor("#6a5c55"))
+    pal.setColor(QtGui.QPalette.Window, QtGui.QColor("#0a0a0f"))
+    pal.setColor(QtGui.QPalette.WindowText, QtGui.QColor("#f0f0f3"))
+    pal.setColor(QtGui.QPalette.Base, QtGui.QColor("#101017"))
+    pal.setColor(QtGui.QPalette.AlternateBase, QtGui.QColor("#15151c"))
+    pal.setColor(QtGui.QPalette.Text, QtGui.QColor("#f0f0f3"))
+    pal.setColor(QtGui.QPalette.Button, QtGui.QColor("#15151c"))
+    pal.setColor(QtGui.QPalette.ButtonText, QtGui.QColor("#f0f0f3"))
+    pal.setColor(QtGui.QPalette.PlaceholderText, QtGui.QColor("#5c5c66"))
+    pal.setColor(QtGui.QPalette.Highlight, QtGui.QColor("#ff5c38"))
+    pal.setColor(QtGui.QPalette.HighlightedText, QtGui.QColor("#05050a"))
     app.setPalette(pal)
     with tempfile.TemporaryDirectory(prefix="about_shots_") as td:
         tmp = Path(td)

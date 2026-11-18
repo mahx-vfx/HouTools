@@ -2,7 +2,7 @@
 HDR Library 共用，2026-10-21 从 recipelib/browser.py 提取）。
 
 QVariantAnimation 关键帧 0→0.12 峰值→0 共 900ms 淡出，背景 rgba 色 +
-白字圆角（样式选择器要求目标 QLabel 的 objectName 为 statusLabel），
+对比色文字圆角（样式选择器要求目标 QLabel 的 objectName 为 statusLabel），
 finished 回落窗口级样式。同色且脉冲还在进行中不重启：连发动作/平台级
 重复投递只刷新文本、脉冲不中断——淡出中途重启正是「突然又亮一次再快
 速消失」的病根（去重闸对失败路径不占闸，拦不住这类重复投递）；换色
@@ -11,8 +11,10 @@ finished 回落窗口级样式。同色且脉冲还在进行中不重启：连�
 
 from PySide6 import QtCore, QtGui
 
-SUCCESS_COLOR = "#3aa655"
-ERROR_COLOR = "#d1283e"
+from houtools.ui import theme
+
+SUCCESS_COLOR = theme.color("SUCCESS")
+ERROR_COLOR = theme.color("ERROR")
 
 
 class StatusFlash(QtCore.QObject):
@@ -63,8 +65,9 @@ class StatusFlash(QtCore.QObject):
         alpha = int(200 * float(value))
         self._label.setStyleSheet(
             "QLabel#statusLabel {{ background-color: rgba({}, {}, {}, {});"
-            " border-radius: 4px; color: #ffffff; }}".format(
-                c.red(), c.green(), c.blue(), alpha))
+            " border-radius: 4px; color: {}; }}".format(
+                c.red(), c.green(), c.blue(), alpha,
+                theme.on_color(c.name())))
 
     def _on_finished(self):
         self._label.setStyleSheet("")   # 回落窗口级样式（灰字无底色）

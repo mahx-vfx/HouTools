@@ -36,7 +36,7 @@ _houtools_dispatcher.run("video_to_sequence")
       </scriptItem>
 
       <scriptItem id="houtools.hdr_library">
-        <label>Hdr Library</label>
+        <label>HDR Library</label>
         <scriptCode><![CDATA[
 import houtools.dev.dispatcher as _houtools_dispatcher
 _houtools_dispatcher.run("hdr_library")
@@ -48,15 +48,6 @@ _houtools_dispatcher.run("hdr_library")
         <scriptCode><![CDATA[
 import houtools.dev.dispatcher as _houtools_dispatcher
 _houtools_dispatcher.run("recipe_library")
-        ]]></scriptCode>
-      </scriptItem>
-
-      <!-- 打开当前工程文件所在的文件夹（资源管理器） -->
-      <scriptItem id="houtools.open_hip_folder">
-        <label>Open Hip Folder</label>
-        <scriptCode><![CDATA[
-import houtools.dev.dispatcher as _houtools_dispatcher
-_houtools_dispatcher.run("open_hip_folder")
         ]]></scriptCode>
       </scriptItem>
 

@@ -1,6 +1,6 @@
 """角标共享组件：SVG 本体 + 柔和投影，叠加到缩略图角落。
 
-Recipe Library 与 Hdr Library 共用；两枚素材都在仓库
+Recipe Library 与 HDR Library 共用；两枚素材都在仓库
 ``python3.13libs/houtools/icons/``（__file__ 解析绝对路径，Houdini
 启动 CWD 不固定）：
 - favorite_badge.svg —— 收藏星（卡片右上角）

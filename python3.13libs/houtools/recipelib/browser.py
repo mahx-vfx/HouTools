@@ -32,6 +32,8 @@ from houtools.recipelib.capture import HIDE_DELAY_MS, SnipOverlay
 from houtools.recipelib.docs import (
     DocEditorDialog, DocInfoPopup, MarkdownMediaView, MediaDialog)
 from houtools.ui import fonts as tool_fonts
+from houtools.ui import qss, theme
+from houtools.ui.components import EmptyState, apply_window_surface
 from houtools.ui.sidebar import (SIDEBAR_COLOR_ROLE, SIDEBAR_COUNT_ROLE,
                                  SIDEBAR_HEADER_ROLE, SIDEBAR_ICON_ROLE,
                                  SVG_ICON_BOOST, SVG_ICON_KINDS,
@@ -107,8 +109,8 @@ class _CardDelegate(QtWidgets.QStyledItemDelegate):
     LINE_GAP = 3      # 文字行间距
     TEXT_BOTTOM_PAD = 3  # 标签行到底边的留白（比 MARGIN 紧，底部不空）
     BAR_W = 3         # 名字旁颜色竖条宽度
-    BAR_DEFAULT = "#e8e8ec"  # 未设自定义色时的竖条色（预览名称竖条同款）
-    DEFAULT_THEME = "#9a9aa2"  # 未设置自定义颜色时的默认主题（灰）
+    BAR_DEFAULT = theme.color("TEXT")  # 未设自定义色时的竖条色
+    DEFAULT_THEME = theme.NEUTRAL_CONTENT  # 未设置自定义颜色时的默认主题（灰）
 
     def __init__(self, window, parent=None):
         super().__init__(parent)
@@ -121,7 +123,7 @@ class _CardDelegate(QtWidgets.QStyledItemDelegate):
     @staticmethod
     def _tint(color, alpha):
         """主题色按 alpha 比例混入卡片暗底，得文字区的浅色调背景。"""
-        base = QtGui.QColor("#1D1D20")
+        base = QtGui.QColor(theme.color("INK_900"))
         c = QtGui.QColor(color)
 
         def mix(a, b):
@@ -138,7 +140,7 @@ class _CardDelegate(QtWidgets.QStyledItemDelegate):
         否则 gridSize 与实际绘制错位。
         """
         name_h = self._font_metrics(13, True).height()
-        line_h = self._font_metrics(12, True).height()   # 三行小字也加粗
+        line_h = self._font_metrics(12, False).height()  # 三行小字常规字重
         return (self.TEXT_TOP_GAP + name_h + self.LINE_GAP
                 + (line_h + self.LINE_GAP) * 3 + self.TEXT_BOTTOM_PAD)
 
@@ -194,14 +196,12 @@ class _CardDelegate(QtWidgets.QStyledItemDelegate):
         # 主题色（2026-10 用户指定），用与显示名一致的固定白
         custom = metadata.get_color(info.name) if info else ""
         if custom:
-            theme = QtGui.QColor(custom)
-            bar = QtGui.QColor(theme)
+            card_theme = QtGui.QColor(custom)
+            bar = QtGui.QColor(card_theme)
         else:
-            theme = QtGui.QColor(self.DEFAULT_THEME)
+            card_theme = QtGui.QColor(self.DEFAULT_THEME)
             bar = QtGui.QColor(self.BAR_DEFAULT)
-        bg = self._tint(theme, 0.35)
-        if selected:
-            bg = bg.lighter(115)
+        bg = self._tint(card_theme, 0.10)   # 主题色只做极淡底（上限 0.12）
 
         # 卡片在格内右对齐（右缘贴格边、左缘留 2×GAP）：卡片右缘恒等于
         # 列数×格宽，与 Qt 的换行判定（分界线 < 列数×格宽）天然重合——
@@ -215,6 +215,8 @@ class _CardDelegate(QtWidgets.QStyledItemDelegate):
         path = QtGui.QPainterPath()
         path.addRoundedRect(QtCore.QRectF(card), 8, 8)
         painter.fillPath(path, bg)
+        if selected:
+            painter.fillPath(path, QtGui.QColor(255, 92, 56, 31))
 
         # 「节点参数」卡片水印 = 侧栏滑块图标；代码块卡片 = Houdini
         # 官方节点图标（VEX=attribwrangle、Python=python SOP，用户指定）。
@@ -238,7 +240,7 @@ class _CardDelegate(QtWidgets.QStyledItemDelegate):
         painter.save()
         painter.setClipPath(path)
         painter.fillRect(QtCore.QRectF(card.left() + m, y, text_w, thumb_h),
-                         self._tint(theme, 0.12))
+                         self._tint(card_theme, 0.06))
         painter.restore()
         # info 的兜底分支在函数末尾（只画空卡不画文字）——取缩略图前先
         # 守卫：thumb_pixmap 需要 info.name
@@ -265,10 +267,7 @@ class _CardDelegate(QtWidgets.QStyledItemDelegate):
                 int(card.top() + m + margin - pad), badge)
         y += thumb_h + self.TEXT_TOP_GAP
 
-        # 选中态 = 主题色加粗 2px（默认灰主题与自定义色同规则，不另设
-        # 蓝色边框——用户指定选中一律用同色高亮）
-        painter.setPen(QtGui.QPen(theme, 2 if selected else 1))
-        painter.drawPath(path)
+        # 选中态边框统一在绘制末尾画品牌橙 2px（不再用卡片主题色）
 
         if info is None:  # 理论不达（条目都带 UserRole）；兜底不画文字
             painter.restore()
@@ -285,14 +284,14 @@ class _CardDelegate(QtWidgets.QStyledItemDelegate):
                                 1.5, 1.5)
         name = nfm.elidedText(self._win._display_label(info),
                               QtCore.Qt.ElideRight, text_w - self.BAR_W - 6)
-        painter.setPen(QtGui.QColor("#eeeeee"))
+        painter.setPen(QtGui.QColor(theme.color("TEXT")))
         painter.drawText(QtCore.QRect(card.left() + m + self.BAR_W + 6, y,
                                       text_w - self.BAR_W - 6, bar_h),
                          QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, name)
         y += bar_h + self.LINE_GAP
 
-        # 行2-4：类型·节点数 / 版本 / 标签（全部加粗）
-        painter.setFont(self._font(12, True))
+        # 行2-4：类型·节点数 / 版本 / 标签（常规字重，层级靠字号/颜色）
+        painter.setFont(self._font(12, False))
         line_h = painter.fontMetrics().height()
 
         def _line(text, color):
@@ -302,8 +301,8 @@ class _CardDelegate(QtWidgets.QStyledItemDelegate):
                              text)
             return y + line_h + self.LINE_GAP
 
-        y = _line(self._type_line(info), "#a8a8b0")
-        y = _line(info.houdini_version, "#a8a8b0")
+        y = _line(self._type_line(info), theme.color("TEXT_3"))
+        y = _line(info.houdini_version, theme.color("TEXT_3"))
         # 标签行逐标签着色：设了颜色的标签用可读化后的标签色，无色的用
         # 固定白；超出文字区整体裁切（clip），不做逐 token 省略
         tags = metadata.get_tags(info.name)
@@ -319,13 +318,23 @@ class _CardDelegate(QtWidgets.QStyledItemDelegate):
                     break
                 token = "#" + t
                 raw = metadata.get_tag_color(t)
-                color = readable_on_dark(raw).name() if raw else "#eeeeee"
+                color = (readable_on_dark(raw).name() if raw
+                         else theme.color("TEXT"))
                 painter.setPen(QtGui.QPen(QtGui.QColor(color)))
                 painter.drawText(
                     QtCore.QRectF(tx, y, text_w, line_h),
                     QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, token)
                 tx += tfm.horizontalAdvance(token) + space_w
             painter.restore()
+        # 卡片 1px LINE 常规边框；选中态统一品牌橙 2px（不再用主题色做选中）
+        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+        if selected:
+            painter.setPen(QtGui.QPen(
+                QtGui.QColor(theme.color("ACCENT")), 2))
+        else:
+            painter.setPen(QtGui.QPen(
+                QtGui.QColor(theme.color("LINE")), 1))
+        painter.drawPath(path)
         painter.restore()
 
     @staticmethod
@@ -613,9 +622,9 @@ class _ImageViewerDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setModal(True)
-        self.setStyleSheet(
-            "QDialog { background-color: #18181b; }"
-            "QLabel { color: #777777; background: transparent; }")
+        self.setStyleSheet(qss.dialog_qss(
+            "QLabel {{ color: {}; background: transparent; }}".format(
+                theme.color("TEXT_3"))))
         self._movie = None
         self._factor = 1.0
         self._is_gif = image_path.lower().endswith(".gif")
@@ -660,7 +669,7 @@ class _ImageViewerDialog(QtWidgets.QDialog):
         self._scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOn)
         # 内容缩小到小于视口时居中摆放（否则贴左上，下方露大片底色）
         self._scroll.setAlignment(QtCore.Qt.AlignCenter)
-        self._scroll.viewport().setStyleSheet("background-color: #18181b;")
+        self._scroll.viewport().setStyleSheet("background-color: {};".format(theme.color("INK_950")))
         self._scroll.zoomStepped.connect(self._zoom)
 
         hint = QtWidgets.QLabel("滚轮缩放 · 按住中键拖动平移 · Esc 或双击关闭")
@@ -757,6 +766,7 @@ class _PromptDialog(QtWidgets.QDialog):
 
     def __init__(self, parent, title, label, text=""):
         super().__init__(parent)
+        self.setStyleSheet(qss.dialog_qss())
         self.setWindowTitle(title)
         lay = QtWidgets.QVBoxLayout(self)
         lay.addWidget(QtWidgets.QLabel(label))
@@ -798,7 +808,8 @@ class _LibDirsPage(QtWidgets.QWidget):
             "▸ Recipes ▸ Save），位置指向库文件夹里的 .hda；"
             "或直接把 .hda 文件放进文件夹。")
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #888888;")
+        hint.setStyleSheet(
+            "color: {};".format(theme.color("TEXT_3")))
 
         side = QtWidgets.QVBoxLayout()
         side.addWidget(add_btn)
@@ -862,13 +873,14 @@ class _DisplayPage(QtWidgets.QWidget):
         lay.setSpacing(6)
 
         title = QtWidgets.QLabel("版本过滤")
-        title.setStyleSheet("font-weight: bold; font-size: 13px;")
+        title.setStyleSheet("font-weight: 600; font-size: 13px;")
         hint = QtWidgets.QLabel(
             "每个 recipe 记录保存时的 Houdini 版本。来自更高版本的 recipe "
             "可能引用当前版本不存在的节点，默认不显示；取消勾选后全部"
             "显示，更高版本的卡片左上角会带感叹号角标提醒。")
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #888888;")
+        hint.setStyleSheet(
+            "color: {};".format(theme.color("TEXT_3")))
         box = QtWidgets.QCheckBox("不显示比当前 Houdini 版本更高的 recipe")
         box.setChecked(bool(_UI_SETTINGS.get("hide_higher_version")))
         box.toggled.connect(lambda on: on_changed(on) if on_changed else None)
@@ -888,13 +900,14 @@ class _DataPage(QtWidgets.QWidget):
         lay.setSpacing(6)
 
         exp_title = QtWidgets.QLabel("导出")
-        exp_title.setStyleSheet("font-weight: bold; font-size: 13px;")
+        exp_title.setStyleSheet("font-weight: 600; font-size: 13px;")
         exp_hint = QtWidgets.QLabel(
             "把当前库的全部积累（自定义显示名、标签、收藏、卡片颜色、"
             "缩略图、Markdown 文档）打包成 zip，可带到其它电脑或与人分享；"
             "可勾选连同 recipe 工具的 .hda 库文件一起打包。")
         exp_hint.setWordWrap(True)
-        exp_hint.setStyleSheet("color: #888888;")
+        exp_hint.setStyleSheet(
+            "color: {};".format(theme.color("TEXT_3")))
         exp_btn = QtWidgets.QPushButton("导出...")
         lay.addWidget(exp_title)
         lay.addWidget(exp_hint)
@@ -903,13 +916,14 @@ class _DataPage(QtWidgets.QWidget):
         lay.addSpacing(20)
 
         imp_title = QtWidgets.QLabel("导入")
-        imp_title.setStyleSheet("font-weight: bold; font-size: 13px;")
+        imp_title.setStyleSheet("font-weight: 600; font-size: 13px;")
         imp_hint = QtWidgets.QLabel(
             "从导出的 zip 包合并导入：按配方内部名逐条覆盖同名条目，"
             "本地独有内容保留；与本地同名的 .hda 库文件会跳过，"
             "避免同名定义冲突。")
         imp_hint.setWordWrap(True)
-        imp_hint.setStyleSheet("color: #888888;")
+        imp_hint.setStyleSheet(
+            "color: {};".format(theme.color("TEXT_3")))
         imp_btn = QtWidgets.QPushButton("导入...")
         lay.addWidget(imp_title)
         lay.addWidget(imp_hint)
@@ -935,6 +949,7 @@ class _SettingsDialog(QtWidgets.QDialog):
     def __init__(self, parent, on_lib_dirs_changed, on_version_filter_changed,
                  on_export, on_import):
         super().__init__(parent)
+        self.setStyleSheet(qss.dialog_qss())
         self.setWindowTitle("设置 - Recipe Library")
         self.resize(680, 430)
 
@@ -968,6 +983,7 @@ class _ExportDialog(QtWidgets.QDialog):
 
     def __init__(self, parent, recipe_count):
         super().__init__(parent)
+        self.setStyleSheet(qss.dialog_qss())
         self.setWindowTitle("导出 Recipe 库")
         self.setMinimumWidth(500)
 
@@ -987,7 +1003,8 @@ class _ExportDialog(QtWidgets.QDialog):
             "Markdown 文档；.hda 是 recipe 本体，勾选后接收方无需重新"
             "获取这些库文件。".format(recipe_count))
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #888888;")
+        hint.setStyleSheet(
+            "color: {};".format(theme.color("TEXT_3")))
 
         bbox = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
@@ -1038,6 +1055,7 @@ class _ImportConfirmDialog(QtWidgets.QDialog):
 
     def __init__(self, parent, summary_text, needs_target):
         super().__init__(parent)
+        self.setStyleSheet(qss.dialog_qss())
         self.setWindowTitle("导入 Recipe 包")
         self.setMinimumWidth(540)
 
@@ -1065,7 +1083,8 @@ class _ImportConfirmDialog(QtWidgets.QDialog):
                 "尚未配置库文件夹时点「新建文件夹...」选择一个位置，"
                 "将自动创建并加入库目录。")
             hint.setWordWrap(True)
-            hint.setStyleSheet("color: #888888;")
+            hint.setStyleSheet(
+            "color: {};".format(theme.color("TEXT_3")))
             lay.addLayout(row)
             lay.addWidget(hint)
             new_btn.clicked.connect(self._new_dir)
@@ -1127,80 +1146,68 @@ def _run_with_progress(parent, label, work):
         dlg.deleteLater()   # 隐藏子控件不留滞留实例（同模态框用完即释放约定）
 
 
+
+# Recipe Library 专用 QSS（品牌 token）：侧栏树/开关条与卡片面板。
+_EXTRA_QSS = """
+QTreeWidget#sidebarTree {{
+    background-color: {INK_900};
+    border: none;
+    border-radius: 0;
+}}
+QWidget#sidebarToggleStrip {{ background-color: {INK_900}; }}
+QPushButton#sidebarToggleBtn {{
+    background-color: {INK_850};
+    border: 1px solid {LINE};
+    border-radius: 4px;
+    padding: 2px 4px;
+    color: {TEXT_2};
+}}
+QPushButton#sidebarToggleBtn:!checked {{ color: {TEXT_3}; }}
+QPushButton#sidebarToggleBtn:hover {{
+    background-color: {INK_800};
+    border-color: {LINE_STRONG};
+    color: {TEXT};
+}}
+QPushButton#sidebarToggleBtn:checked {{
+    background-color: {ACCENT_SOFT};
+    border-color: {ACCENT_LINE};
+    color: {TEXT};
+}}
+QPushButton#sidebarToggleBtn:checked:hover {{
+    background-color: rgba(255,92,56,0.18);
+    border-color: {ACCENT};
+}}
+QFrame#metaPanel, QFrame#tagsPanel {{
+    background-color: {INK_900};
+    border: 1px solid {LINE};
+    border-radius: 8px;
+}}
+QFrame#previewPanel {{
+    background-color: {INK_900};
+    border: 1px solid {LINE};
+    border-radius: 8px;
+}}
+QLineEdit:focus {{
+    border: 2px solid {ACCENT};
+    padding: 3px 7px;
+}}
+""".format(**theme.TOKENS)
+
 class _RecipeLibraryWindow(QtWidgets.QWidget):
     """Recipe Library 主窗口（window_manager 单例登记）。"""
 
     PREVIEW_W = 272
     PREVIEW_H = 190
 
-    STYLE_SHEET = """
-        QWidget { background-color: #18181b; color: #dddddd; }
-        QPushButton {
-            background-color: #2d2d2d; border: 1px solid #3d3d3d;
-            border-radius: 4px; padding: 4px 14px;
-        }
-        QPushButton:hover { background-color: #3d3d3d; border-color: #0d6399; }
-        QPushButton:pressed { background-color: #0d6399; }
-        QPushButton:disabled { color: #666666; background-color: #232326; }
-        QMenu {
-            background-color: #1D1D20; border: 1px solid #3d3d3d; padding: 4px;
-        }
-        QMenu::item {
-            color: #bbbbbb; padding: 5px 28px 5px 14px; border-radius: 4px;
-        }
-        QMenu::item:selected { background-color: #0d6399; color: #ffffff; }
-        QMenu::item:disabled { color: #666666; }
-        QMenu::separator { height: 1px; background: #3d3d3d; margin: 4px 6px; }
-        QLabel#statusLabel { color: #888888; padding: 4px 8px; }
-        QListWidget, QTreeWidget, QPlainTextEdit, QTextBrowser {
-            background-color: #1D1D20; border: 1px solid #3d3d3d;
-            border-radius: 6px;
-        }
-        QTreeWidget { outline: 0; }
-        /* 侧栏树：比面板标准底色亮一档（用户指定），文字 delegate 加粗提亮 */
-        QTreeWidget#sidebarTree { background-color: #26262b; }
-        /* 侧栏顶部三个显示开关（工具/代码块/参数）：与侧栏同底色；
-           关闭态文字调暗（同段头收拢态的调暗约定），开启态蓝底白字。
-           :hover 与 :checked 特异性相同、后写者胜——规则顺序即语义：
-           基础 → !checked → hover → checked → checked:hover */
-        QWidget#sidebarToggleStrip { background-color: #26262b; }
-        QPushButton#sidebarToggleBtn {
-            background-color: #2d2d32; border: 1px solid #3a3a41;
-            border-radius: 4px; padding: 2px 4px; color: #d8d8de;
-        }
-        QPushButton#sidebarToggleBtn:!checked { color: #8f8f97; }
-        /* 悬停高亮 = 刷新/设置同款（背景提亮 + 蓝描边） */
-        QPushButton#sidebarToggleBtn:hover {
-            background-color: #3d3d3d; border-color: #0d6399;
-            color: #e8e8ee;
-        }
-        QPushButton#sidebarToggleBtn:checked {
-            background-color: rgba(13, 99, 153, 110);
-            border-color: #2e7cb8; color: #ffffff;
-        }
-        QPushButton#sidebarToggleBtn:checked:hover {
-            background-color: rgba(13, 99, 153, 150);
-            border-color: #0d6399;
-        }
-        QListWidget::item { color: #bbbbbb; }
-        QListWidget::item:selected { background-color: #0d6399; }
-        QLineEdit {
-            background-color: #1D1D20; border: 1px solid #3d3d3d;
-            border-radius: 4px; padding: 4px 8px;
-        }
-        QLineEdit:focus { border-color: #0d6399; }
-        QSplitter::handle:horizontal { background: #2d2d2d; width: 2px; }
-        QSlider::groove:horizontal { height: 4px; background: #3d3d3d; border-radius: 2px; }
-        QSlider::handle:horizontal {
-            background: #0d6399; width: 12px; margin: -5px 0; border-radius: 6px;
-        }
-    """
+    STYLE_SHEET = qss.window_qss(_EXTRA_QSS)
 
     def __init__(self, parent=None, flags=None):
         if flags is None:
             flags = QtCore.Qt.Window
         super().__init__(parent, flags)
+        self.setObjectName("htWindow")
         self.setWindowTitle("Recipe Library")
+        apply_window_surface(self)
         self.resize(1240, 680)
         self.setStyleSheet(self.STYLE_SHEET)
         apply_appwindow_flags(self)
@@ -1291,7 +1298,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         # 自身底色）在 Houdini 全局样式下色值不一致，出现亮暗分界——
         # viewport 显式同色 + delegate 整行铺底（_SidebarDelegate.paint），
         # 双保险统一为侧栏亮底色（比面板标准色亮一档）
-        self.sidebar.viewport().setStyleSheet("background-color: #26262b;")
+        self.sidebar.viewport().setStyleSheet(
+            "background-color: %s;" % SidebarDelegate.PANEL_BG)
         self.sidebar.currentItemChanged.connect(self._on_category_changed)
         self.sidebar.itemClicked.connect(self._on_sidebar_clicked)
         self.sidebar.expanded.connect(self._on_section_toggle)
@@ -1357,6 +1365,15 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self._thumb_h = 0
         self._card_delegate = _CardDelegate(self)
         self.list.setItemDelegate(self._card_delegate)
+        # 空状态覆盖层（网格无条目时显示；不拦截鼠标，空白点选/拖放仍走网格）
+        self._empty_state = EmptyState(
+            "还没有 recipe",
+            "在「设置」里配置库目录，或在空白处右键新建代码块。",
+            "empty_grid.svg", parent=self.list.viewport())
+        self._empty_state.setAttribute(
+            QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._empty_state.hide()
+        self.list.viewport().installEventFilter(self)
         self.list.itemDoubleClicked.connect(self._on_double_click)
         self.list.currentItemChanged.connect(self._on_selection_changed)
         self.list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -1371,8 +1388,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self.preview_label.setFixedHeight(self.PREVIEW_H)
         self.preview_label.setAlignment(QtCore.Qt.AlignCenter)
         self.preview_label.setStyleSheet(
-            "background-color: #1D1D20; border: 1px solid #3d3d3d; "
-            "border-radius: 6px; color: #666666;")
+            "background-color: {bg}; border: 1px solid {line}; "
+            "border-radius: 8px; color: {muted};".format(
+                bg=theme.color("INK_900"), line=theme.color("LINE"),
+                muted=theme.color("TEXT_4")))
         self.preview_label.clicked.connect(self._view_image)
         self.preview_label.resized.connect(self._refresh_preview_image)
         # 预览缩略图右键 = 缩略图设置入口（设置/截取/清除，与卡片右键
@@ -1387,8 +1406,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self.preview_code = _PreviewCode()
         self.preview_code.setFixedHeight(self.PREVIEW_H)
         self.preview_code.setStyleSheet(
-            "background-color: #1D1D20; border: 1px solid #3d3d3d; "
-            "border-radius: 6px;")
+            "background-color: {bg}; border: 1px solid {line}; "
+            "border-radius: 8px;".format(
+                bg=theme.color("INK_900"), line=theme.color("LINE")))
         self.preview_code.setVisible(False)
         self.preview_code.setContextMenuPolicy(
             QtCore.Qt.CustomContextMenu)
@@ -1397,7 +1417,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
         self.preview_name = _PreviewNameLabel()
         self.preview_name.setWordWrap(True)
-        self.preview_name.setStyleSheet("font-weight: bold; font-size: 14px;")
+        self.preview_name.setStyleSheet("font-weight: 600; font-size: 14px;")
         # 显示名/备注/元信息来自共享库与导入包（半可信）：QLabel 默认
         # AutoText，Qt.mightBeRichText 命中时按富文本渲染——<img src=
         # "file:///..."> 会读本地文件进 UI、未闭合标签吞掉后续文字。
@@ -1415,7 +1435,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         # 中缝竖线分隔）。不用 QGridLayout rowSpan——其 Expanding 分隔线
         # 会拉伸行距留空隙；改左右双列 VBox 紧凑堆叠
         self.preview_meta = QtWidgets.QLabel()
-        self.preview_meta.setStyleSheet("color: #9a9aa2;")
+        self.preview_meta.setStyleSheet(
+            "color: {};".format(theme.color("TEXT_3")))
         self.preview_meta.setTextFormat(QtCore.Qt.PlainText)
         self.meta_cell_category = QtWidgets.QLabel()
         self.meta_cell_network = QtWidgets.QLabel()
@@ -1438,7 +1459,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         for cell in (self.meta_cell_category, self.meta_cell_network,
                      self.meta_cell_version, self.meta_cell_targets):
             cell.setFixedHeight(line_h)
-            cell.setStyleSheet("color: #9a9aa2;")
+            cell.setStyleSheet(
+                "color: {};".format(theme.color("TEXT_3")))
         meta_left = QtWidgets.QVBoxLayout()
         meta_left.setSpacing(4)
         meta_left.addWidget(self.meta_cell_category)
@@ -1449,7 +1471,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         meta_right.addWidget(self.meta_cell_targets)
         sep = QtWidgets.QFrame()
         sep.setFixedWidth(1)
-        sep.setStyleSheet("background-color: #3d3d3d;")
+        sep.setStyleSheet(
+            "background-color: {};".format(theme.color("LINE")))
         meta_row = QtWidgets.QHBoxLayout()
         meta_row.setSpacing(8)
         meta_row.addLayout(meta_left, 2)
@@ -1459,8 +1482,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self.meta_panel = QtWidgets.QFrame()
         self.meta_panel.setObjectName("metaPanel")
         self.meta_panel.setStyleSheet(
-            "QFrame#metaPanel { background-color: #1D1D20; "
-            "border: 1px solid #3d3d3d; border-radius: 6px; }")
+            "QFrame#metaPanel {{ background-color: {bg}; "
+            "border: 1px solid {line}; border-radius: 8px; }}".format(
+                bg=theme.color("INK_900"), line=theme.color("LINE")))
         meta_lay = QtWidgets.QVBoxLayout(self.meta_panel)
         meta_lay.setContentsMargins(8, 6, 8, 6)
         meta_lay.setSpacing(4)
@@ -1473,7 +1497,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         # 垂直居中会让文字悬在半空
         self.preview_comment.setAlignment(QtCore.Qt.AlignLeft
                                           | QtCore.Qt.AlignTop)
-        self.preview_comment.setStyleSheet("color: #aaaaaa;")
+        self.preview_comment.setStyleSheet(
+            "color: {};".format(theme.color("TEXT_2")))
         # 备注区与文档区同占一格：无文档时这里显示官方备注，右键同样弹
         # 「编辑文档」——此时文档区是隐藏的，备注区是无文档 recipe 唯一
         # 的右键入口（2026-10 用户反馈补的）
@@ -1485,7 +1510,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         # 无文档时隐藏、显示官方备注 comment
         self.preview_doc = MarkdownMediaView("")
         self.preview_doc.setStyleSheet(
-            "color: #cccccc; background: transparent; border: none;")
+            "color: {}; background: transparent; border: none;".format(
+                theme.color("TEXT_2")))
         # 文档区右键弹自建「编辑文档」菜单（默认菜单已在 _DocPreview 禁用）
         self.preview_doc.customContextMenuRequested.connect(
             self._on_doc_context_menu)
@@ -1500,13 +1526,15 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         # 标签文字用固定配色（同显示名称文字的固定白），不随卡片主题色
         # 走——2026-10 用户指定；预览面板与卡片标签行均不再取主题色
         self.tags_view.setStyleSheet(
-            "color: #e8e8ec; font-weight: bold; font-size: 14px; "
-            "background: transparent; border: none;")
+            "color: {text}; font-weight: 600; font-size: 14px; "
+            "background: transparent; border: none;".format(
+                text=theme.color("TEXT")))
         self.tags_panel = QtWidgets.QFrame()
         self.tags_panel.setObjectName("tagsPanel")
         self.tags_panel.setStyleSheet(
-            "QFrame#tagsPanel { background-color: #1D1D20; "
-            "border: 1px solid #3d3d3d; border-radius: 6px; }")
+            "QFrame#tagsPanel {{ background-color: {bg}; "
+            "border: 1px solid {line}; border-radius: 8px; }}".format(
+                bg=theme.color("INK_900"), line=theme.color("LINE")))
         tags_lay = QtWidgets.QVBoxLayout(self.tags_panel)
         tags_lay.setContentsMargins(8, 3, 8, 3)   # 压低内边距与按钮等高
         tags_lay.addWidget(self.tags_view)
@@ -1683,7 +1711,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         尺寸取建按钮时记下的 ht_icon_px（toolbox 比其他种类大 2px）。"""
         kind = btn.property("ht_icon_kind")
         px = btn.property("ht_icon_px") or 12
-        tint = None if btn.isChecked() else "#6f6f78"
+        tint = None if btn.isChecked() else theme.color("TEXT_3")
         btn.setIcon(QtGui.QIcon(sidebar_icon_pixmap(
             kind, px, btn.devicePixelRatioF(), tint=tint)))
 
@@ -2086,6 +2114,13 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             return info.net_category == key[len(LEVEL_PREFIX):]
         return True
 
+    def _update_empty_state(self):
+        """网格无条目时显示空状态（空库/搜索无结果/类型开关全关）。"""
+        empty = self.list.count() == 0
+        self._empty_state.setVisible(empty)
+        if empty:
+            self._empty_state.setGeometry(self.list.viewport().rect())
+
     def _apply_filter(self, note=""):
         """重建网格条目（hdrlight 同款结论：IconMode+gridSize 下
         setHidden 的条目仍占槽位，必须重建式过滤）。重建会丢选中态——
@@ -2133,6 +2168,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     self.list.setCurrentRow(i)
                     self.list.blockSignals(False)
                     break
+        self._update_empty_state()
         self.status.setText("{}：{}/{} 个{}。{}{}".format(
             self._category_label(), len(entries), total,
             "代码块" if self._category_key == KEY_CODE else "recipe", note,
@@ -2269,9 +2305,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         # 256px 档：QIcon 不会把小图放大，占位图太小会在大网格下与真实
         # 缩略图尺寸不一致；给足尺寸让各档位都由 QIcon 缩小呈现
         pm = QtGui.QPixmap(256, 168)
-        pm.fill(QtGui.QColor("#313136"))
+        pm.fill(QtGui.QColor(theme.color("INK_800")))
         painter = QtGui.QPainter(pm)
-        painter.setPen(QtGui.QColor("#666666"))
+        painter.setPen(QtGui.QColor(theme.color("TEXT_4")))
         f = painter.font()
         f.setPixelSize(22)
         painter.setFont(f)
@@ -2472,18 +2508,13 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self._clear_preview_image()
 
     def _apply_tags_panel_theme(self, info):
-        """预览标签栏的面板框随卡片主题色（背景主题色混暗底 + 同色边框）；
-        框内标签文字不随卡片色，按各自的标签色显示（2026-10 用户反馈：
-        框要跟随卡片颜色，只取消文字的主题化）。未选中/未设色回默认灰。"""
-        custom = metadata.get_color(info.name) if info else ""
-        theme = QtGui.QColor(custom) if custom \
-            else QtGui.QColor(_CardDelegate.DEFAULT_THEME)
-        bg = _CardDelegate._tint(theme, 0.35)
+        """预览标签栏统一卡片规范：INK_900 面 + 1px LINE，不随卡片主题色
+        （主题色只留在卡片 3px 竖条/标签点等点缀处；标签文字仍按各自的
+        标签色显示）。"""
         self.tags_panel.setStyleSheet(
-            "QFrame#tagsPanel {{ background-color: rgb({}, {}, {}); "
-            "border: 1px solid rgb({}, {}, {}); border-radius: 6px; }}".format(
-                bg.red(), bg.green(), bg.blue(),
-                theme.red(), theme.green(), theme.blue()))
+            "QFrame#tagsPanel {{ background-color: {bg}; "
+            "border: 1px solid {line}; border-radius: 8px; }}".format(
+                bg=theme.color("INK_900"), line=theme.color("LINE")))
 
     def _preview_box(self):
         """预览图可用绘制区（标签当前尺寸 - 边距）。"""
@@ -2554,7 +2585,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
     def _status_error(self, text):
         """失败反馈：状态栏文本 + 红色高亮闪烁一下（与 _status_success
-        同款脉冲、项目错误色 #d1283e）。只用于真实失败；前置未满足的
+        同款脉冲、项目错误色 ERROR）。只用于真实失败；前置未满足的
         引导文案不闪，保持纯文字。"""
         self._status_flash.error(text)
 
@@ -2711,6 +2742,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self.status.setText("拖到目标网络编辑器上松手放置（Esc 取消）")
 
     def eventFilter(self, obj, event):
+        if obj is self.list.viewport()                 and event.type() == QtCore.QEvent.Type.Resize:
+            self._empty_state.setGeometry(self.list.viewport().rect())
+            return False
         if getattr(self, "_code_drag_active", False):
             # 代码块拖拽：只吞掉「目标是异语言代码编辑器」的 Drop——
             # Houdini 的写入处理不会执行；其余事件一律放行
@@ -3555,7 +3589,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         parts = []
         for t in tags:
             raw = metadata.get_tag_color(t)
-            color = readable_on_dark(raw).name() if raw else "#e8e8ec"
+            color = (readable_on_dark(raw).name() if raw
+                     else theme.color("TEXT"))
             parts.append('<span style="color: {};">#{}</span>'.format(
                 color, html.escape(t)))
         self.tags_view.setText(" ".join(parts))

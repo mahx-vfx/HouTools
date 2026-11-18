@@ -1,4 +1,4 @@
-"""Hdr Library - HDR 环境贴图浏览器。
+"""HDR Library - HDR 环境贴图浏览器。
 
 浏览 HDR 库（缩略图网格），选中场景里的灯光节点（envlight 等，可多选）后
 双击缩略图，把 HDR 路径写入这些灯光的环境贴图参数；左上角目标显示
@@ -62,10 +62,11 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from houtools.core.log import get_logger
 from houtools.core.settings import JsonStore
-from houtools.ui import dialogs
+from houtools.ui import dialogs, qss, theme
 from houtools.ui import fonts as tool_fonts
 from houtools.ui import sidebar as ui_sidebar
 from houtools.ui.badge import FavoriteBadge
+from houtools.ui.components import EmptyState, apply_window_surface
 from houtools.ui.status_flash import StatusFlash
 from houtools.ui.taskbar import apply_appwindow_flags
 
@@ -887,47 +888,15 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
     SIDEBAR_MIN = 140
     SIDEBAR_MAX = 300
 
-    STYLE_SHEET = """
-        QWidget { background-color: #18181b; color: #dddddd; }
-        /* QPushButton 须写在 QWidget 通用背景规则之后：同优先级时后者生效，
-           否则按钮背景被通用规则盖住，只剩文字读不出按钮形状 */
-        QPushButton {
-            background-color: #2d2d2d; border: 1px solid #3d3d3d;
-            border-radius: 4px; padding: 4px 14px;
-        }
-        QPushButton:hover { background-color: #3d3d3d; border-color: #0d6399; }
-        QPushButton:pressed { background-color: #0d6399; }
-        QPushButton:disabled { color: #666666; background-color: #232326; }
-        /* QMenu 同理须在 QWidget 通用规则之后，否则右键菜单读不出
-           悬停高亮，整块死黑没有交互感 */
-        QMenu {
-            background-color: #1D1D20; border: 1px solid #3d3d3d; padding: 4px;
-        }
-        QMenu::item {
-            color: #bbbbbb; padding: 5px 28px 5px 14px; border-radius: 4px;
-        }
-        QMenu::item:selected { background-color: #0d6399; color: #ffffff; }
-        QMenu::item:disabled { color: #666666; }
-        QMenu::separator { height: 1px; background: #3d3d3d; margin: 4px 6px; }
-        QLabel#statusLabel { color: #888888; padding: 4px 8px; }
-        QListWidget {
-            background-color: #1D1D20; border: 1px solid #3d3d3d;
-            border-radius: 6px;
-        }
-        QListWidget::item { color: #bbbbbb; }
-        QListWidget::item:selected { background-color: #0d6399; }
-        QSplitter::handle:horizontal { background: #2d2d2d; width: 2px; }
-        QSlider::groove:horizontal { height: 4px; background: #3d3d3d; border-radius: 2px; }
-        QSlider::handle:horizontal {
-            background: #0d6399; width: 12px; margin: -5px 0; border-radius: 6px;
-        }
-    """
+    STYLE_SHEET = qss.window_qss()
 
     def __init__(self, lib_dir, parent=None, flags=None):
         if flags is None:
             flags = QtCore.Qt.Window
         super().__init__(parent, flags)
+        self.setObjectName("htWindow")
         self.lib_dir = lib_dir
+        apply_window_surface(self)
         self._thread = None
         self._last_targets = None
         self._category_key = KEY_ALL
@@ -945,15 +914,20 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         self._badge = FavoriteBadge()  # 收藏角标（共享组件，见 ui.badge）
         self._placeholder = self._make_placeholder()
 
-        self.setWindowTitle("Hdr Library")
+        self.setWindowTitle("HDR Library")
         self.resize(1080, 620)
         self.setStyleSheet(self.STYLE_SHEET)
         apply_appwindow_flags(self)  # 任务栏常驻（失败静默）
         tool_fonts.apply(self)   # 工具统一字体（子树继承）
         # ---- 顶部栏 ----
         self.target_label = QtWidgets.QLabel("灯光: (未选中)")
-        self.target_label.setStyleSheet("padding: 4px 8px;")
+        self.target_label.setStyleSheet(
+            "padding: 4px 8px; color: {}; background: transparent;".format(
+                theme.color("TEXT_2")))
         self.dir_label = QtWidgets.QLabel()
+        self.dir_label.setStyleSheet(
+            "color: {}; background: transparent;".format(
+                theme.color("TEXT_3")))
         self.dir_btn = QtWidgets.QPushButton("更换目录...")
         self.refresh_btn = QtWidgets.QPushButton("刷新")
         self.pin_chk = QtWidgets.QCheckBox("全局置顶")
@@ -1003,6 +977,15 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         # ---- 缩略图列表 ----
         self.list = _ThumbList()
         self.list.setViewMode(QtWidgets.QListWidget.IconMode)
+        # 空状态覆盖层（网格无条目时显示品牌空状态；不拦截鼠标）
+        self._empty_state = EmptyState(
+            "还没有 HDR 文件",
+            "点「更换目录」指定 HDR 库；库有增删时点「刷新」重新扫描。",
+            "empty_folder.svg", parent=self.list.viewport())
+        self._empty_state.setAttribute(
+            QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._empty_state.hide()
+        self.list.viewport().installEventFilter(self)
         # IconMode 默认 movement=Free（桌面图标语义：条目可被按住拖离
         # 网格槽位，且不区分左右键），拖过的条目还会记住自定义位置
         # 不再随网格重排。固定 Static 锁定网格位置
@@ -1275,6 +1258,19 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
             return "收藏"
         return key or "未分类"
 
+    def eventFilter(self, obj, event):
+        """视口尺寸变化时让空状态覆盖层跟随（布局/分割条拖动都会触发）。"""
+        if obj is self.list.viewport()                 and event.type() == QtCore.QEvent.Type.Resize:
+            self._empty_state.setGeometry(self.list.viewport().rect())
+        return super().eventFilter(obj, event)
+
+    def _update_empty_state(self):
+        """网格无条目时显示空状态（有库但当前分类为空同样提示）。"""
+        empty = self.list.count() == 0
+        self._empty_state.setVisible(empty)
+        if empty:
+            self._empty_state.setGeometry(self.list.viewport().rect())
+
     def _apply_filter(self, note=""):
         """按当前分类重建网格条目（只添加匹配的）。
 
@@ -1312,6 +1308,7 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
                 self._item_by_path[path] = item
         finally:
             self.list.setUpdatesEnabled(True)
+        self._update_empty_state()
         self.status.setText("{}：{}/{} 个 HDR{}。选中场景灯光后双击缩略图链接贴图".format(
             self._category_label(key), len(entries), len(self._hdrs), note))
 
@@ -1442,13 +1439,19 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
         self._last_targets = key
         if not targets:
             self.target_label.setText("灯光: (未选中灯光节点)")
-            self.target_label.setStyleSheet("padding: 4px 8px; color: #f96;")
+            self.target_label.setStyleSheet(
+                "padding: 4px 8px; color: {};".format(
+                    theme.color("WARNING_TEXT")))
         elif len(targets) == 1:
             self.target_label.setText("灯光: {}".format(targets[0].path()))
-            self.target_label.setStyleSheet("padding: 4px 8px; color: #6f6;")
+            self.target_label.setStyleSheet(
+                "padding: 4px 8px; color: {};".format(
+                    theme.color("SUCCESS_TEXT")))
         else:
             self.target_label.setText("灯光: {} 个灯光".format(len(targets)))
-            self.target_label.setStyleSheet("padding: 4px 8px; color: #6f6;")
+            self.target_label.setStyleSheet(
+                "padding: 4px 8px; color: {};".format(
+                    theme.color("SUCCESS_TEXT")))
 
     # ---------------- 交互 ----------------
 
@@ -1637,7 +1640,7 @@ class _HdrLibraryWindow(QtWidgets.QWidget):
 
     def _make_placeholder(self):
         pm = QtGui.QPixmap(THUMB_WIDTH, THUMB_WIDTH // 2)
-        pm.fill(QtGui.QColor("#313136"))  # 比背景亮一档，读作"待生成"
+        pm.fill(QtGui.QColor(theme.color("INK_800")))  # 比背景亮一档，读作"待生成"
         return QtGui.QIcon(pm)
 
     def _stop_worker(self):

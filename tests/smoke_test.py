@@ -129,7 +129,7 @@ def main():
         compile((ROOT / _hook).read_text(encoding="utf-8"), _hook, "exec")
     print("paste_as_object_merge wiring: consistent")
 
-    # Hdr Library:两份菜单均注册薄分发器入口
+    # HDR Library:两份菜单均注册薄分发器入口
     assert 'id="houtools.hdr_library"' in main_xml
     assert 'id="houtools.networkview.hdr_library"' in nv_xml
     print("hdr_library menu wiring: consistent")
@@ -138,13 +138,6 @@ def main():
     assert 'id="houtools.recipe_library"' in main_xml
     assert 'id="houtools.networkview.recipe_library"' in nv_xml
     print("recipe_library menu wiring: consistent")
-
-    # Open Hip Folder:两份菜单均注册薄分发器入口
-    assert 'id="houtools.open_hip_folder"' in main_xml
-    assert '_houtools_dispatcher.run("open_hip_folder")' in main_xml
-    assert 'id="houtools.networkview.open_hip_folder"' in nv_xml
-    assert '_houtools_dispatcher.run("open_hip_folder")' in nv_xml
-    print("open_hip_folder menu wiring: consistent")
 
     # File Cache 路径转绝对:仅网络编辑器菜单注册（无独立快捷键，item id
     # 用 houtools.networkview.* 前缀、不进设置窗口快捷键区）
@@ -693,7 +686,6 @@ def main():
     import houtools.tools.open_cache_folder  # noqa: F401
     import houtools.tools.copy_output_path  # noqa: F401
     import houtools.tools.filecache_abs_path  # noqa: F401
-    import houtools.tools.open_hip_folder  # noqa: F401
     import houtools.tools.capture_viewport_embed  # noqa: F401
     import houtools.tools.delete_viewport_capture  # noqa: F401
     import houtools.tools.paste_bbox  # noqa: F401
@@ -913,58 +905,6 @@ def main():
         fake_start.assert_not_called()
     print("about_houtools run OK")
 
-    # Open Hip Folder run():打桩 hipFile 与 os.startfile 验证三种分支——
-    # 已保存开目录、未保存同样打开（默认 $HIP 文件夹 = path() 的 dirname，
-    # 2026-11 用户指定翻案）、目录不存在拒绝（无头不开真资源管理器）
-    from houtools.tools import open_hip_folder as ohf
-
-    class _FakeHipFile:
-        def __init__(self, path, new):
-            self._path, self._new = path, new
-
-        def path(self):
-            return self._path
-
-        def isNewFile(self):
-            return self._new
-
-    class _FakeHouHip:
-        def __init__(self, path, new):
-            self.hipFile = _FakeHipFile(path, new)
-
-    _saved_hou_hip = sys.modules.get("hou")
-    # saved 分支的 hip 目录必须真实存在（工具有 isdir 守卫，假路径会被
-    # 正确拒绝、startfile 不会发生）
-    _hip_root = tempfile.mkdtemp(prefix="houtools_hip_folder.")
-    atexit.register(lambda: shutil.rmtree(_hip_root, ignore_errors=True))
-    try:
-        with patch("os.startfile") as fake_start:
-            # 已保存：打开 hip 所在目录（normpath 后的 dirname）
-            sys.modules["hou"] = _FakeHouHip(
-                os.path.join(_hip_root, "scene_a.hip").replace("\\", "/"),
-                False)
-            ohf.run()
-            fake_start.assert_called_once_with(os.path.normpath(_hip_root))
-            # 未保存：path() 是绝对路径（cwd + untitled.hip），照样打开
-            # 其 dirname = 默认 $HIP 文件夹
-            fake_start.reset_mock()
-            sys.modules["hou"] = _FakeHouHip(
-                os.path.join(_hip_root, "untitled.hip").replace("\\", "/"),
-                True)
-            ohf.run()
-            fake_start.assert_called_once_with(os.path.normpath(_hip_root))
-            # 所在目录已不存在：拒绝
-            fake_start.reset_mock()
-            sys.modules["hou"] = _FakeHouHip("Z:/nope/scene.hip", False)
-            ohf.run()
-            fake_start.assert_not_called()
-    finally:
-        if _saved_hou_hip is None:
-            sys.modules.pop("hou", None)
-        else:
-            sys.modules["hou"] = _saved_hou_hip
-    print("open_hip_folder run OK")
-
     # 打开DW：任务序列化 + 应用级配置文件读写
     dw_item = task_types.TaskItem.from_dict(
         {"type": "OPEN_DW", "params": {}, "enabled": True})
@@ -1177,6 +1117,42 @@ def main():
     print("new config creation OK")
 
     win._remove_slot(0)  # 槽管理冒烟
+
+    # 拖动重排语义（2026-11 用户指定）：拖动期列表顺序/序号冻结，只更新
+    # 插入指示线；松手才一次换位并按位置重编号。旧实现边拖边换位，
+    # 序号标签跟着卡片走，拖动期各位置上的序号会不断变化。
+    from PySide6.QtCore import QPoint as _QPoint
+    while len(win._slot_widgets) < 3:
+        win._add_slot()
+    win._renumber_slots()
+    _order_before = [id(s) for s in win._slot_widgets]
+    _labels_before = [h.text() for h in win._slot_handles]
+    _drag_src = win._slot_widgets[0]
+    win._on_handle_pressed(_drag_src, _QPoint(0, 0))
+    with patch.object(win, "_insertion_gap_at_global_y", return_value=2):
+        win._on_handle_moved(_drag_src, _QPoint(0, 50))
+        assert [id(s) for s in win._slot_widgets] == _order_before, \
+            "拖动期不应换位（序号会变）"
+        assert [h.text() for h in win._slot_handles] == _labels_before, \
+            "拖动期序号不应变化"
+        assert win._drop_gap == 2 and not win._drop_indicator.isHidden(), \
+            "拖动期应显示插入指示线"
+    win._on_handle_released(_drag_src, _QPoint(0, 50))
+    assert [id(s) for s in win._slot_widgets] == \
+        [_order_before[1], _order_before[0]] + _order_before[2:], \
+        "松手后未按插入缺口换位"
+    assert [h.text() for h in win._slot_handles] == \
+        [str(i + 1) for i in range(len(_order_before))], "松手后序号未按位置刷新"
+    assert win._drop_indicator.isHidden() and win._drop_gap is None, \
+        "松手后应隐藏指示线并清空缺口"
+    # 未超过阈值的点击不换位、不置脏
+    _order_now = [id(s) for s in win._slot_widgets]
+    win._on_handle_pressed(win._slot_widgets[1], _QPoint(0, 0))
+    win._on_handle_moved(win._slot_widgets[1], _QPoint(0, 2))
+    win._on_handle_released(win._slot_widgets[1], _QPoint(0, 2))
+    assert [id(s) for s in win._slot_widgets] == _order_now, "点击被误判为拖动"
+    while len(win._slot_widgets) > 1:  # 收尾:清回单槽,对齐后续既有流程
+        win._remove_slot()
     # 立即拆除防抖定时器：容器编辑已置脏并启动 600ms 单发 QTimer，若留到
     # 后面各测试段的 app.processEvents() 轮询里才派发，会在无 dialogs 打桩
     # 的环境触发真冲突弹窗（_resolve_conflict → dialogs.choice 真模态 =
@@ -1672,6 +1648,240 @@ def main():
     match_win.deleteLater()
     print("videoseq match source resolution OK")
 
+    # 选相机卡顿修复（2026-11）：chooser 必须走原生 node_type_filter
+    # 过滤——Python custom_node_filter_callback 会被选择器对树里的每个
+    # 节点各调一次（官方文档措辞），大场景打开即卡几秒，不允许回归
+    from unittest.mock import patch
+    import inspect as _inspect
+    _chooser_src = _inspect.getsource(
+        vs_window._VideoToSequenceWindow._on_choose_camera)
+    assert "node_type_filter" in _chooser_src
+    assert "custom_node_filter_callback=" not in _chooser_src, \
+        "逐节点 Python 过滤回调不允许作为实参回归（选相机卡顿根源）"
+    assert not hasattr(vs_window, "_cam_filter_callback"), \
+        "逐节点 Python 过滤回调应已删除（选相机卡顿根源）"
+
+    # 文件夹拖入（2026-11 新增）：scan_folder_sequences 归组第一层静帧
+    # 序列，产物 $F 模式可被 parse_sequence_pattern 往返解析
+    from houtools.videoseq.window import (
+        scan_folder_sequences, parse_sequence_pattern)
+    with tempfile.TemporaryDirectory() as foldertd:
+        def _mkf(name):
+            open(os.path.join(foldertd, name), "wb").close()
+
+        for i in (1001, 1002, 1003, 1004):
+            _mkf(f"render.{i:04d}.exr")
+        _mkf("depth.1001.exr")
+        _mkf("depth.1002.exr")
+        # 单帧编号文件不是序列；无编号静帧 / 子目录 / 非白名单扩展跳过
+        # （jpg 是输出格式不收，与 _load_media 扩展名拒绝同口径）
+        _mkf("solo.1001.exr")
+        _mkf("logo.png")
+        os.mkdir(os.path.join(foldertd, "subdir"))
+        _mkf("subdir" + os.sep + "nested.1001.exr")
+        _mkf("movie.0001.mov")
+        # 大写扩展名照常归组且保留原始大小写（ffmpeg 输入模式按磁盘
+        # 字面大小写生成，Linux 下区分）
+        _mkf("up.0042.EXR")
+        _mkf("up.0043.EXR")
+        pats = scan_folder_sequences(foldertd)
+        assert [os.path.basename(p) for p in pats] == [
+            "depth.$F4.exr", "render.$F4.exr", "up.$F4.EXR"], pats
+        spec = parse_sequence_pattern(pats[1])
+        assert spec.frame_numbers == (1001, 1002, 1003, 1004), spec
+        spec = parse_sequence_pattern(pats[2])
+        assert spec.frame_numbers == (42, 43) and spec.ext == "EXR", spec
+        # 空目录 / 目录不可读 → []
+        os.mkdir(os.path.join(foldertd, "emptydir"))
+        assert scan_folder_sequences(
+            os.path.join(foldertd, "emptydir")) == []
+        assert scan_folder_sequences(
+            os.path.join(foldertd, "no_such_dir")) == []
+
+        # 拖入接线：唯一序列直接装载；多条走选择对话框（选中哪条装载
+        # 哪条，取消不装载）；空结果红字。探测打桩为 no-op（无头不拉
+        # ffprobe 子进程），scan 打桩控制场景
+        folder_win = _VideoToSequenceWindow()
+        real_pats = scan_folder_sequences(foldertd)
+        assert len(real_pats) == 3
+        with patch.object(vs_window._VideoToSequenceWindow,
+                          "_probe_video"), \
+                patch.object(vs_window, "scan_folder_sequences",
+                             return_value=[]):
+            folder_win._on_folder_dropped(foldertd + "_empty")
+            assert "未找到静帧序列" in folder_win._status_label.text()
+        with patch.object(vs_window._VideoToSequenceWindow,
+                          "_probe_video"), \
+                patch.object(vs_window, "scan_folder_sequences",
+                             return_value=[real_pats[1]]):
+            folder_win._on_folder_dropped(foldertd)
+            assert folder_win._path_edit.text() == real_pats[1]
+        with patch.object(vs_window._VideoToSequenceWindow,
+                          "_probe_video"), \
+                patch.object(vs_window, "scan_folder_sequences",
+                             return_value=real_pats), \
+                patch.object(vs_window, "_pick_sequence_dialog",
+                             return_value=real_pats[2]):
+            folder_win._on_folder_dropped(foldertd)
+            assert folder_win._path_edit.text() == real_pats[2]
+        with patch.object(vs_window, "scan_folder_sequences",
+                          return_value=real_pats), \
+                patch.object(vs_window, "_pick_sequence_dialog",
+                             return_value=None):
+            folder_win._on_folder_dropped(foldertd)
+            assert folder_win._path_edit.text() == real_pats[2], \
+                "取消选择不改变已装载媒体"
+    folder_win.deleteLater()
+    print("videoseq folder drop OK")
+
+    # 窗口重开（showEvent）重读相机（2026-11 用户拍板）：所选相机已被
+    # 删除时清残留路径与分辨率行；场景恰好一个相机时自动改选，多个
+    # 相机保持未选
+    class _StaleParm:
+        def __init__(self, value):
+            self._value = value
+
+        def evalAsInt(self):
+            return self._value
+
+    class _StaleCamNode:
+        def __init__(self, path, res=(1920, 1080)):
+            self._path = path
+            self._res = res
+
+        def path(self):
+            return self._path
+
+        def parm(self, name):
+            if name in ("resx", "resy"):
+                return _StaleParm(self._res[0 if name == "resx" else 1])
+            return None
+
+    class _StaleCamType:
+        def __init__(self, nodes):
+            self._nodes = nodes
+
+        def instances(self):
+            return list(self._nodes)
+
+    class _StaleHou:
+        Error = type("Error", (Exception,), {})
+
+        def __init__(self, nodes, instances):
+            self._nodes = nodes          # path -> node 或 None（已删）
+            self._instances = instances  # nodeType("cam").instances()
+
+        def node(self, path):
+            return self._nodes.get(path)
+
+        def objNodeTypeCategory(self):
+            return "Object"
+
+        def nodeType(self, category, name):
+            if category == "Object" and name == "cam":
+                return _StaleCamType(self._instances)
+            return None
+
+    stale_win = _VideoToSequenceWindow()
+    cam_a = _StaleCamNode("/obj/camA")
+    cam_b = _StaleCamNode("/obj/camB", res=(3840, 2160))
+    cam_c = _StaleCamNode("/obj/camC")
+    stale_win._camera_edit.setText("/obj/camA")
+    _saved_hou_stale = sys.modules.get("hou")
+    try:
+        sys.modules["hou"] = _StaleHou({"/obj/camA": cam_a}, [cam_a])
+        stale_win.hide()
+        stale_win.show()
+        assert stale_win._camera_edit.text() == "/obj/camA", \
+            "所选相机仍在场景中：保留显式选择"
+        assert stale_win._res_w_edit.text() == "1920"
+        assert stale_win._res_h_edit.text() == "1080"
+        # camA 已删、场景只剩 camB → 清残留并按唯一相机规则改选
+        sys.modules["hou"] = _StaleHou(
+            {"/obj/camA": None, "/obj/camB": cam_b}, [cam_b])
+        stale_win.hide()
+        stale_win.show()
+        assert stale_win._camera_edit.text() == "/obj/camB", \
+            stale_win._camera_edit.text()
+        assert stale_win._res_w_edit.text() == "3840"
+        assert stale_win._res_h_edit.text() == "2160"
+        # 所选 camB 已删、场景剩两颗相机 → 清残留后保持未选，分辨率行
+        # 禁用空态
+        sys.modules["hou"] = _StaleHou(
+            {"/obj/camA": cam_a, "/obj/camB": None, "/obj/camC": cam_c},
+            [cam_a, cam_c])
+        stale_win.hide()
+        stale_win.show()
+        assert stale_win._camera_edit.text() == "", \
+            stale_win._camera_edit.text()
+        assert not stale_win._res_w_edit.isEnabled()
+        assert stale_win._res_w_edit.text() == ""
+    finally:
+        if _saved_hou_stale is None:
+            sys.modules.pop("hou", None)
+        else:
+            sys.modules["hou"] = _saved_hou_stale
+    stale_win.deleteLater()
+    print("videoseq stale camera refresh OK")
+
+    # 完成后写相机背景：目录部分 $HIP 等变量展开成绝对路径再填入，
+    # basename 的 $F<pad> 序列折叠标记原样保留（2026-11 用户指定——
+    # expandString 会把 $F4 展开成当前帧号、背景退化成单帧）
+    class _BgParm:
+        def __init__(self, store, key):
+            self._store, self._key = store, key
+
+        def set(self, value, follow_parm_reference=False):
+            self._store[self._key] = value
+
+    class _BgCam:
+        def __init__(self):
+            self.values = {}
+
+        def parm(self, name):
+            if name in ("vm_background", "vm_bgenable"):
+                return _BgParm(self.values, name)
+            return None
+
+    class _BgText:
+        @staticmethod
+        def expandString(s):
+            return s.replace("$HIP", "C:/proj/shot01")
+
+    class _BgHou:
+        Error = type("Error", (Exception,), {})
+        text = _BgText
+
+        def __init__(self, cam):
+            self._cam = cam
+
+        def node(self, path):
+            return self._cam
+
+    bg_cam = _BgCam()
+    bg_win = _VideoToSequenceWindow()
+    bg_win._last_prefix = "cam"
+    bg_win._last_padding = 4
+    bg_win._last_output_dir = "$HIP/images/mantra1/"
+    _saved_hou_bg = sys.modules.get("hou")
+    try:
+        sys.modules["hou"] = _BgHou(bg_cam)
+        bg_win._set_camera_background("/obj/camA", "C:/out")
+    finally:
+        if _saved_hou_bg is None:
+            sys.modules.pop("hou", None)
+        else:
+            sys.modules["hou"] = _saved_hou_bg
+    bg = bg_cam.values.get("vm_background", "")
+    assert bg_cam.values.get("vm_bgenable") == 1, bg_cam.values
+    assert "$HIP" not in bg, "背景路径必须落成绝对路径"
+    assert "$F4.jpg" in bg, "序列折叠标记必须保留"
+    assert "mantra1" in bg and (
+        bg.startswith("C:/proj/shot01")
+        or bg.startswith("C:\\proj\\shot01")), bg
+    bg_win.deleteLater()
+    print("videoseq camera background absolute path OK")
+
     # ExecutionEngine 构造（回归：曾因缺 data_manager import 在此 NameError）
     from houtools.automation.execution_engine import ExecutionEngine
     engine = ExecutionEngine([])
@@ -1777,7 +1987,7 @@ def main():
     _top.deleteLater()
     print("panel center filter QWindow guard OK")
 
-    # Hdr Library:子文件夹分类扫描 + 缩略图相对路径命名
+    # HDR Library:子文件夹分类扫描 + 缩略图相对路径命名
     from houtools.hdrlight import browser as hdr_browser
     with tempfile.TemporaryDirectory() as tmp:
         Path(tmp, "sunset.hdr").touch()
@@ -1910,7 +2120,7 @@ def main():
         fav_store.path.unlink(missing_ok=True)
     print("HdrLibrary window + favorites OK")
 
-    # Hdr Library 扫描快照：目录 mtime 等值跳扫 / 会话内内存复用 /
+    # HDR Library 扫描快照：目录 mtime 等值跳扫 / 会话内内存复用 /
     # 重启后快照重建 / 新增文件触发真重扫
     from houtools.hdrlight import browser as _hb
     with tempfile.TemporaryDirectory() as tmp:
@@ -2686,8 +2896,9 @@ def main():
                 assert win.list.selectedIndexes() == []
                 assert win.preview_name.text() == "", win.preview_name.text()
                 win.hide()
-                # 工具统一字体已应用到窗口树（子控件经继承生效）
-                assert win.font().family() == "Alimama ShuHeiTi", \
+                # 工具统一字体角色已应用到窗口树（UI 角色，主题形体系）
+                from houtools.ui import fonts as _ui_fonts
+                assert win.font().family() == _ui_fonts.ui_family(), \
                     win.font().family()
                 assert win.list.count() == 3, win.list.count()
 
@@ -3080,15 +3291,19 @@ def main():
                 assert win.sidebar.currentItem() is item_ye, \
                     "左键选中行为不得被破坏"
                 win._select_category(rl_browser.KEY_ALL)   # 还原过滤状态
-                # 标签栏面板框随卡片主题色（背景混暗底+同色边框），框内
-                # 标签文字仍按标签色（2026-10 用户反馈）；无色回默认灰
+                # 标签栏面板框统一卡片规范（INK_900 面 + LINE 边框），
+                # 不随卡片主题色；标签文字仍按各自的标签色
+                from houtools.ui import theme as _ui_theme
                 rl_meta.set_color("houtools::pyro::a", "#ff0000")
                 win.list.setCurrentRow(-1)
                 win.list.setCurrentRow(0)
-                assert "border: 1px solid rgb(255, 0, 0)" \
+                assert "background-color: %s" % _ui_theme.color("INK_900") \
                     in win.tags_panel.styleSheet()
+                assert "border: 1px solid %s" % _ui_theme.color("LINE") \
+                    in win.tags_panel.styleSheet()
+                assert "rgb(255, 0, 0)" not in win.tags_panel.styleSheet()
                 win._clear_preview()
-                assert "border: 1px solid rgb(154, 154, 162)" \
+                assert "border: 1px solid %s" % _ui_theme.color("LINE") \
                     in win.tags_panel.styleSheet()
                 rl_meta.set_color("houtools::pyro::a", None)
                 assert win.list.currentItem() is not None, "选中态须保留"
@@ -3951,7 +4166,10 @@ def main():
             pinned._max_btn.click()   # 还原
             # 边缘缩放：8 向热区判定 + 标题条不改变光标 + 东缘拖拽变宽
             # （最大化时禁缩放）
-            assert "#ffffff" in pinned.styleSheet()   # 标题栏白底
+            # 浮层品牌暗色（INK_850 面 + INK_900 标题条，不再白底）
+            from houtools.ui import theme as _ui_theme
+            assert _ui_theme.color("INK_850") in pinned.styleSheet()
+            assert _ui_theme.color("INK_900") in pinned.styleSheet()
             assert pinned._resize_dir(QtCore.QPoint(2, 300)) == "w"
             assert pinned._resize_dir(
                 QtCore.QPoint(pinned.width() - 2, 300)) == "e"

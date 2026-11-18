@@ -20,10 +20,10 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox,
     QLineEdit, QStackedWidget, QCheckBox, QWidget, QScrollArea, QSizePolicy,
-    QGraphicsDropShadowEffect, QApplication, QMenu,
+    QGraphicsDropShadowEffect, QApplication, QMenu, QFrame,
 )
 from PySide6.QtCore import Qt, Signal, QPoint, QSize, QRect, QRectF, QEvent, QTimer, QObject
-from PySide6.QtGui import QColor, QIcon, QKeySequence, QShortcut, QPainter, QPixmap
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QShortcut, QPainter, QPixmap, QPalette
 
 try:
     from PySide6 import QtSvg
@@ -52,7 +52,7 @@ from houtools.automation.styles import STYLE_SHEET
 from houtools.core.constants import PROJECT_ROOT
 from houtools.dev import status
 from houtools.core.log import get_logger
-from houtools.ui import dialogs
+from houtools.ui import dialogs, qss, theme
 from houtools.ui import fonts as tool_fonts
 from houtools.ui.icons import svg_icon
 from houtools.ui.networknav import (
@@ -67,7 +67,7 @@ logger = get_logger("automation.window")
 # 用 ``__file__`` 解析绝对路径后注入到 combo-level stylesheet,
 # 不在 styles.py 写死(Houdini 启动 CWD 不固定,相对路径会失效)。
 _MA_ICONS_DIR = Path(__file__).resolve().parent.parent / "icons"
-_ICON_DROP_DOWN = _MA_ICONS_DIR / "drop_down_button.svg"
+_ICON_DROP_DOWN = _MA_ICONS_DIR / "chevron_down.svg"
 _CONFIG_COMBO_ICON_STYLE = f"""
 QComboBox#configCombo::down-arrow {{
     image: url("{_ICON_DROP_DOWN.as_posix()}");
@@ -77,32 +77,41 @@ QComboBox#configCombo::down-arrow {{
 """
 
 _TOOLBAR_BTN_STYLE = (
-    "QPushButton { background-color: #3a3a3e; color: #e0e0e0;"
-    " border: 1px solid #55555a; padding: 6px 16px;"
-    " border-radius: 4px; font-size: 13px; }"
-    "QPushButton:hover { background-color: #46464b; }"
-    "QPushButton:pressed { background-color: #0d6399; }"
-)
+    "QPushButton {{ background-color: {ink}; color: {text};"
+    " border: 1px solid {line}; padding: 6px 16px;"
+    " border-radius: 4px; font-size: 13px; }}"
+    "QPushButton:hover {{ background-color: {hover};"
+    " border-color: {line_strong}; }}"
+    "QPushButton:pressed {{ background-color: {pressed}; }}"
+).format(ink=theme.color("INK_850"), text=theme.color("TEXT"),
+         line=theme.color("LINE"), hover=theme.color("INK_800"),
+         line_strong=theme.color("LINE_STRONG"),
+         pressed=theme.color("INK_900"))
 
-# 删除配置按钮：点击态用亮红（破坏性操作的颜色语义，2026-11 用户指定），
-# 其余状态与普通工具栏按钮一致
+# 删除配置按钮：破坏性操作用错误色语义（悬停红描边、按下红底）
 _DELETE_BTN_STYLE = (
-    "QPushButton { background-color: #3a3a3e; color: #e0e0e0;"
-    " border: 1px solid #55555a; padding: 6px 16px;"
-    " border-radius: 4px; font-size: 13px; }"
-    "QPushButton:hover { background-color: #46464b;"
-    " border: 1px solid #d1283e; }"
-    "QPushButton:pressed { background-color: #d1283e; }"
-)
+    "QPushButton {{ background-color: {ink}; color: {text};"
+    " border: 1px solid {line}; padding: 6px 16px;"
+    " border-radius: 4px; font-size: 13px; }}"
+    "QPushButton:hover {{ background-color: {hover};"
+    " border: 1px solid {error}; }}"
+    "QPushButton:pressed {{ background-color: {error};"
+    " color: {on_error}; }}"
+).format(ink=theme.color("INK_850"), text=theme.color("TEXT"),
+         line=theme.color("LINE"), hover=theme.color("INK_800"),
+         error=theme.color("ERROR"),
+         on_error=theme.on_color(theme.color("ERROR")))
 
 # 数量行的 + / - 按钮:同工具栏按钮底色但更紧凑(固定 32x26,内容居中)
 _SLOT_OP_BTN_STYLE = (
-    "QPushButton { background-color: #3a3a3e; color: #e0e0e0;"
-    " border: 1px solid #55555a; padding: 0;"
-    " border-radius: 4px; font-size: 15px; font-weight: bold; }"
-    "QPushButton:hover { background-color: #46464b; }"
-    "QPushButton:pressed { background-color: #0d6399; }"
-)
+    "QPushButton {{ background-color: {ink}; color: {text};"
+    " border: 1px solid {line}; padding: 0;"
+    " border-radius: 4px; font-size: 15px; font-weight: 600; }}"
+    "QPushButton:hover {{ background-color: {hover}; }}"
+    "QPushButton:pressed {{ background-color: {pressed}; }}"
+).format(ink=theme.color("INK_850"), text=theme.color("TEXT"),
+         line=theme.color("LINE"), hover=theme.color("INK_800"),
+         pressed=theme.color("INK_900"))
 
 
 # ── Windows 文件名保留名(用于 _get_save_target_name 拒绝) ─────────
@@ -928,6 +937,24 @@ class AutomationWindow(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("htWindow")
+        # Python Panel 内 Houdini 的 pane 底色会从透明区域透出；根部件
+        # 必须自己填满品牌暗色（QSS 背景在 QWidget 子类上还要
+        # WA_StyledBackground；palette 兜底让未写样式的子控件也暗）
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAutoFillBackground(True)
+        pal = self.palette()
+        pal.setColor(QPalette.ColorRole.Window, QColor(theme.color("INK_950")))
+        pal.setColor(QPalette.ColorRole.Base, QColor(theme.color("INK_950")))
+        pal.setColor(QPalette.ColorRole.AlternateBase, QColor(theme.color("INK_900")))
+        pal.setColor(QPalette.ColorRole.WindowText, QColor(theme.color("TEXT")))
+        pal.setColor(QPalette.ColorRole.Text, QColor(theme.color("TEXT")))
+        pal.setColor(QPalette.ColorRole.Button, QColor(theme.color("INK_850")))
+        pal.setColor(QPalette.ColorRole.ButtonText, QColor(theme.color("TEXT")))
+        pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(theme.color("TEXT_4")))
+        pal.setColor(QPalette.ColorRole.Highlight, QColor(theme.color("ACCENT")))
+        pal.setColor(QPalette.ColorRole.HighlightedText, QColor(theme.color("INK_1000")))
+        self.setPalette(pal)
         self.setWindowTitle("Automation")
         self.setMinimumSize(600, 450)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -957,7 +984,7 @@ class AutomationWindow(QWidget):
         self._slot_widgets: list[QWidget] = []
         # 平行于 _slot_widgets 的 handle 引用列表,在 _create_slot_widget 时
         # 一次性存到 slot._handle,之后 _add_slot 同步 append。替掉原来 3 处
-        # (renumber / index_at_global_y) 的 findChild 热路径,O(N×M) → O(N)
+        # (renumber / insertion_gap_at_global_y) 的 findChild 热路径,O(N×M) → O(N)
         self._slot_handles: list[QLabel] = []
         self._running = False
         self._cancel_requested = False  # 已请求停止、引擎尚未真正退出
@@ -981,6 +1008,9 @@ class AutomationWindow(QWidget):
         self._drag_source_index: int | None = None  # 拖动起点槽索引
         self._drag_press_pos = None  # type: QPoint | None  # 拖动按下时的全局坐标
         self._drag_threshold: int = 5  # 像素,超过才认作拖动
+        # 拖动期预测的插入缺口(0..N,N=末尾)。拖动全程只更新这个值和
+        # 指示线,不移动任何槽 —— release 时才一次换位并刷新序号
+        self._drop_gap: int | None = None
 
         # 配置下拉相关状态:当前加载的配置文件 basename(无 .json 后缀)。
         # 初始默认为本机计算机名(2026-11 用户拍板:多机器共用工程目录,
@@ -1108,12 +1138,12 @@ class AutomationWindow(QWidget):
     # ── UI 构建 ────────────────────────────────────────────
 
     def _build_ui(self):
-        """构建完整 UI：工具栏 + 滚动槽列表。"""
+        """构建完整 UI：工具栏 + 滚动槽列表（功能优先，不额外加品牌栏）。"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        # ── 工具栏第一行：配置、Start、Auto Fill、Clear ──
+        # ── 工具栏第一行：配置、新建、删除、设置 ──
         toolbar1 = QHBoxLayout()
         toolbar1.setSpacing(4)
 
@@ -1128,7 +1158,8 @@ class AutomationWindow(QWidget):
         self._config_label = QLabel("配置:")
         self._config_label.setObjectName("configLabel")
         self._config_label.setStyleSheet(
-            "color: #0d6399; font-weight: bold; background: transparent;"
+            "color: {}; font-weight: 600; background: transparent;"
+            .format(theme.color("TEXT_2"))
         )
 
         # 用 _NoWheelComboBox：配置切换会重建全部槽（未保存编辑丢失），
@@ -1190,9 +1221,10 @@ class AutomationWindow(QWidget):
         settings_btn = QPushButton("设置")
         settings_btn.setObjectName("settingsBtn")
         settings_btn.clicked.connect(lambda: self._open_settings())
-        # pane 内 Houdini 全局样式表会压过窗口级类型选择器，这三个按钮
-        # 用部件级内联样式（Qt 中优先级最高）保证底色可见
-        for btn in (auto_fill_btn, clear_btn, settings_btn):
+        settings_btn.setStyleSheet(_TOOLBAR_BTN_STYLE)
+
+        # 工具按钮用部件级内联样式（Qt 中优先级最高）保证底色可见
+        for btn in (auto_fill_btn, clear_btn):
             btn.setStyleSheet(_TOOLBAR_BTN_STYLE)
         # 按钮锁定文字宽度：窄面板下工具栏溢出时 QBoxLayout 把各项压到
         # 最小提示以下，按钮文字被压缩裁剪、与相邻控件挤在一起——锁定后
@@ -1203,8 +1235,7 @@ class AutomationWindow(QWidget):
             btn.setMinimumWidth(btn.sizeHint().width())
 
         # 顺序:配置 → 新建 → 删除   <stretch>   设置
-        # （执行/自动填充/清空移到第二排数量行——2026-11 用户指定，单排
-        # 过挤；第二排数量控件右侧留白正好容纳三个动作按钮）
+        # （执行/自动填充/清空在第二排数量行——2026-11 用户指定）
         toolbar1.addWidget(self._config_label)
         toolbar1.addWidget(self._config_combo)
         toolbar1.addWidget(new_config_btn)
@@ -1220,8 +1251,10 @@ class AutomationWindow(QWidget):
 
         # 任务数量输入框
         self._task_count_label = QLabel("数量:")
+        self._task_count_label.setObjectName("taskCountLabel")
         self._task_count_label.setStyleSheet(
-            "color: #cccccc; background: transparent;"
+            "color: {}; background: transparent;".format(
+                theme.color("TEXT_2"))
         )
         self._task_count_input = QLineEdit()
         self._task_count_input.setObjectName("taskCountInput")
@@ -1275,6 +1308,18 @@ class AutomationWindow(QWidget):
         self._slot_layout.setSpacing(6)
         self._slot_layout.addStretch()  # 将槽推至顶部
 
+        # ── 拖动插入位置指示线 ──
+        # 拖动期列表顺序/序号保持不动,只有这条线随光标移动;松手才换位。
+        # 作为 _slot_container 的子控件做绝对定位(不参与布局,不挤动任何槽,
+        # 否则指示线自己会让 handle 中心漂移、索引计算抖动)。
+        self._drop_indicator = QFrame(self._slot_container)
+        self._drop_indicator.setObjectName("dropIndicator")
+        self._drop_indicator.setFixedHeight(2)
+        self._drop_indicator.setStyleSheet(
+            "QFrame#dropIndicator {{ background-color: {}; border: none; }}"
+            .format(theme.color("ACCENT")))
+        self._drop_indicator.hide()
+
         self._scroll_area.setWidget(self._slot_container)
         layout.addWidget(self._scroll_area)
 
@@ -1299,7 +1344,7 @@ class AutomationWindow(QWidget):
         idx_label._owner_window = self
         idx_label.setText(str(index + 1))
         idx_label.setFixedWidth(32)
-        idx_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        idx_label.setStyleSheet("font-weight: 600; font-size: 14px;")
         idx_label.handlePressed.connect(self._on_handle_pressed)
         idx_label.handleMoved.connect(self._on_handle_moved)
         idx_label.handleReleased.connect(self._on_handle_released)
@@ -1355,7 +1400,9 @@ class AutomationWindow(QWidget):
         p3_layout.setSpacing(4)
         dw_hint = QLabel("启动 Deadline Worker")
         dw_hint.setObjectName("openDWHint")
-        dw_hint.setStyleSheet("color: #999999; background: transparent;")
+        dw_hint.setStyleSheet(
+            "color: {}; background: transparent;".format(
+                theme.color("TEXT_3")))
         dw_hint.setToolTip(
             "软件路径在配置文件中设置:\n"
             + AutomationDataManager.get_app_config_path()
@@ -1373,13 +1420,17 @@ class AutomationWindow(QWidget):
         fr_row = QHBoxLayout()
         fr_row.setSpacing(4)
         fr_label = QLabel("帧:")
-        fr_label.setStyleSheet("color: #cccccc; background: transparent;")
+        fr_label.setStyleSheet(
+            "color: {}; background: transparent;".format(
+                theme.color("TEXT_2")))
         start_frame_le = QLineEdit("$RFSTART")
         start_frame_le.setObjectName("flipbookStartFrame")
         start_frame_le.setPlaceholderText("起始帧")
         start_frame_le.setFixedWidth(80)
         tilde_label = QLabel("~")
-        tilde_label.setStyleSheet("color: #cccccc; background: transparent;")
+        tilde_label.setStyleSheet(
+            "color: {}; background: transparent;".format(
+                theme.color("TEXT_2")))
         end_frame_le = QLineEdit("$RFEND")
         end_frame_le.setObjectName("flipbookEndFrame")
         end_frame_le.setPlaceholderText("结束帧")
@@ -1398,7 +1449,9 @@ class AutomationWindow(QWidget):
         out_row = QHBoxLayout()
         out_row.setSpacing(4)
         out_label = QLabel("输出:")
-        out_label.setStyleSheet("color: #cccccc; background: transparent;")
+        out_label.setStyleSheet(
+            "color: {}; background: transparent;".format(
+                theme.color("TEXT_2")))
         output_path_le = QLineEdit("$HIP/FlipBook/$HIPNAME/$HIPNAME.$F4.jpg")
         output_path_le.setObjectName("flipbookOutputPath")
         output_path_le.setPlaceholderText("输出路径")
@@ -1451,8 +1504,10 @@ class AutomationWindow(QWidget):
         # ── 组装 ──
         hbox.addWidget(idx_label)
         hbox.addWidget(combo)
-        hbox.addWidget(stacked)
-        hbox.addWidget(flipbook_widget)
+        # 参数区吸收剩余宽度：否则类型 combo 只有自身 sizeHint，
+        # 路径框右侧留出一大片空白（视觉上像断开的黑条）
+        hbox.addWidget(stacked, 1)
+        hbox.addWidget(flipbook_widget, 1)
         hbox.addWidget(jump_btn)
         hbox.addWidget(enabled_cb)
 
@@ -1594,7 +1649,9 @@ class AutomationWindow(QWidget):
             hint_layout = QHBoxLayout(hint_page)
             hint_layout.setContentsMargins(0, 0, 0, 0)
             hint_label = QLabel("未知类型（原始数据已保留）")
-            hint_label.setStyleSheet("color: #999999; background: transparent;")
+            hint_label.setStyleSheet(
+                "color: {}; background: transparent;".format(
+                    theme.color("TEXT_3")))
             hint_layout.addWidget(hint_label)
             stacked.addWidget(hint_page)
             combo.setCurrentIndex(combo.count() - 1)
@@ -1644,7 +1701,7 @@ class AutomationWindow(QWidget):
         index = len(self._slot_widgets)
         slot = self._create_slot_widget(index, data)
         self._slot_widgets.append(slot)
-        # 同步 append handle(平行列表,_renumber / _index_at_global_y 用)
+        # 同步 append handle(平行列表,_renumber / _insertion_gap_at_global_y 用)
         self._slot_handles.append(slot._handle)
         # 插入到 stretch 之前
         self._slot_layout.insertWidget(self._slot_layout.count() - 1, slot)
@@ -1676,7 +1733,9 @@ class AutomationWindow(QWidget):
         # 否则手柄上的鼠标捕获和悬空的 _drag_source_index 会在删除后继续
         # 响应 move/release,造成幽灵重排。删的是拖动源槽时整体复位;
         # 删的是源槽之前的槽时源索引前移一格,后续 move 才不会错位。
+        # 插入缺口是按下标算的,删除后必然过期,一并隐藏指示线。
         if self._drag_source_index is not None:
+            self._hide_drop_indicator()
             if index == self._drag_source_index:
                 handle = self._slot_handles[index]
                 try:
@@ -1685,9 +1744,7 @@ class AutomationWindow(QWidget):
                 except RuntimeError:
                     pass  # C++ 对象已销毁,捕获随析构自动释放
                 handle.setCursor(Qt.OpenHandCursor)
-                self._drag_source_index = None
-                self._drag_press_pos = None
-                self._drag_active = False
+                self._reset_drag_state()
             elif index < self._drag_source_index:
                 self._drag_source_index -= 1
 
@@ -1807,11 +1864,18 @@ class AutomationWindow(QWidget):
         self._drag_source_index = index
         self._drag_press_pos = global_pos
         self._drag_active = False
+        # 新一次拖动开始:清掉上一次可能残留的插入缺口/指示线
+        self._hide_drop_indicator()
         # 加阴影 + CSS dragging 状态,视觉上"浮起来"
         self._apply_drag_effect(slot, True)
 
     def _on_handle_moved(self, slot: QWidget, global_pos: QPoint) -> None:
-        """手柄被拖动:超过阈值后实时换位(序号在 release 时统一刷新)。"""
+        """手柄被拖动:超过阈值后只更新插入位置指示线。
+
+        **拖动期不移动任何槽**——列表顺序与序号保持原样,只有指示线随
+        光标移动;真正换位在 release 时一次完成(2026-11 用户指定:
+        拖动时不改变序号,松手后才改变序号)。
+        """
         if self._drag_source_index is None or self._drag_press_pos is None:
             return
         if not self._drag_active:
@@ -1819,29 +1883,39 @@ class AutomationWindow(QWidget):
             if (global_pos - self._drag_press_pos).manhattanLength() < self._drag_threshold:
                 return
             self._drag_active = True
-        # 计算目标索引
-        target = self._index_at_global_y(global_pos.y())
-        if target is None or target == self._drag_source_index:
-            return
-        # 换位后,从新位置继续跟踪(否则下一次 move 会基于旧索引)
-        # 注:_move_slot 不再调 _renumber_slots,序号保持"过期"直到 release
-        self._move_slot(self._drag_source_index, target)
-        self._drag_source_index = target
-        self._mark_dirty()  # 实际换位=编辑（仅点击不换位不写盘）
+        # 只记录缺口 + 画线;_drag_source_index 全程不变
+        gap = self._insertion_gap_at_global_y(global_pos.y())
+        self._drop_gap = gap
+        self._show_drop_indicator(gap)
 
     def _on_handle_released(self, slot: QWidget, global_pos: QPoint) -> None:
-        """手柄松开:移除抬起样式 + 统一刷新序号。"""
+        """手柄松开:应用最终换位 + 统一刷新序号。
+
+        拖动期列表没动过,这里把 release 时记录的插入缺口换算成目标索引
+        一次完成 ``_move_slot``;实际发生换位才算编辑(``_mark_dirty``)。
+        """
         if self._drag_source_index is None:
             return
         # 移除阴影 + dragging 状态
         self._apply_drag_effect(slot, False)
-        # 拖动结束后统一刷一次序号(配合 _move_slot 不再自动刷新,实现
-        # "拖动期序号不刷新、松开统一更新"的交互)
+        source = self._drag_source_index
+        gap = self._drop_gap
+        self._hide_drop_indicator()
+
+        moved = False
+        if self._drag_active and gap is not None:
+            # 缺口 → 目标槽索引:从缺口之后移除,落点整体前移一格
+            to_index = gap - 1 if gap > source else gap
+            if 0 <= to_index < len(self._slot_widgets) and to_index != source:
+                self._move_slot(source, to_index)
+                moved = True
+        # 拖动结束后统一刷一次序号(拖动期不刷新);原地放下时是等值重写,
+        # 顺带兜住拖动期间删除/插入造成的过期标签
         self._renumber_slots()
-        # 重置 drag 状态
-        self._drag_source_index = None
-        self._drag_press_pos = None
-        self._drag_active = False
+        if moved:
+            self._mark_dirty()  # 实际换位=编辑(仅点击/原地放下不写盘)
+
+        self._reset_drag_state()
 
     def _apply_drag_effect(self, slot: QWidget, enabled: bool) -> None:
         """应用 / 移除"抬起"拖动视觉效果。
@@ -1871,9 +1945,9 @@ class AutomationWindow(QWidget):
         ``_slot_layout.insertWidget(to_index, slot)`` 会把 slot 插到布局的
         ``to_index`` 位置(布局末尾的 stretch 自动推后,不需要手动 +1)。
 
-        **不在此调** ``_renumber_slots()`` **:拖动期序号保持"过期",只在 release 时
-        统一刷新,符合"按下拖动时序号不变"的交互预期(与 Finder / Explorer
-        拖动行为一致)。调用方负责 release 时刷新。
+        **只在 release 时调用一次**(拖动期不换位、不刷新序号);序号由
+        调用方 ``_on_handle_released`` 统一刷新,与"拖动时不改变序号、
+        松手后才改变序号"的交互一致。
         """
         if not (0 <= from_index < len(self._slot_widgets)):
             return
@@ -1918,17 +1992,16 @@ class AutomationWindow(QWidget):
 
         self._update_selection_style()
 
-    def _index_at_global_y(self, global_y: int) -> int:
-        """根据全局 Y 坐标返回对应的目标槽索引(中心锚定算法)。
+    def _insertion_gap_at_global_y(self, global_y: int) -> int:
+        """根据全局 Y 坐标返回插入缺口(0..N,``N``=末尾)。
 
-        算法:取每个 handle 的**中心 Y** 作为"分隔线"。
-        - cursor Y < handle[0] 中心 → 返回 0(最前)
-        - handle[i] 中心 <= cursor Y < handle[i+1] 中心 → 返回 i+1
-        - cursor Y >= 末位 handle 中心 → 返回 N-1(末尾)
+        算法:取每个 handle 的**中心 Y** 作为分界。
+        - cursor Y < handle[0] 中心 → 缺口 0(最前)
+        - handle[i] 中心 <= cursor Y < handle[i+1] 中心 → 缺口 i+1
+        - cursor Y >= 末位 handle 中心 → 缺口 N(末尾)
 
-        旧实现用 ``top <= y < bottom``(handle 的精确边界),但 handle 只 32px 宽,
-        槽间间隙 (8-16px 间距) cursor 完全不命中 handle,fallback 落到 ``return N-1``
-        导致"拖到间隙就瞬移末尾"。中心锚定后,间隙也被正确归到相邻槽。
+        与旧「目标槽索引」不同:缺口是"插到第 i 个槽之前"的语义,
+        换位只在 release 时按 ``gap > source ? gap-1 : gap`` 换算一次。
 
         用 ``_slot_handles`` 平行列表替 findChild,拖动期每次 move 调,
         O(N×M) → O(N)。
@@ -1938,7 +2011,45 @@ class AutomationWindow(QWidget):
             center_y = top_y + (handle.height() >> 1)
             if global_y < center_y:
                 return i
-        return len(self._slot_handles) - 1
+        return len(self._slot_handles)
+
+    def _show_drop_indicator(self, gap: int) -> None:
+        """把插入指示线画在缺口 ``gap`` 处(子控件绝对定位,不参与布局)。"""
+        n = len(self._slot_widgets)
+        if n == 0 or not (0 <= gap <= n):
+            self._hide_drop_indicator()
+            return
+        container = self._slot_container
+        if gap <= 0:
+            y = self._slot_widgets[0].mapTo(container, QPoint(0, 0)).y() - 3
+        elif gap >= n:
+            last = self._slot_widgets[n - 1]
+            y = last.mapTo(container, QPoint(0, 0)).y() + last.height()
+        else:
+            prev_slot = self._slot_widgets[gap - 1]
+            next_slot = self._slot_widgets[gap]
+            bottom_prev = prev_slot.mapTo(container, QPoint(0, 0)).y() + prev_slot.height()
+            top_next = next_slot.mapTo(container, QPoint(0, 0)).y()
+            y = (bottom_prev + top_next) // 2 - 1
+        h = self._drop_indicator.height()
+        y = max(0, min(y, container.height() - h))
+        # 横向对齐任务卡:用首槽的 x/宽度(即列表可视宽度),两端不留内缩
+        base = self._slot_widgets[0]
+        self._drop_indicator.setGeometry(base.x(), y, base.width(), h)
+        self._drop_indicator.show()
+        self._drop_indicator.raise_()
+
+    def _hide_drop_indicator(self) -> None:
+        """隐藏插入指示线并清掉预测缺口。"""
+        self._drop_gap = None
+        self._drop_indicator.hide()
+
+    def _reset_drag_state(self) -> None:
+        """复位拖动状态 + 隐藏指示线(release/删除/重建共用)。"""
+        self._hide_drop_indicator()
+        self._drag_source_index = None
+        self._drag_press_pos = None
+        self._drag_active = False
 
     # ── 键盘事件(Delete 删除选中) ──────────────────────────
 
@@ -2057,14 +2168,7 @@ class AutomationWindow(QWidget):
         dialog = QDialog(self)
         dialog.setWindowTitle("设置")
         dialog.setMinimumWidth(300)
-        dialog.setStyleSheet(
-            "QDialog { background-color: #1D1D20; color: white; }"
-            "QCheckBox { color: white; spacing: 8px; }"
-            "QCheckBox::indicator { width: 16px; height: 16px; }"
-            "QPushButton { background-color: #2d2d2d; color: white; border: 1px solid #3d3d3d; "
-            "border-radius: 4px; padding: 8px 16px; min-width: 60px; }"
-            "QPushButton:hover { background-color: #3d3d3d; }"
-        )
+        dialog.setStyleSheet(qss.dialog_qss())
 
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -2085,6 +2189,7 @@ class AutomationWindow(QWidget):
         btn_layout.addStretch()
         cancel_btn = QPushButton("取消")
         ok_btn = QPushButton("确定")
+        ok_btn.setProperty("htRole", "primary")
         cancel_btn.clicked.connect(dialog.reject)
         ok_btn.clicked.connect(dialog.accept)
         btn_layout.addWidget(cancel_btn)
@@ -2351,6 +2456,7 @@ class AutomationWindow(QWidget):
                 slot.deleteLater()
             self._slot_widgets.clear()
             self._slot_handles.clear()  # 同步清空 handle 平行列表
+            self._reset_drag_state()  # 槽全删了,拖动状态/指示线一并复位
             self._selected_index = None  # 选中指针随槽一起清空(同 _remove_slot 契约)
             self._last_selected_index = None  # 重置差量状态
 
@@ -3206,6 +3312,7 @@ class AutomationWindow(QWidget):
             slot.deleteLater()
         self._slot_widgets.clear()
         self._slot_handles.clear()  # 平行列表必须同步 —— 见 docstring
+        self._reset_drag_state()  # 槽全删了,拖动状态/指示线一并复位
         self._selected_index = None  # 选中指针随槽一起清空(同 _remove_slot 契约)
         self._last_selected_index = None  # 差量样式状态同步归零
         self._add_slot()
