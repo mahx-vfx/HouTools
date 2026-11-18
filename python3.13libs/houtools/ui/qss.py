@@ -73,7 +73,7 @@ QPushButton[htRole="primary"], QPushButton#startBtn, QPushButton#convertBtn,
 QPushButton#okBtn, QPushButton#confirmBtn {{
     background-color: {ACCENT_FILL};
     color: {ON_ACCENT};
-    border: none;
+    border: 1px solid transparent;
     border-radius: 4px;
     padding: 0 14px;
     min-height: 28px;
@@ -82,7 +82,7 @@ QPushButton#okBtn, QPushButton#confirmBtn {{
 }}
 QPushButton[htRole="primary"]:hover, QPushButton#startBtn:hover,
 QPushButton#convertBtn:hover, QPushButton#okBtn:hover,
-QPushButton#confirmBtn:hover {{ background-color: {ACCENT}; }}
+QPushButton#confirmBtn:hover {{ border-color: {ACCENT}; }}
 QPushButton[htRole="primary"]:pressed, QPushButton#startBtn:pressed,
 QPushButton#convertBtn:pressed, QPushButton#okBtn:pressed,
 QPushButton#confirmBtn:pressed {{ background-color: {ACCENT_FILL_PRESSED}; }}

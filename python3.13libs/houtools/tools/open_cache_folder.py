@@ -128,4 +128,4 @@ def run(kwargs=None):
         status("HouTools: 打开 {} 失败（{}）".format(folder, exc),
                severity="error")
         return
-    status("HouTools: 已打开 {}".format(folder))
+    status("HouTools: 已打开 {}".format(folder), severity="success")

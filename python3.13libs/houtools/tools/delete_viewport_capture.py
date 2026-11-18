@@ -35,7 +35,8 @@ def run(kwargs=None):
         status("HouTools: 已删除节点截图（{}）".format(
             "、".join(filter(None, (
                 "背景图条目" if removed_entry else None,
-                "磁盘文件" if removed_file else None)))))
+                "磁盘文件" if removed_file else None)))),
+               severity="success")
     else:
         # 标记在但条目/文件都不在（如手动删过图）：只清标记与回调
         status("HouTools: 未找到可删除的截图，已清理残留标记")

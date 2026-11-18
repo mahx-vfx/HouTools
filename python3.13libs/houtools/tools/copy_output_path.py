@@ -142,6 +142,7 @@ def run(**kwargs):
         status("HouTools: 已复制 {} 个输出目录，{} 个节点失败（{}）".format(
             len(folders), len(failures), failures[0][0]), severity="warning")
     elif len(folders) == 1:
-        status("HouTools: 已复制 {}".format(folders[0]))
+        status("HouTools: 已复制 {}".format(folders[0]), severity="success")
     else:
-        status("HouTools: 已复制 {} 个输出目录".format(len(folders)))
+        status("HouTools: 已复制 {} 个输出目录".format(len(folders)),
+               severity="success")

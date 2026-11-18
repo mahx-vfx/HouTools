@@ -540,7 +540,8 @@ def run(kwargs=None):
         return
     if persisted:
         status("HouTools: 视窗截图已嵌入 {}（{}x{}，{}）".format(
-            node.path(), pix_w, pix_h, hip_capture_path(filename)))
+            node.path(), pix_w, pix_h, hip_capture_path(filename)),
+               severity="success")
     else:
         status("HouTools: 截图已落盘但背景图写入失败（网络不可写？）: {}".format(
             file_abs), severity="warning")

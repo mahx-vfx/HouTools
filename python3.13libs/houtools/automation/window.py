@@ -2641,7 +2641,7 @@ class AutomationWindow(QWidget):
             self._switch_to_default_config()
         else:
             self._refresh_config_dropdown()
-        status(f"Automation: 已删除配置 {name}")
+        status(f"Automation: 已删除配置 {name}", severity="success")
 
     def _switch_to_default_config(self):
         """当前配置被删除后回落本机默认（计算机名配置）。

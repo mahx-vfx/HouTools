@@ -1,8 +1,10 @@
 """Headless smoke test: menu XML, package imports, hot reload.
 
-Run with Houdini's Python (no GUI, no Houdini session needed):
+Run with a Python 3.13 (no GUI, no Houdini session needed); the script
+locates the Houdini install itself ($HFS, then C:/D: Program Files) and
+wires up PySide6/Qt paths, so point it at any python313:
 
-    "C:\\Program Files\\Side Effects Software\\Houdini 22.0.429\\python313\\python.exe" tests\\smoke_test.py
+    "<Houdini 安装目录>\\python313\\python.exe" tests\\smoke_test.py
 """
 
 import atexit
@@ -666,6 +668,23 @@ def main():
         assert fcap._convert(
             _FCNode(parms={"basename": _FCParm("$OSNAME.$F4")}),
             "basename") == ("unchanged", "无需转换")
+
+        # 预演 _plan:与 _convert 同结果但**不写参数**(parm.written 保持
+        # None)——run() 落写前用它预演统计,确认弹窗的数字必须与落写一致
+        parm = _FCParm("$HIP/cache/$OS.$F4.bgeo.sc")
+        assert fcap._plan(_FCNode(parms={"file": parm}), "file") == \
+            ("converted", "C:/proj/shot/cache/filecache1.$F4.bgeo.sc")
+        assert parm.written is None
+
+        # _survey 统计:converted/unchanged/skip 分类计数;参数缺失
+        # (旧 filecache 没有 basedir/basename)全 None 不计任何数
+        nodes = [
+            _FCNode(parms={"file": _FCParm("$HIP/cache/$OS.$F4.bgeo.sc")}),
+            _FCNode(name="fc2", parms={"basedir": _FCParm("D:/geo/")}),
+            _FCNode(name="fc3", parms={"file": _FCParm("   ")}),
+            _FCNode(name="fc4"),
+        ]
+        assert fcap._survey(nodes) == (1, ["路径为空"])
     finally:
         if _saved_hou_text is None:
             sys.modules.pop("hou", None)
@@ -4766,6 +4785,56 @@ def main():
     _set_win.close()
     print("houtools settings window OK")
 
+    # dialogs 弹窗品牌主题：_apply_theme 的 htRole=primary 必须先于
+    # setStyleSheet——QSS 属性选择器在 polish 时解析并缓存，setStyleSheet
+    # 会 repolish 子控件，反序的话解析结果按"无属性"缓存、按钮永远落回
+    # 灰底（离屏渲染取主色实证：正序 ACCENT_FILL 暗橙、反序 INK_850 灰；
+    # 机制详见 dialogs._apply_theme 注释）
+    from collections import Counter
+    from PySide6.QtCore import Qt as _Qt
+    from PySide6.QtWidgets import QMessageBox as _MsgBox
+    from houtools.ui import dialogs as _dialogs
+    from houtools.ui import fonts as _fonts
+    from houtools.ui import theme as _theme
+
+    def _dominant_color(widget):
+        img = widget.grab().toImage()
+        counts = Counter(
+            img.pixelColor(x % img.width(), x // img.width()).name()
+            for x in range(img.width() * img.height()))
+        return counts.most_common(1)[0][0]
+
+    _box = _MsgBox(None)
+    _box.setAttribute(_Qt.WA_DontShowOnScreen, True)   # 渲染可用但不闪窗
+    _box.setWindowTitle("ht-smoke")
+    _box.setText("theme probe")
+    _box.setStandardButtons(_MsgBox.Yes | _MsgBox.No)
+    _dialogs.localize_buttons(_box)
+    _dialogs._apply_theme(_box, (_MsgBox.Yes,))
+    _box.show()
+    app.processEvents()
+    _yes = _box.button(_MsgBox.Yes)
+    _no = _box.button(_MsgBox.No)
+    assert _yes.property("htRole") == "primary"
+    # NoFocus：QMessageBox 默认按钮生而持焦点，:focus 的 2px FOCUS_RING
+    # 焦点环会从打开就常亮（读成"一直被激活"，2026-11 用户反馈）——
+    # 确认按钮必须不可持焦，静息态恒为暗橙底无环
+    assert _yes.focusPolicy() == _Qt.NoFocus
+    # 品牌字体：弹窗不在工具窗口子树内、fonts enforcer 管不到，_apply_theme
+    # 必须 fonts.apply 整树刷 UI 角色（否则落 Houdini 应用级类字体 SideFX）
+    _ui_family = _fonts.family("ui")
+    assert _ui_family and _yes.font().family() == _ui_family, \
+        "确认按钮未刷品牌 UI 字体: " + _yes.font().family()
+    assert _no.font().family() == _ui_family, \
+        "取消按钮未刷品牌 UI 字体: " + _no.font().family()
+    assert _dominant_color(_yes) == _theme.TOKENS["ACCENT_FILL"].lower(), \
+        "确认按钮应渲出品牌橙底: " + _dominant_color(_yes)
+    assert _dominant_color(_no) == _theme.TOKENS["INK_850"].lower(), \
+        "取消按钮应保持中性灰底: " + _dominant_color(_no)
+    _box.deleteLater()
+    app.processEvents()
+    print("dialogs theme (primary orange confirm) OK")
+
     # Settings round-trip against the isolated smoke settings directory
     # (HOUTOOLS_SETTINGS_DIR 已在文件头指到临时目录).
     store = houtools.core.settings.JsonStore("_smoke_test.json", defaults={"n": 1})
@@ -5137,10 +5206,10 @@ def main():
     assert ht_notify._hold_ms("info", 1500) == 500
     assert ht_notify._fade_ms("info", 1500) == 1000
     assert ht_notify._hold_ms("info", 800) + ht_notify._fade_ms("info", 800) == 800
-    # 旧 severity 映射表固化（dev.status 委托语义；漏接的一律落 info）
-    for _sev, _lv in (("message", "info"), ("important", "info"),
-                      ("warning", "warning"), ("error", "error")):
-        assert ht_notify._LEGACY_SEVERITY[_sev] == _lv
+    # severity 映射表固化（dev.status 委托语义；漏接/None 的一律落 info）
+    assert ht_notify._LEGACY_SEVERITY == {
+        "message": "info", "important": "info", "success": "success",
+        "warning": "warning", "error": "error"}
     # 图标素材在盘（svg_icon 失败回退文字 glyph，不致命）
     for _lv in ("success", "info", "warning", "error"):
         assert (ROOT / "python3.13libs" / "houtools" / "icons"

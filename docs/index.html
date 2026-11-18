@@ -149,7 +149,7 @@
     -webkit-backdrop-filter: blur(10px);
   }
 
-  /* 主按钮：暗橙底白字，悬停点亮为品牌橙（点火式） */
+  /* 主按钮：暗橙底白字；悬停底色与文字不变，靠亮橙描边 + 外发光表达点亮 */
   .dl-btn {
     display: inline-flex;
     align-items: center;
@@ -163,8 +163,13 @@
     font-weight: 600;
     text-decoration: none;
   }
-  .dl-btn:hover { background: var(--accent); }
-  .dl-btn:active { background: var(--accent-fill-pressed); }
+  .dl-btn:hover {
+    box-shadow: 0 0 0 1px var(--accent), 0 0 18px rgba(255, 92, 56, .45);
+    /* a:hover 通用规则(优先级更高)会把字色改成 accent-hover，白字在橙底上
+       直接被「偷走」变橙字——悬停态必须显式锁死字色 */
+    color: var(--on-accent);
+  }
+  .dl-btn:active { background: var(--accent-fill-pressed); box-shadow: none; }
   .dl-btn svg { width: 15px; height: 15px; flex: none; }
 
   /* 打赏按钮：琥珀描边幽灵按钮，与下载主按钮并排 */
@@ -428,8 +433,11 @@
     font-size: 18px;
     font-weight: 700;
   }
-  .top-link:hover { background: var(--accent); }
-  .top-link:active { background: var(--accent-fill-pressed); }
+  .top-link:hover {
+    box-shadow: 0 0 0 1px var(--accent), 0 0 18px rgba(255, 92, 56, .45);
+    color: var(--on-accent);   /* 同 .dl-btn:hover：防 a:hover 偷字色 */
+  }
+  .top-link:active { background: var(--accent-fill-pressed); box-shadow: none; }
 
   /* ---- 工具轮播（真实截图 + 内联 SVG 示意，零外部资源） ---- */
   .carousel {

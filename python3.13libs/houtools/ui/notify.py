@@ -54,15 +54,18 @@ COLORS = {
     "error": theme.color("ERROR"),
 }
 _BG_COLOR = theme.color("INK_850")
-_BORDER_COLOR = theme.color("LINE")
 _TEXT_COLOR = theme.color("TEXT")
+_BAR_W = 4.0    # 左侧语义色条宽度 px；整圈描边与色条同用等级语义色（2026-11-19 定稿）
 
 # svg_icon 失败（QtSvg 缺失/坏文件）时的文字 glyph 兜底
 _GLYPHS = {"success": "✓", "info": "i", "warning": "⚠", "error": "✕"}
 
-# 旧 dev.status severity 字符串 → 新等级（迁移期映射，调用点后续逐步改
-# success()/warning() 等显式语义；漏接的一律落 info）
+# dev.status 的 severity 字符串 → toast 等级（show_legacy 的映射表；
+# 漏接/None 的一律落 info 灰）。"success" 是显式成功语义——"执行成功"
+# 类通知（已打开/已复制/已转换/已删除…）统一走它变绿（2026-11-19 拍板）；
+# "message"/"important" 是旧调用点的中性语义 → info
 _LEGACY_SEVERITY = {"message": "info", "important": "info",
+                    "success": "success",
                     "warning": "warning", "error": "error"}
 
 # 可见 toast 登记表（bottom→top，渐透中的也占位）——本模块会被 reload，
@@ -273,26 +276,35 @@ class _Toast(QtWidgets.QFrame):
         self._fade_duration = _fade_ms(self._level, duration)
 
     # ---- 手绘底色（半透明顶层窗上 QSS background 不渲染，必须 paintEvent）
-    #      品牌定稿：INK_850 面 + 1px LINE 描边 + 左侧 2px 语义色条；
-    #      不再整块高饱和底色（结构/时序未动，只换外观）
+    #      品牌定稿（2026-11-19）：INK_850 面 + 左侧 _BAR_W px 语义色条 +
+    #      整圈 1px 描边与色条同色同亮度（info 描边即 TEXT_2 浅灰，左边缘
+    #      由后画的色条压住、同色无缝）；不再整块高饱和底色
     def paintEvent(self, event):
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-        rect = QtCore.QRectF(self.rect().adjusted(0, 0, -1, -1))
-        # 底色 + 描边
-        p.setPen(QtGui.QPen(QtGui.QColor(_BORDER_COLOR), 1))
-        p.setBrush(QtGui.QColor(_BG_COLOR))
-        p.drawRoundedRect(rect, 4, 4)
-        # 左侧语义色条：裁进圆角内，只占最左 2px
+        w, h = self.width(), self.height()
+        # 底色填充（与描边拆成两笔，描边才能单独内缩）
+        body_path = QtGui.QPainterPath()
+        body_path.addRoundedRect(QtCore.QRectF(0, 0, w - 1, h - 1), 4, 4)
         p.setPen(QtCore.Qt.PenStyle.NoPen)
-        p.setBrush(QtGui.QColor(self._accent))
+        p.setBrush(QtGui.QColor(_BG_COLOR))
+        p.drawPath(body_path)
+        # 左侧语义色条：裁进圆角内，占最左 _BAR_W px
         p.save()
-        clip = QtGui.QPainterPath()
-        clip.addRoundedRect(rect, 4, 4)
-        p.setClipPath(clip)
-        p.drawRect(QtCore.QRectF(rect.left(), rect.top(), 2.0,
-                                 rect.height()))
+        p.setClipPath(body_path)
+        p.setBrush(QtGui.QColor(self._accent))
+        p.drawRect(QtCore.QRectF(0, 0, _BAR_W, h))
         p.restore()
+        # 描边 = 色条同款语义色；路径整体内缩 0.5px（圆角同心 −0.5）——
+        # 1px 笔画骑在整数像素边界上会被抗锯齿对半劈进相邻两个像素
+        # （各约 50% 覆盖），与近黑底一混就比色条暗一截；内缩后笔画正好
+        # 占满一个像素行/列，描边与色条亮度完全一致（坑表 #16）
+        stroke_path = QtGui.QPainterPath()
+        stroke_path.addRoundedRect(QtCore.QRectF(0.5, 0.5, w - 1, h - 1),
+                                   3.5, 3.5)
+        p.setPen(QtGui.QPen(QtGui.QColor(self._accent), 1))
+        p.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+        p.drawPath(stroke_path)
         p.end()
 
     # ---- 布局：左下角第一条贴状态栏，向上堆叠（顶层窗用全局坐标）；

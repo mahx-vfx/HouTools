@@ -21,10 +21,11 @@ notify.clear()                            # 立即收掉全部（各自渐透）
 
 - `dev.status(message, error=, severity=)`：全仓 ~40 处既有调用点的稳定
   入口，签名不变；按调用 `importlib.import_module` 委托到
-  `notify.show_legacy`。旧 severity 映射：message/important→info、
-  warning→warning、error→error（表只活在 notify 的 `_LEGACY_SEVERITY`，
-  smoke test 固化对照）。调用点后续遇到语义明确的再逐步改成
-  `notify.success()` 等。
+  `notify.show_legacy`。severity 映射：success→success（**"执行成功"
+  类通知统一走它变绿**——已打开/已复制/已转换/已删除等，2026-11-19
+  拍板）、message/important→info、warning→warning、error→error
+  （表只活在 notify 的 `_LEGACY_SEVERITY`，smoke test 固化对照）。
+  调用点后续遇到语义明确的再逐步改成 `notify.success()` 等。
 - dev/__init__.py 改动**需重启 Houdini**（dev 永不重载）；notify 自身
   走 Reload 热加载，活跃 toast 跨重载继续跑（见下）。
 
@@ -32,7 +33,7 @@ notify.clear()                            # 立即收掉全部（各自渐透）
 
 - 位置：左下角第一条贴状态栏，向上堆叠（间距 6px）；同屏上限 4 条，
   超出最旧的先进入渐透
-- 视觉（品牌统一 2026-11）：`INK_850` 面 + 1px `LINE` 描边 + 左侧 2px 语义色条（success `SUCCESS #45b06e` / info `TEXT_2` / warning `WARNING #f2a33c` / error `ERROR #d1283e`）+ `TEXT` 字 9pt + SVG 徽标；**只换颜色/图标，结构/时序/槽位/渐透/补位一律不动**
+- 视觉（2026-11-19 二次定稿，用户 Houdini 实测拍板）：`INK_850` 面 + 左侧 4px 语义色条（success `SUCCESS #45b06e` / info `TEXT_2` / warning `WARNING #f2a33c` / error `ERROR #d1283e`）+ **整圈 1px 描边与色条同色同亮度**（info 描边即 `TEXT_2` 浅灰，不再是 `LINE`）+ `TEXT` 字 9pt + SVG 徽标；时序/槽位/渐透/补位一律不动
 - 行为：hover 暂停倒计时（离开按剩余时间继续，至少再给 800ms）、点击
   立即渐透、`WA_ShowWithoutActivating` 不抢焦点
 - 动画：入场自下 8px 上滑（**无淡入**，用户拍板——全透明度出现）+
@@ -46,7 +47,7 @@ notify.clear()                            # 立即收掉全部（各自渐透）
 
 | # | 坑 | 结论 |
 |---|---|---|
-| 1 | **半透明顶层窗（`WA_TranslucentBackground`）上 QSS `background` 不渲染**——文字（QLabel 子控件）正常、QFrame 自身底色消失 | 底色必须 `paintEvent` 手绘圆角矩形（`rect().adjusted(0,0,-1,-1)` 防抗锯齿边被窗口边界裁掉）；品牌版同时画 1px 描边 + 左侧 2px 语义色条（裁进圆角路径）；H21/H22 同病 |
+| 1 | **半透明顶层窗（`WA_TranslucentBackground`）上 QSS `background` 不渲染**——文字（QLabel 子控件）正常、QFrame 自身底色消失 | 底色必须 `paintEvent` 手绘圆角矩形（`rect().adjusted(0,0,-1,-1)` 防抗锯齿边被窗口边界裁掉）；品牌版三段式：填充 + 1px 同色描边 + 左侧 4px 语义色条（色条裁进圆角路径）；H21/H22 同病 |
 | 2 | **`QGraphicsOpacityEffect` 撞 QSS**——动画在跑、画面不动（"属性在动但画面不动"，两轮盲修被它骗过） | 淡入淡出走 `windowOpacity`（系统合成通道，必然生效）；**子部件没有 windowOpacity**，这就是 toast 必须做成顶层窗的原因 |
 | 3 | **Houdini Qt 不渲染 COLR 彩色 emoji**——`Segoe UI Emoji` 显式指定也只出单色轮廓（✅⚠️❌💡 全变线框） | 图标走 SVG（`icons/toast_*.svg` 经 `ui.icons.svg_icon` 缓存）；`svg_icon` 返回 QIcon，取 32 档 `pixmap` 后 `setDevicePixelRatio(2.0)` 缩到 16 逻辑像素；渲染失败回退文字 glyph |
 | 4 | **补位时机错误 = "瞬间消失"**——渐透开始就让位，上方 toast 立刻下移，恰好压住还在原地渐透的 toast（实测：不透明 warning y=1003 盖住 65% 透明的 info y=1004，差 1px；被盖的 fade 数据全程正常，纯视觉谋杀） | **槽位保留到渐透结束**：`_fadeout` 只原地淡出，`_gone`（动画 finished、C++ 对象真没了）才从 `_ACTIVE` 摘除并让上方下滑补位 |
@@ -61,6 +62,7 @@ notify.clear()                            # 立即收掉全部（各自渐透）
 | 13 | **同屏上限死循环卡死主线程**——`while len(_ACTIVE) >= MAX_VISIBLE: _ACTIVE[0]._fadeout()` 撞上栈底已在渐透（`_fadeout` 对 `_closing` 是 no-op，槽位保留期它还在列表里）永不推进；连发"剪贴板文本失效"提示实测 Houdini 卡死 | 上限只数**存活**（未 `_closing`）的 toast：`_toast_cap_victims()` 返回强收名单（确定性列表收缩，无死循环可能）；smoke test 固化 victim 语义 |
 | 14 | **补位动画连发丢余量**——pos 动画被打断时若从"当前位置 + delta"重飞，上次没飞完的余量被吞掉，连发几次整摞悄悄上漂 | 每 toast 记**逻辑目标位 `_target_y`**：新补位先把账加上，动画停旧起新、从当前插值位置飞向记账终点（无缝续飞）；入场与补位共用同一条 pos 动画通道（`_pos_anim`）；reload 过渡期旧实例无 `_shift_down` 方法 → `getattr` 探测退瞬移，1-3s 自愈 |
 | 15 | **`_target_y` 坐标系混用**——窗口型 widget 的 `pos()`/`move()` 是**全局屏幕坐标**（有 parent 也一样，实测 readback 证实），而初版 `_place` 把 WIN 相对偏移存进 `_target_y`：入场/补位动画终点比实际位置**高一个主窗屏幕原点**（QRect(0,29,…) 机器上悬高 29px；主窗 y 偏移为 0 的机器不可见，极易溜过验证） | `_place` 在 `move(mapToGlobal(...))` 之后取 `self._target_y = self.y()`（全局实际值），后续补位 delta 全在全局坐标上累计；MCP 探针数字比对（入场落点/补位终点 == mapToGlobal 理论值）固化 |
+| 16 | **1px 描边骑在整数像素边界上被抗锯齿对半劈开**——描边路径 `QRectF(0,0,w-1,h-1)` 的四条边正好落在整数像素边界（x=0、x=w-1、y=0、y=h-1），开 AA 后笔画被劈进相邻两个像素（各约 50% 覆盖），与近黑底一混只剩约一半不透明度，同色下明显比 4px 实心色条暗一截（2026-11-19 用户实测"描边比色条暗"）；旧 `LINE` 灰描边同病，只是灰线太淡没被注意 | 描边与底色**拆成两笔**：填充画 body 路径（NoPen + INK_850），描边单独成笔、路径整体内缩 0.5px（`QRectF(0.5,0.5,w-1,h-1)`，圆角同心 −0.5→3.5，NoBrush）——1px 笔画正好占满一个像素行/列，描边与色条亮度完全一致；描边最后画、压住左边缘色条（同色无缝） |
 
 ## 收口记录（2026-11）
 

@@ -151,7 +151,7 @@ def _apply(kwargs, expression_mode):
         # 全部分量锁定 = 什么都没写进去：降级提示而非成功确认
         _status(message, severity="warning")
     else:
-        _status(message, severity="important")
+        _status(message, severity="success")
 
 
 def _resolve_source():

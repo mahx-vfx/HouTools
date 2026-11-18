@@ -44,7 +44,13 @@ keyframes 仍为空）；``filemethod`` 菜单只决定界面显示"组合模式
    结果）/ op: 等协议路径 / 参数锁定（PermissionError）/ 参数不存在
    （不同版本参数集不同——旧 filecache 只有 file，静默忽略不计数）。
    表达式驱动与反引号属"写静态值破坏表达式"的破坏性改写，必须拒绝。
-5. 整批一个 undo 槽（``hou.undos.group``）；单参数失败在循环内消化，
+5. **落写前弹窗确认（2026-11 用户要求）**：run() 先用 ``_survey`` 预演
+   一遍（与落写共用 ``_plan`` 计算路径、不写参数），统计将转换/跳过的
+   参数量——有实际改动才弹 ``dialogs.question`` 确认（品牌主题弹窗，
+   确认按钮=品牌橙主按钮；文案直说改动：将改动的节点/参数量、$F 保留
+   与变量写死说明、Ctrl+Z 撤销提示、跳过数）；取消则不动任何参数；
+   没有可转换参数不弹窗、维持原汇总通知。
+6. 整批一个 undo 槽（``hou.undos.group``）；单参数失败在循环内消化，
    不把异常抛出 undo 组（异常穿出 group 会整组回滚），已转换的其余
    参数保持不动。
 
@@ -154,14 +160,14 @@ def _is_filecache(node):
     return _TYPE_SEGMENT in node.type().name().split("::")
 
 
-def _convert(node, parm_name):
-    """转换单个节点的一个路径参数，返回 (kind, text) 或 None。
+def _plan(node, parm_name):
+    """计算单个节点的一个路径参数的转换结果，**不写参数**，返回 (kind, text)。
 
-    kind ∈ {"converted", "unchanged", "skip"}；converted 的 text 是写回的
-    新值，skip 的 text 是原因说明（汇总通知里带节点路径与参数名展示）。
-    None = 节点没有该参数（不同版本参数集不同，如旧 filecache 只有
-    file）——静默忽略，不计任何数。hou.PermissionError 等写入异常由
-    调用方按参数粒度捕获——单参数失败不影响批次里其余参数。
+    kind ∈ {"converted", "unchanged", "skip"}；converted 的 text 是将写回
+    的新值，skip 的 text 是原因说明（确认弹窗与汇总通知里展示）。None =
+    节点没有该参数（不同版本参数集不同，如旧 filecache 只有 file）——
+    静默忽略，不计任何数。纯计算，供预演（_survey）与落写（_convert）
+    共用，保证弹窗看到的数字就是落写会发生的改动。
     """
     parm = node.parm(parm_name)
     if parm is None:
@@ -192,8 +198,67 @@ def _convert(node, parm_name):
     # 与替换前的原值对比：$OS 被换成节点名本身就算一次有效转换
     if new_path == original:
         return "unchanged", "无需转换"
-    parm.set(new_path)
     return "converted", new_path
+
+
+def _convert(node, parm_name):
+    """_plan 的计算结果落写：converted 才 parm.set。
+
+    hou.PermissionError 等写入异常由调用方按参数粒度捕获——单参数失败
+    不影响批次里其余参数。
+    """
+    result = _plan(node, parm_name)
+    if result is not None and result[0] == "converted":
+        node.parm(parm_name).set(result[1])
+    return result
+
+
+def _survey(nodes):
+    """预演当前层级 File Cache 三路径参数（不写参数），供确认弹窗取数。
+
+    返回 (will_convert, skipped_texts)。错误按参数粒度消化成 skip（与
+    落写循环同口径；锁定参数在预演里不会失败——PermissionError 只在
+    parm.set 时抛，这里没有 set）。只打 log.warning 留痕预期之外的
+    计算失败（同 run() 落写循环的口径）。
+    """
+    will_convert, skipped = 0, []
+    for node in nodes:
+        for parm_name in _PATH_PARMS:
+            try:
+                result = _plan(node, parm_name)
+            except Exception as exc:
+                log.warning("plan %s.%s failed: %s",
+                            node.path(), parm_name, exc)
+                result = ("skip", "计算失败（{}）".format(exc))
+            if result is None:
+                continue
+            if result[0] == "converted":
+                will_convert += 1
+            elif result[0] == "skip":
+                skipped.append(result[1])
+    return will_convert, skipped
+
+
+def _main_window():
+    """Houdini 主窗口 QWidget，作确认弹窗的 parent。
+
+    NetworkEditor 面板页签（_target_editor 的返回值）是 HOM 包装对象而
+    非 QWidget，直接传给 QMessageBox 会报 ``__init__`` 签名不符（PySide6
+    GUI 实测 TypeError），必须换成真正的 Qt 窗口。优先 ``hou.qt.mainWindow``
+    （官方桥，同 automation/window.py 拿 floatingPanelWindow 的手法），
+    失败退 ``hou.ui.mainQtWindow``（HOM 文档 API），再退 None——QMessageBox
+    无 parent 仍是应用级模态，只是不挂主窗口层级。
+    """
+    import hou
+    try:
+        return hou.qt.mainWindow()
+    except Exception as exc:
+        log.debug("hou.qt.mainWindow failed: %s", exc)
+    try:
+        return hou.ui.mainQtWindow()
+    except Exception as exc:
+        log.debug("hou.ui.mainQtWindow failed: %s", exc)
+        return None
 
 
 def run(**kwargs):
@@ -217,6 +282,29 @@ def run(**kwargs):
     if not nodes:
         status("HouTools: 当前层级没有 File Cache 节点", severity="warning")
         return
+
+    # 落写前预演一遍并弹窗确认（2026-11 用户要求）：_survey 与落写共用
+    # _plan 的计算路径、不写参数，弹窗里的数字就是将要发生的改动；没有
+    # 可转换参数不弹窗、维持原汇总通知（无可确认之事）
+    from houtools.ui.dialogs import question
+
+    will_convert, preview_skipped = _survey(nodes)
+    if will_convert:
+        lines = [
+            "将把当前层级 {} 个 File Cache 节点的 {} 个路径参数改为绝对路径。"
+            .format(len(nodes), will_convert),
+            "$F 等帧变量保持不动；其余变量（$HIP、$OS 等）展开成当前的"
+            "实际值写死进路径。",
+            "改错了按 Ctrl+Z 撤销（整批一步撤回）。",
+        ]
+        if preview_skipped:
+            lines.append("另有 {} 个参数将跳过（表达式驱动、锁定等，"
+                         "不做改动）。".format(len(preview_skipped)))
+        if not question(_main_window(), "File Cache 路径转绝对",
+                        "\n".join(lines)):
+            status("HouTools: 已取消，未修改任何 File Cache 路径",
+                   severity=None)
+            return
 
     converted, unchanged, skipped = 0, 0, []
     # 整批一个 undo 槽；单参数失败在循环内消化，不把异常抛出 undo 组
@@ -264,4 +352,12 @@ def run(**kwargs):
     if skipped:
         # 首条跳过原因含节点路径与参数名，可定位（同 copy_output_path 的文案样式）
         message += "；首个跳过：{}".format(skipped[0])
-    status(message, severity="warning" if (not converted and skipped) else None)
+    # 等级语义：转换了 ≥1 个 → success；一个没转且有跳过 → warning；
+    # 什么都没发生（全 unchanged）→ 中性 info
+    if converted:
+        severity = "success"
+    elif skipped:
+        severity = "warning"
+    else:
+        severity = None
+    status(message, severity=severity)

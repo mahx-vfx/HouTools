@@ -176,7 +176,7 @@ class _HouToolsSettingsDialog(QDialog):
         display = hotkeys.ASSIGNABLE[name][0]
         logger.info("%s 快捷键已设为: %s", display, key)
         status("{} 快捷键已设为:{}".format(display, key),
-               severity="important")
+               severity="success")
         self._set_hint("已应用:{} → {}".format(display, key))
 
     def _on_reset(self, name):
@@ -195,5 +195,5 @@ class _HouToolsSettingsDialog(QDialog):
         self._rows[name].setKeySequence(QKeySequence(default_key))
         logger.info("%s 自定义键位已清除", display)
         status("{} 快捷键已恢复默认:{}".format(display, default_key),
-               severity="important")
+               severity="success")
         self._set_hint("已恢复默认:{} → {}".format(display, default_key))

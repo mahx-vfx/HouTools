@@ -18,9 +18,9 @@ log = get_logger("tools.about_houtools")
 ABOUT_PAGE = PROJECT_ROOT / "docs" / "index.html"
 
 
-def _status(message, error=False):
+def _status(message, error=False, severity=None):
     """通知反馈（委托 dev.status → toast 通知）；无头自动降级。"""
-    status(message, error=error)
+    status(message, error=error, severity=severity)
 
 
 def run(kwargs=None):
@@ -31,4 +31,4 @@ def run(kwargs=None):
         _status(message, error=True)
         return
     os.startfile(str(ABOUT_PAGE))
-    _status("HouTools: 已在默认浏览器打开 About 页面")
+    _status("HouTools: 已在默认浏览器打开 About 页面", severity="success")

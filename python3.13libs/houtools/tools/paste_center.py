@@ -136,7 +136,7 @@ def _apply(kwargs, expression_mode):
 
     _status("已把 {} 的中心粘贴到 {}（transform {}，{}）".format(
         src.name(), target.name(), xform.name(),
-        "表达式" if expression_mode else "绝对值"), severity="important")
+        "表达式" if expression_mode else "绝对值"), severity="success")
 
 
 def _node_ok(node):
