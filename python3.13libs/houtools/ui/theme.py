@@ -35,6 +35,12 @@ TOKENS = {
     "ACCENT_PRESSED": "#e64a2a",
     "ACCENT_SOFT": "rgba(255,92,56,.12)",
     "ACCENT_LINE": "rgba(255,92,56,.35)",
+    # ACCENT 底上的前景（白字；2026-11 用户拍板，不再走 on_color 的墨黑字）
+    "ON_ACCENT": "#ffffff",
+    # 主按钮常态底：暗橙（白字对比度 5.5 ≥ 4.5 AA），悬停点亮为 ACCENT
+    # 品牌亮橙、「点火」式交互（2026-11-19 用户拍板，经 #d14314 压暗一档），按下压深
+    "ACCENT_FILL": "#bf380d",
+    "ACCENT_FILL_PRESSED": "#a02e08",
     # 语义
     "SUCCESS": "#45b06e",
     "SUCCESS_TEXT": "#6ee7b7",

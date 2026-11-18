@@ -25,7 +25,10 @@
 | `TEXT_2` | `#b8b8c2` | 说明 / 标签 |
 | `TEXT_3` | `#8a8a92` | 提示 / 占位 |
 | `TEXT_4` | `#5c5c66` | 禁用 |
-| `ACCENT` | `#ff5c38` | 主按钮 / 焦点 / 选中 / 关键值 |
+| `ACCENT` | `#ff5c38` | 焦点 / 选中 / 关键值 / 主按钮悬停 |
+| `ACCENT_FILL` | `#bf380d` | 主按钮常态底（暗橙，白字过 AA） |
+| `ACCENT_FILL_PRESSED` | `#a02e08` | 主按钮按下 |
+| `ON_ACCENT` | `#ffffff` | ACCENT_FILL 底上的文字（白字） |
 | `ACCENT_HOVER` | `#ff7454` | hover |
 | `ACCENT_PRESSED` | `#e64a2a` | pressed |
 | `ACCENT_SOFT` | `rgba(255,92,56,.12)` | 选中行底 / tab 底 |
@@ -40,7 +43,10 @@
 
 规则：
 
-- 主按钮 = `ACCENT` 底 + `INK_1000` 字（不要白字）。
+- 主按钮 = `ACCENT_FILL` 暗橙底 + `ON_ACCENT` 白字（对比度 5.5 过 AA）；
+  悬停点亮为 `ACCENT` 品牌亮橙、「点火」式交互，按下压深 `ACCENT_FILL_PRESSED`
+  （2026-11-19 用户拍板：功能性观感优先，橙底白字/白字发虚/墨黑字方案均废止；
+  亮橙底不承载文字——选中高亮文字用墨黑）。
 - Info 语义不引入新色相：中性 `INK_850` 面 + `TEXT_2` 字 + 橙/中性图标。
 - 蓝 `#0d6399`、紫 `#8a5cf5` 已从 UI chrome 退役；只允许作为 Recipe 用户内容色
   （8 色板：`theme.RECIPE_PALETTE`）。
@@ -112,7 +118,7 @@ fonts.apply_role(widget, fonts.ROLE_MONO)    # 仅代码编辑器/代码块
 |---|---|
 | `BrandHeader` | **不在工具面板使用**（用户 2026-11 反馈：面板功能优先，不新增次级品牌顶栏）；组件仅保留给品牌资产/未来独立页。字标规则：`Hou` 白 + `Tools` 品牌橙，同字号同基线 |
 | `SectionHeader` | 13/600；可选 2px `ACCENT` 左条；底部 1px `LINE` |
-| `PrimaryButton` | `ACCENT` 底 + `INK_1000` 字；高 28；圆角 4；13/600 |
+| `PrimaryButton` | `ACCENT_FILL` 暗橙底 + `ON_ACCENT` 白字，悬停点亮 `ACCENT`；高 28；圆角 4；13/600 |
 | `SecondaryButton` | `INK_850` 底 + `TEXT` + 1px `LINE`；hover `INK_800` |
 | `GhostButton` | 透明底 + `TEXT_2`；hover 5% 白 |
 | `DangerButton` | 透明底 + `ERROR_TEXT` + 1px `ERROR` |

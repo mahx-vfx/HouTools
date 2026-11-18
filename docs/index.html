@@ -31,6 +31,9 @@
     --accent-hover: #ff7454;
     --accent-pressed: #e64a2a;
     --accent-soft: rgba(255, 92, 56, .12);
+    --accent-fill: #bf380d;
+    --accent-fill-pressed: #a02e08;
+    --on-accent: #ffffff;
     --success: #45b06e;
     --warning: #f2a33c;
     --error: #d1283e;
@@ -146,21 +149,22 @@
     -webkit-backdrop-filter: blur(10px);
   }
 
-  /* 主按钮：品牌橙底 + 墨黑字，唯一高饱和动作色 */
+  /* 主按钮：暗橙底白字，悬停点亮为品牌橙（点火式） */
   .dl-btn {
     display: inline-flex;
     align-items: center;
     gap: 8px;
     padding: 7px 16px;
     border-radius: 4px;
-    background: var(--accent);
+    background: var(--accent-fill);
     border: none;
-    color: var(--ink-1000);
+    color: var(--on-accent);
     font-size: 13.5px;
     font-weight: 600;
     text-decoration: none;
   }
-  .dl-btn:hover { background: var(--accent-hover); }
+  .dl-btn:hover { background: var(--accent); }
+  .dl-btn:active { background: var(--accent-fill-pressed); }
   .dl-btn svg { width: 15px; height: 15px; flex: none; }
 
   /* 打赏按钮：琥珀描边幽灵按钮，与下载主按钮并排 */
@@ -416,15 +420,16 @@
     width: 40px;
     height: 40px;
     border-radius: 50%;
-    background: var(--accent);
-    color: var(--ink-1000);
+    background: var(--accent-fill);
+    color: var(--on-accent);
     text-align: center;
     line-height: 40px;
     text-decoration: none;
     font-size: 18px;
     font-weight: 700;
   }
-  .top-link:hover { background: var(--accent-hover); }
+  .top-link:hover { background: var(--accent); }
+  .top-link:active { background: var(--accent-fill-pressed); }
 
   /* ---- 工具轮播（真实截图 + 内联 SVG 示意，零外部资源） ---- */
   .carousel {
