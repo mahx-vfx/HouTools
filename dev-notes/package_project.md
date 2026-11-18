@@ -1,0 +1,155 @@
+# Package Project（打包工程）
+
+入口：`HouTools → Package Project`（主菜单 + 网络编辑器菜单各一条）。
+代码：`houtools/package/paths.py`（纯逻辑）、`collect.py`（扫描）、`window.py`、
+`houtools/ui/reveal.py`（资源管理器定位）、`houtools/tools/package_project.py`。
+
+## 解决什么问题
+
+Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路径满地"的工程不够用；
+渲染农场（Renderbus 这类）提交要求工程自带依赖、路径可移植。
+
+本工具：**收文件 → 统一放进一个包目录 → 改相对路径 → 按选定方式保存 → 打 zip**。
+
+## 扫描规则
+
+- **只扫启用节点**：`isBypassed()` 为真的跳过（**网络容器没有这个方法，必须
+  getattr 探测**，否则 `/obj`、`/out` 一抛异常整棵子树都收不到）；locked HDA 内部跳过。
+- **收三类来源**（全部会复制、全部会改写）：
+  - 包外绝对路径；
+  - `$HIP` 内绝对路径；
+  - `$HIP/…` 或相对路径（Houdini 自己写出的 `$HIP/geo/*.bgeo.sc` 属于这类）。
+- **只收用户改过的参数**：`parm.isAtDefault()` 为真 → 是 Houdini 内置默认值
+  （如 `karma/hoseksolarmap.rat`），跳过。filecache 的 `basedir` 例外——默认值
+  也收，因为那代表用户实际写出的缓存目录。
+- **输入引用：手动填了就收**（文件不存在也收，标"缺失"、打包时跳过不改写）。
+- **filecache 缓存**：`file` 参数（`$HIP/geo/$HIPNAME.$OS.$F.bgeo.sc`）不是真实
+  文件，真实路径由 `basedir`+`basename`+版本子目录拼出。用 `sopoutput` 求值拿
+  首帧 → `_frames_from_path()` glob 整段帧 → 把**改写目标定为 `basedir`**。
+  下游 `chs("…/sopoutput")` 引用会跟着新 basedir 自动走。
+- **其它输出参数**（`sopoutput` / `vm_picture` / `picture` / `outputimage`，以及
+  `dcmfilename` / `productName` / `savepath` / `soho_diskfile` 这类语义输出）
+  默认**只收已落盘**的；勾「含空输出路径」才列未生成的。
+- **挡住非文件值**（`_looks_like_file_path`）：空值、带空白/`%`/`*` 的菜单值与
+  token、无扩展名的值、节点路径（`/obj/...`）、`shfs:`/`op:` 协议路径、
+  目录值、`$HIP/galleries`、`$HIP/backup`。
+- **`$HFS` / `$HH` 引用保留在列表**（2026-11 用户要求"满足条件的都要出现"）：
+  Houdini 安装目录里的贴图/示例文件也会列出，是否打包进包由用户勾选决定；
+  缺失的 `$HFS` 外部路径同样以"缺失"呈现。
+- **反引号表达式不碰**：`` `chs("...")` `` 展开即冻结，改写等于破坏表达式。
+
+## 包目录与目标写法
+
+```
+<包根>/<包名>/assets/<子目录>/<文件名>
+```
+
+- `$HIP` 内的素材保留**相对 $HIP 的目录结构**：`$HIP/geo/shot.bgeo.sc` →
+  `assets/geo/shot.bgeo.sc`（不再把整条绝对路径拍平成
+  `C_Users_..._hip_geo/`）。
+- 包外素材用展平目录（`D:\proj\tex` → `D_proj_tex`），避免同名互相覆盖。
+
+- **包根**：`$HIP`（默认）或 `$JOB`（未设置/非绝对时 UI 禁用该选项）。
+- **包名**：默认 `ht_package`，可改。
+- **参数改写按生成方式区分**（这是最容易写错的一处）：
+
+  | 生成方式 | 参数前缀 | 原因 |
+  |---|---|---|
+  | 另存到包目录 | `$HIP/assets/…` | hip 存进包目录后，`$HIP` **就是包目录**；再带一层包名会多出一级目录、路径直接失效 |
+  | 覆盖当前工程 | `$HIP/<包名>/assets/…` 或 `$JOB/<包名>/assets/…` | hip 留在原地，包目录是它的子目录 |
+
+  帧模板 `$F4` 原样保留；`$JOB` 未设置/非绝对时 UI 禁用该包根。
+- `flatten_dir()` 只对包外素材使用（按源目录分文件夹，不丢可读性）。
+- filecache 改的是**目录参数** `basedir`：`$HIP/geo` → `$HIP/assets/geo`
+  （另存模式）或 `$HIP/<包名>/assets/geo`（覆盖模式），
+  复制时保持 `geo/<basename>/v1/...` 的相对结构，所以 `sopoutput` 拼接结果
+  正好落在新位置。
+- 同一个文件被多个参数引用时只复制一次（`copy_plan` 以源绝对路径为键）。
+
+## 生成方式
+
+| 方式 | 行为 | 副作用 |
+|---|---|---|
+| `另存到包目录`（默认） | 另存 `<包名>/<hip>_packed.hip` | **会话切到该文件**，磁盘上的原 hip 不变 |
+| `覆盖当前工程` | `hou.hipFile.save()` 回当前文件 | 原 hip 被改写（素材已进包目录） |
+
+**包根与前缀的对应**（另存模式即使包根是 `$JOB`，前缀也是 `$HIP/assets/…`——
+hip 被存进 `<JOB>/<包>/`，保存后 `$HIP` 就是那个目录）：
+
+| 生成方式 | 包根 `$HIP` | 包根 `$JOB` |
+|---|---|---|
+| 另存到包目录 | `$HIP/assets/…` | `$HIP/assets/…` |
+| 覆盖当前工程 | `$HIP/<包>/assets/…` | `$JOB/<包>/assets/…` |
+
+**坑：包根下拉项的 userData 不能被提示文字覆盖。** `setItemData(index, text)`
+默认写 `Qt.UserRole`，会把 `addItem("$JOB", "JOB")` 存的 `"JOB"` 换成提示文字，
+之后 `currentData()` 返回它、拼出 `$$JOB = D:/…` 这种假变量，`_base_dir()`
+就判"不可用"（用户实测踩过）。提示一律写
+`setItemData(index, text, Qt.ToolTipRole)`。
+
+**坑：另存后 `$HIP` 会变成包目录。** 如果之后再用 `$HIP` 推包目录，会得到
+`<包>/<包>` 这种嵌套路径。窗口在打包时把 `(base, pkg, package_dir)` 记进
+`_last_base/_last_pkg/_last_package_dir`，zip 用这份快照，不重新展开。
+
+## 行操作
+
+- **双击行** → `ui.networknav.jump_to_node(node_path, prefix="Package Project")`。
+- **右键**只有两项：跳转节点 / 在资源管理器中打开原路径（复制路径两项已按用户
+  要求移除）。
+- 原路径取 `ref.files[0]`（序列取第一帧），不是 `abs_path`——序列的 `abs_path`
+  是带 `$F4` 的模板，磁盘上不存在这个文件；缺失引用会走 `reveal` 的 OSError 分支提示。
+
+## 资源管理器定位（`ui/reveal.py`）
+
+**不要**用 `subprocess.Popen(["explorer", "/select,<path>"])`：explorer 不按标准
+argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg"` 一个整体，
+结果什么都不选中（用户反馈"跳转失败"就是这个）。正确顺序：
+
+1. Shell API `SHOpenFolderAndSelectItems`（给文件路径，shell 自己打开父目录并选中，
+   空格/中文都稳）——ctypes 里指针参数一律 `c_void_p`，否则 64 位句柄会被截断；
+2. 退路：命令行字符串 `explorer /select,"<path>"`（引号自己拼，不走 argv 列表）；
+3. 再退：`os.startfile(dirname)`。
+
+## 执行结果面板
+
+（扫描指示灯 √/! 已按用户要求移除，结果只走文本。）打包按顺序做三件事，
+每一步单独收集失败，最后汇总：
+
+```
+[完成] 扫描到 12 个引用（输入 + 已落盘输出），15 个文件   ← 扫描阶段
+[开始] 包目录：...
+[信息] 复制完成 3/4
+[失败] 复制 <源路径>：<原因>
+[失败] 改写 <节点>:<参数>（<原因>）
+[完成/失败] 复制 a/b 个文件，改写 c/d 个参数，跳过 e 个
+```
+
+- 复制失败的源文件 → 引用它的参数**跳过不改写**（避免"路径改了但文件没到"）。
+- 有任一失败 → 状态显示 **失败**（红色），并 `notify.error`；全成功显示 **完成**（绿色）。
+- 保存失败单独记一条，不影响已复制的文件与已改写的参数（undo 组仍可整体撤销）。
+
+## zip
+
+`<包根>/<包名>.zip`，内容 = 包目录整体（`assets/**` + `另存` 模式下的 packed hip）。
+`覆盖当前工程` 模式下 hip 不在包目录里，额外按文件名附上。
+
+## 已知边界
+
+- 只收被场景**引用**的文件；`$HIP` 里没被引用的散落缓存不会自动带上。
+- 不解析表达式依赖（`chs()` / Python 表达式）、不处理 `op:` 协议路径。
+- 不做贴图转码/降分辨率；不处理 unlocked HDA 内部参数的导出问题。
+- `$F` 之外的帧写法（`%04d`）不识别。
+- `$JOB` 必须在会话环境里存在（`houdini.env` 或系统环境变量），否则包根选项禁用。
+
+## 测试
+
+- `tests/smoke_test.py`：`paths` 纯函数、`target_for` 的 $HIP/$JOB 两种写法、
+  `copy_plan` 去重、菜单接线、窗口可实例化、`reveal` 缺失路径必须抛 OSError。
+- hython 探针（开发时用）：
+  - 真实工程（`D:\VFX\HoutoolsTest\packagrTerst\untitled.hip`）：扫描出 6 个引用
+    （3 张贴图含 1 张 `$HFS` 内置 hdri、filecache 缓存 50 帧、2 个缺失路径），
+    缓存目标是 `$HIP/assets/geo`，复制计划 53 个文件；
+  - 合成工程：filecache 缓存 3 帧，另存模式（basedir → `$HIP/assets/geo`、
+    `sopoutput` 保存后能解析到包内文件、zip 含缓存）、覆盖模式
+    （basedir → `$HIP/ht_package/assets/geo`、hip 不另存）、失败路径
+    （模拟复制抛错 → 状态"失败"、日志含源路径与原因）。

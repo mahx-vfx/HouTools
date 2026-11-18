@@ -27,6 +27,13 @@ _houtools_dispatcher.run("video_to_sequence")
         ]]></scriptCode>
       </scriptItem>
 
+      <scriptItem id="houtools.networkview.package_project">
+        <label>Package Project</label>
+        <scriptCode><![CDATA[
+import houtools.dev.dispatcher as _houtools_dispatcher
+_houtools_dispatcher.run("package_project")
+        ]]></scriptCode>
+      </scriptItem>
       <scriptItem id="houtools.networkview.hdr_library">
         <label>HDR Library</label>
         <scriptCode><![CDATA[

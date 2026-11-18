@@ -5265,6 +5265,102 @@ def main():
     ht_status("smoke legacy", severity="important")
     print("notify module OK")
 
+    # ------------------------------------------------------------------
+    # Package Project：纯路径逻辑 + 菜单接线 + 窗口可实例化
+    # ------------------------------------------------------------------
+    from houtools.package import paths as pkg_paths
+
+    assert pkg_paths.has_frame_token("foo.$F4.exr")
+    assert pkg_paths.has_frame_token("foo.${FF2}.exr")
+    assert not pkg_paths.has_frame_token("foo.$FPS.exr")
+    assert pkg_paths.first_frame_token("a.$F4.exr") == "$F4"
+    _masked = pkg_paths.mask_frame_tokens("D:/c/foo.$F4.exr")
+    assert pkg_paths.MARKER in _masked and "$F4" not in _masked
+    assert pkg_paths.unmask(_masked, "$F4").endswith("$F4.exr")
+    assert pkg_paths.needs_packaging("D:/tex/a.jpg")
+    assert pkg_paths.needs_packaging("\\\\server\\share\\a.jpg")
+    assert not pkg_paths.needs_packaging("$HIP/tex/a.jpg")
+    assert not pkg_paths.needs_packaging("tex/a.jpg")
+    assert pkg_paths.flatten_dir("D:/proj/tex") == "D_proj_tex", \
+        pkg_paths.flatten_dir("D:/proj/tex")
+    assert pkg_paths.flatten_dir("D:\\proj\\tex") == "D_proj_tex"
+    assert pkg_paths.is_within("C:/hip/a/b.jpg", "C:/hip")
+    assert not pkg_paths.is_within("C:/hipp/a.jpg", "C:/hip")
+    assert pkg_paths.relative_to_hip("C:/hip/sub/a.jpg", "C:/hip") == \
+        "$HIP/sub/a.jpg"
+    assert pkg_paths.package_target("D:/proj/tex/a.jpg", "$HIP/ht_package") \
+        == "$HIP/ht_package/assets/D_proj_tex/a.jpg"
+    assert pkg_paths.package_target("D:/proj/tex/a.jpg", "$HIP") \
+        == "$HIP/assets/D_proj_tex/a.jpg"
+    _taken = set()
+    assert pkg_paths.unique_key("a.jpg", _taken) == "a.jpg"
+    assert pkg_paths.unique_key("a.jpg", _taken) == "a_2.jpg"
+    assert pkg_paths.zip_path_for("C:/hip/shot.hip").endswith(
+        "shot_package.zip")
+
+    assert 'id="houtools.package_project"' in main_xml
+    assert '_houtools_dispatcher.run("package_project")' in main_xml
+    assert 'id="houtools.networkview.package_project"' in nv_xml
+    assert '_houtools_dispatcher.run("package_project")' in nv_xml
+    print("Package Project paths/menu wiring OK")
+
+    # 目标写法：$HIP / $JOB 两种包根，素材进 <包>/assets/<展平源目录>/
+    from houtools.package import collect as pkg_collect
+    from houtools.package.collect import Ref as PkgRef
+
+    _pkg_ref = PkgRef(kind="input", node_path="/obj/x", parm_name="file",
+                      raw="D:/proj/tex/a.jpg",
+                      abs_path="D:/proj/tex/a.jpg",
+                      files=["D:/proj/tex/a.jpg"])
+    # 目标前缀由生成方式决定：另存到包目录 → $HIP；覆盖当前 → $HIP/<包名>
+    assert pkg_collect.target_for(_pkg_ref, "$HIP") == \
+        "$HIP/assets/D_proj_tex/a.jpg"
+    assert pkg_collect.target_for(_pkg_ref, "$HIP/ht_package") == \
+        "$HIP/ht_package/assets/D_proj_tex/a.jpg"
+    assert pkg_collect.target_for(_pkg_ref, "$JOB/pack") == \
+        "$JOB/pack/assets/D_proj_tex/a.jpg"
+    _pkg_plan = pkg_collect.copy_plan([_pkg_ref], "C:/hip", "ht_package")
+    assert list(_pkg_plan.keys()) == ["D:/proj/tex/a.jpg"]
+    # $HIP 内的素材保留相对目录结构（不再是整条绝对路径拍平）
+    _inside_ref = PkgRef(kind="input", node_path="/obj/z", parm_name="file",
+                         raw="geo/cache.bgeo.sc",
+                         abs_path="C:/hip/geo/cache.bgeo.sc",
+                         files=["C:/hip/geo/cache.bgeo.sc"], in_hip=True)
+    assert pkg_collect.target_for(_inside_ref, "$HIP", "C:/hip") == \
+        "$HIP/assets/geo/cache.bgeo.sc"
+    assert pkg_collect.target_for(_inside_ref, "$HIP/ht_package", "C:/hip") == \
+        "$HIP/ht_package/assets/geo/cache.bgeo.sc"
+    # filecache：改的是 basedir（目录），目标保留相对 $HIP 的目录
+    _dir_ref = PkgRef(kind="output", node_path="/obj/fc", parm_name="basedir",
+                      raw="C:/hip/geo/cache/v1/cache_v1.0001.bgeo.sc",
+                      abs_path="C:/hip/geo/cache/v1/cache_v1.0001.bgeo.sc",
+                      files=[], rewrite_dir=True, basedir="C:/hip/geo")
+    assert pkg_collect.target_for(_dir_ref, "$HIP", "C:/hip") == \
+        "$HIP/assets/geo"
+    assert pkg_collect.target_for(_dir_ref, "$HIP/ht_package", "C:/hip") == \
+        "$HIP/ht_package/assets/geo"
+
+    from houtools.package import window as pkg_window
+
+    _pkg_win = pkg_window.PackageProjectWindow(None)
+    app.processEvents()
+    assert _pkg_win._table.rowCount() == 0
+    assert _pkg_win._apply_btn.isEnabled() is False
+    assert _pkg_win._status_label.text() == "—"
+    _pkg_win.deleteLater()
+    app.processEvents()
+    print("PackageProjectWindow instantiation OK")
+
+    # 资源管理器定位：缺失路径必须在进 shell 之前就抛 OSError
+    from houtools.ui import reveal as pkg_reveal
+    try:
+        pkg_reveal.reveal(os.path.join(os.sep, "definitely", "not", "here.bgeo.sc"))
+    except OSError:
+        pass
+    else:
+        raise AssertionError("缺失路径应抛 OSError")
+    print("reveal guard OK")
+
     print("SMOKE TEST OK")
 
 
