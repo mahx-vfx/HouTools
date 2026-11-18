@@ -32,11 +32,25 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
   默认**只收已落盘**的；勾「含空输出路径」才列未生成的。
 - **挡住非文件值**（`_looks_like_file_path`）：空值、带空白/`%`/`*` 的菜单值与
   token、无扩展名的值、节点路径（`/obj/...`）、`shfs:`/`op:` 协议路径、
-  目录值、`$HIP/galleries`、`$HIP/backup`。
+  目录值、`$HIP/galleries`、`$HIP/backup`。节点路径的判定是"`/` 开头**且末段
+  无扩展名**"（`_looks_like_node_path`）——POSIX 形态绝对路径
+  （`/mnt/proj/a.jpg`：Windows 上 `os.path.isabs` 返 False、Houdini 视为绝对）
+  末段带扩展名，不能误杀（`is_absolute_like`/`needs_packaging` 同步兼容
+  POSIX 形态，同 filecache_abs_path._is_abs）。
 - **`$HFS` / `$HH` 引用保留在列表**（2026-11 用户要求"满足条件的都要出现"）：
   Houdini 安装目录里的贴图/示例文件也会列出，是否打包进包由用户勾选决定；
   缺失的 `$HFS` 外部路径同样以"缺失"呈现。
 - **反引号表达式不碰**：`` `chs("...")` `` 展开即冻结，改写等于破坏表达式。
+- **表达式驱动参数拒绝**（2026-11 复审补充）：`parm.keyframes()` 非空 → 跳过
+  （对齐 filecache_abs_path 的拒绝语义）——`parm.set()` 不覆盖已有表达式
+  （paste_bbox 实测），对表达式参数写静态值只会虚报"改写成功"而表达式继续
+  生效。filecache 的 `basedir` 同样检查（`sopoutput` 求值不受影响——那是读
+  不是写）。filecache 的 `file`/`basename` 常是表达式驱动属正常形态，不做
+  此检查（本来就不改写它们）。
+- **跳过统计按原因分桶**：`collect()` 返回 (refs, skip_stats)，只统计"像文件
+  路径但被排除"的参数——noise（目录/记账路径）、not_written（未落盘输出）、
+  expr（表达式驱动）；不再把 label/comment 这类无关注算进"跳过"（此前数字
+  虚大无意义）。结果面板按原因分列。
 
 ## 包目录与目标写法
 
@@ -50,7 +64,11 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
 - 包外素材用展平目录（`D:\proj\tex` → `D_proj_tex`），避免同名互相覆盖。
 
 - **包根**：`$HIP`（默认）或 `$JOB`（未设置/非绝对时 UI 禁用该选项）。
-- **包名**：默认 `ht_package`，可改。
+- **包名**：默认 `ht_package`，可改；**用户输入必须过 `paths.sanitize_pkg_name`**
+  （2026-11 复审补充）——包名直接进 `os.path.join(base, pkg, ...)`，不净化的话
+  `..`、含 `/` 的输入会写出包根之外，Windows 禁用符（`\ / : * ? " < > |` 与
+  控制字符）让复制/zip 直接报错。非法字符换 `_`、剥首尾点（防 `..` 与
+  Windows 尾点陷阱），空值回落默认名。
 - **参数改写按生成方式区分**（这是最容易写错的一处）：
 
   | 生成方式 | 参数前缀 | 原因 |
@@ -91,6 +109,43 @@ hip 被存进 `<JOB>/<包>/`，保存后 `$HIP` 就是那个目录）：
 `<包>/<包>` 这种嵌套路径。窗口在打包时把 `(base, pkg, package_dir)` 记进
 `_last_base/_last_pkg/_last_package_dir`，zip 用这份快照，不重新展开。
 
+## 线程模型（2026-11 复审改版）
+
+复制/压缩是纯文件 IO、可能 GB 级，主线程同步执行会让 UI 冻结数分钟——
+拆成两个 QThread worker：
+
+- `_CopyWorker`：按 copy_plan 逐文件 `shutil.copy2`；`progress`（已复制/总数）
+  每文件一发（窗口刷提示行），`done(已复制, [(源, 原因)…])` 收尾。
+- `_ZipWorker`：包目录整体压 zip；**先写 `<zip>.part`、成功后 `os.replace`
+  原子替换**——取消/失败不在正式路径留半截 zip 被下次误当成品。
+- 参数改写（`hou.undos.group` + `parm.set`）与 `hipFile.save` 必须主线程
+  （HOM 非线程安全）：由 worker 的 `done` 信号（Qt 队列连接自动回主线程）
+  触发，不进 worker。
+- **业务完成信号不可叫 `finished`**——会覆盖 QThread 内建的 finished
+  （`_retire_worker` 依赖内建信号区分"线程收尾"与"业务完成"，同 videoseq）。
+
+**取消是协作式**（对齐 Automation）：单个 copy2/zip 条目不可打断，只在文件
+边界检查 `cancel()` 置的标志；取消后不再改写参数、不保存 hip（已复制的文件
+留在包目录，属无害残留）。worker 引用挂模块级 `_LIVE_WORKERS`（NameError
+守卫活过 Reload，同 videoseq/_LIVE_ENGINES）：Reload 关窗路径会 deleteLater
+窗口，实例属性保不住引用，运行中的 QThread 被 GC 析构即 Qt6 qFatal。
+
+**延迟关闭协议**（window_manager）：worker 运行中 `is_close_deferred()` 返回
+True——closeEvent 先确认（Reload 触发的 close_all 不弹模态，直接取消），然后
+`cancel()` + `hide()` + QTimer 轮询线程退出，最后窗口自行 close + deleteLater
+（close_all 对延迟窗口只持引用不删，收尾必须自删，同 videoseq）。忙态锁界面
+（`_set_busy`）：计划已固定，中途改勾选/包根/生成方式会与在跑的复制错位。
+
+**失败反馈不打控制台**：复制/改写/保存失败只走结果面板 + notify（面板已含
+节点路径与原因；houtools 日志器 DEBUG 级、任何 log 都刷控制台——同
+copy_output_path 的用户拍板）。collect 的 log.debug 是扫描诊断，保留。
+
+**样式**：品牌 token 体系——`qss.window_qss(_EXTRA_QSS)`，根
+objectName=`htWindow`，主按钮走 components.PrimaryButton（htRole=primary）；
+表格/单选钮/表头等基础表没有的控件在 `_EXTRA_QSS` 里按 token 补（`.format`
+双花括号写法同 automation/styles）；行状态色走 `QColor(theme.color(...))`，
+提示/状态标签用 `htTextRole` 动态属性 + repolish（不要用裸 hex 内联样式）。
+
 ## 行操作
 
 - **双击行** → `ui.networknav.jump_to_node(node_path, prefix="Package Project")`。
@@ -125,26 +180,34 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
 ```
 
 - 复制失败的源文件 → 引用它的参数**跳过不改写**（避免"路径改了但文件没到"）。
-- 有任一失败 → 状态显示 **失败**（红色），并 `notify.error`；全成功显示 **完成**（绿色）。
+- 有任一失败 → 状态显示 **失败**（红），并 `notify.error`；全成功显示 **完成**（绿）；
+  打包/压缩进行中显示「打包中…/压缩中…」并锁界面，取消显示「已取消」。
 - 保存失败单独记一条，不影响已复制的文件与已改写的参数（undo 组仍可整体撤销）。
+- 扫描排除统计按原因分列（目录/记账路径、未落盘输出、表达式驱动）。
 
 ## zip
 
 `<包根>/<包名>.zip`，内容 = 包目录整体（`assets/**` + `另存` 模式下的 packed hip）。
 `覆盖当前工程` 模式下 hip 不在包目录里，额外按文件名附上。
+**先写 `.part` 再原子替换**：zip 在 `_ZipWorker` 后台线程写 `<zip>.part`，
+成功后 `os.replace` 到正式名——中断（取消/失败）不留半截 zip（见线程模型）。
 
 ## 已知边界
 
 - 只收被场景**引用**的文件；`$HIP` 里没被引用的散落缓存不会自动带上。
-- 不解析表达式依赖（`chs()` / Python 表达式）、不处理 `op:` 协议路径。
+- 不解析表达式依赖（`chs()` / Python 表达式）——表达式驱动参数直接跳过
+  （见扫描规则）；不处理 `op:` 协议路径。
 - 不做贴图转码/降分辨率；不处理 unlocked HDA 内部参数的导出问题。
 - `$F` 之外的帧写法（`%04d`）不识别。
 - `$JOB` 必须在会话环境里存在（`houdini.env` 或系统环境变量），否则包根选项禁用。
 
 ## 测试
 
-- `tests/smoke_test.py`：`paths` 纯函数、`target_for` 的 $HIP/$JOB 两种写法、
-  `copy_plan` 去重、菜单接线、窗口可实例化、`reveal` 缺失路径必须抛 OSError。
+- `tests/smoke_test.py`：`paths` 纯函数（帧模板 / needs_packaging / POSIX
+  绝对形态 / flatten_dir / 包名净化）、`target_for` 的 $HIP/$JOB 两种写法、
+  `copy_plan` 去重、`_is_noise` 节点路径 vs POSIX 文件、菜单接线、窗口可
+  实例化（htWindow / is_close_deferred / worker 可构造）、`reveal` 缺失路径
+  必须抛 OSError；另跑 `test_theme_tokens.py`（窗口不得写裸 hex）。
 - hython 探针（开发时用）：
   - 真实工程（`D:\VFX\HoutoolsTest\packagrTerst\untitled.hip`）：扫描出 6 个引用
     （3 张贴图含 1 张 `$HFS` 内置 hdri、filecache 缓存 50 帧、2 个缺失路径），

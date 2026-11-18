@@ -2,9 +2,11 @@
 
 职责：
 - 识别文件名里的帧模板（``$F`` / ``$F4`` / ``${FF2}`` …），把模板与具体帧分开处理；
-- 判断哪些路径需要"搬进 $HIP"（只有绝对路径需要，`$HIP/...` 与相对路径已经可移植）；
+- 判断哪些路径需要"搬进 $HIP"（只有绝对路径需要，`$HIP/...` 与相对路径已经
+  可移植；绝对判定兼容 POSIX 形态——``/proj/...`` 在 Windows 上
+  ``os.path.isabs`` 返 False、Houdini 视为绝对，同 filecache_abs_path._is_abs）；
 - 生成包内目标路径（``$HIP/ht_package/<展平目录>/<文件名>``）；
-- 同名冲突加后缀、zip 路径、可读大小。
+- 包名净化（用户输入直接进 os.path.join，必须收敛）、zip 路径、可读大小。
 """
 
 from __future__ import annotations
@@ -48,23 +50,33 @@ def unmask(text, token):
 
 
 def needs_packaging(raw):
-    """是否需要把它搬进 $HIP：只有绝对路径（或展开后可能是绝对路径的变量）。"""
+    """是否需要把它搬进 $HIP：只有绝对路径（或展开后可能是绝对路径的变量）。
+
+    POSIX 形态（``/mnt/proj/x``）也算绝对——Houdini 在 Windows 上把它解析
+    到当前盘根，不是相对 $HIP 的可移植写法。
+    """
     value = (raw or "").strip()
     if not value:
         return False
     lowered = value.lower()
     if lowered.startswith("$hip") or lowered.startswith("${hip}"):
         return False
-    if _DRIVE_RE.match(value) or value.startswith("\\\\") or value.startswith("//"):
+    if _DRIVE_RE.match(value) or value.startswith(("/", "\\")):
         return True
     return value.startswith("$")
 
 
 def is_absolute_like(path):
+    """绝对路径判定，兼容 POSIX 形态（``/`` 开头单斜杠也算）。
+
+    Python 3.13 起的 os.path.isabs 在 Windows 对 "/foo" 返 False，而
+    Houdini 的文件参数把 "/proj/..." 视为绝对路径（同 filecache_abs_path
+    的 _is_abs）；本模块调用方已先用 _looks_like_file_path 滤掉节点路径。
+    """
     value = (path or "").strip()
     return bool(value) and (os.path.isabs(value)
                             or bool(_DRIVE_RE.match(value))
-                            or value.startswith(("\\\\", "//")))
+                            or value.startswith(("/", "\\")))
 
 
 def flatten_dir(directory):
@@ -146,16 +158,21 @@ def package_dir_abs(base_dir, package_name=PACKAGE_DIR):
     return os.path.join(base_dir, package_name)
 
 
-def unique_key(base, taken):
-    """重名加 _2/_3…；taken 是已占用 key 的 casefold 集合。"""
-    key = base
-    index = 2
-    while key.casefold() in taken:
-        stem, ext = os.path.splitext(base)
-        key = "{}_{}{}".format(stem, index, ext)
-        index += 1
-    taken.add(key.casefold())
-    return key
+# 包名非法字符：Windows 文件名禁用符 + 控制字符 + 路径分隔符。分隔符被
+# 换掉后 "../.." 这类穿越写法只剩字面下划线，写不出包根之外
+_PKG_NAME_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def sanitize_pkg_name(text, default=PACKAGE_DIR):
+    """包名净化成合法目录名：非法字符换 _、剥首尾点/空格，空值回落默认。
+
+    包名来自 UI 输入、直接进 ``os.path.join(base, pkg, ...)``：不净化的话
+    ".."、含 ``/`` 的输入会写出包根之外，Windows 禁用符则让复制/zip 直接
+    报错。首尾点剥掉防 ``..``（点全剥后空串走默认）与 Windows 尾点陷阱。
+    """
+    value = _PKG_NAME_RE.sub("_", (text or "").strip())
+    value = value.strip(". ")
+    return value or default
 
 
 def zip_path_for(hip_path):

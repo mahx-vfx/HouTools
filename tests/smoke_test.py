@@ -5292,11 +5292,25 @@ def main():
         == "$HIP/ht_package/assets/D_proj_tex/a.jpg"
     assert pkg_paths.package_target("D:/proj/tex/a.jpg", "$HIP") \
         == "$HIP/assets/D_proj_tex/a.jpg"
-    _taken = set()
-    assert pkg_paths.unique_key("a.jpg", _taken) == "a.jpg"
-    assert pkg_paths.unique_key("a.jpg", _taken) == "a_2.jpg"
     assert pkg_paths.zip_path_for("C:/hip/shot.hip").endswith(
         "shot_package.zip")
+
+    # POSIX 形态绝对路径（Windows 上 os.path.isabs 返 False、Houdini 视为
+    # 绝对——同 filecache_abs_path._is_abs 的兼容语义）
+    assert pkg_paths.is_absolute_like("/mnt/proj/a.jpg")
+    assert pkg_paths.is_absolute_like("//server/share/a.jpg")
+    assert not pkg_paths.is_absolute_like("rel/dir/a.jpg")
+    assert pkg_paths.needs_packaging("/mnt/proj/a.jpg")
+    assert not pkg_paths.needs_packaging("geo/cache.bgeo.sc")
+
+    # 包名净化：非法字符换 _、防 ".." 穿越与 Windows 尾点陷阱、空回落默认
+    assert pkg_paths.sanitize_pkg_name("my pack") == "my pack"
+    assert pkg_paths.sanitize_pkg_name("a/b\\c") == "a_b_c"
+    assert pkg_paths.sanitize_pkg_name("..") == "ht_package"
+    assert pkg_paths.sanitize_pkg_name("") == "ht_package"
+    assert pkg_paths.sanitize_pkg_name("p<*>q") == "p___q"
+    assert pkg_paths.sanitize_pkg_name(" trailing. ") == "trailing"
+    assert pkg_paths.sanitize_pkg_name("v2") == "v2"
 
     assert 'id="houtools.package_project"' in main_xml
     assert '_houtools_dispatcher.run("package_project")' in main_xml
@@ -5340,6 +5354,15 @@ def main():
     assert pkg_collect.target_for(_dir_ref, "$HIP/ht_package", "C:/hip") == \
         "$HIP/ht_package/assets/geo"
 
+    # _is_noise：末段无扩展名的 / 开头值才是节点路径；POSIX 形态绝对路径
+    # 末段带扩展名，不误杀；$HIP 记账目录照旧排除
+    assert pkg_collect._is_noise("/obj/geo1/file1", "C:/hip")
+    assert pkg_collect._is_noise("/obj/geo1/", "C:/hip")
+    assert not pkg_collect._is_noise("/mnt/proj/a.jpg", "C:/hip")
+    assert pkg_collect._is_noise("C:/hip/galleries/x.jpg", "C:/hip")
+    assert pkg_collect._is_noise("C:/hip/backup/a.bgeo.sc", "C:/hip")
+    assert not pkg_collect._is_noise("C:/hip/geo/a.bgeo.sc", "C:/hip")
+
     from houtools.package import window as pkg_window
 
     _pkg_win = pkg_window.PackageProjectWindow(None)
@@ -5347,6 +5370,13 @@ def main():
     assert _pkg_win._table.rowCount() == 0
     assert _pkg_win._apply_btn.isEnabled() is False
     assert _pkg_win._status_label.text() == "—"
+    assert _pkg_win.objectName() == "htWindow"
+    assert _pkg_win.is_close_deferred() is False
+    # worker 类可无头构造（不 start）：协作式取消标志就位
+    _pkg_copier = pkg_window._CopyWorker({})
+    assert _pkg_copier.cancelled is False
+    _pkg_zipper = pkg_window._ZipWorker("C:/x.zip", "C:/", "C:/pkg", "")
+    assert _pkg_zipper.zip_path == "C:/x.zip"
     _pkg_win.deleteLater()
     app.processEvents()
     print("PackageProjectWindow instantiation OK")

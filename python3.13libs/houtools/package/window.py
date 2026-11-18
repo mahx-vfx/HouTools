@@ -5,14 +5,23 @@
 1. **扫描**：遍历已启用节点上的文件参数，收外部引用 / 节点缓存 /
    `$HIP` 内相对引用——凡是场景真正用到的、磁盘上存在的文件；
 2. **预览**：逐行「类型 / 节点 / 参数 / 原路径 / 目标」，可勾选；
-3. **打包**：把勾选的文件**全部**复制到 `<包根>/<包名>/assets/<展平源目录>/`，
-   参数改写成 `$HIP/…` 或 `$JOB/…`（帧模板 `$F4` 原样保留）；
+3. **打包**：后台线程把勾选的文件复制到 `<包根>/<包名>/assets/<展平源目录>/`，
+   完成后主线程改写成 `$HIP/…` 或 `$JOB/…`（帧模板 `$F4` 原样保留）；
 4. **生成方式**（二选一）：
    - **覆盖当前工程**：改写后保存当前 hip（文件仍在原地）；
    - **另存到包目录**（默认）：改写后另存为 `<包名>/<hip>_packed.hip`，
      磁盘上的原工程不动；
-5. **生成 zip**：把包目录整体压成 `<包根>/<包名>.zip`；
+5. **生成 zip**：后台线程把包目录整体压成 `<包根>/<包名>.zip`；
 6. **结果面板**：完成/失败 + 复制、改写、保存的逐条失败原因。
+
+线程模型：复制/压缩是纯文件 IO，放 `_CopyWorker`/`_ZipWorker`（QThread，
+协作式取消——文件边界检查标志，对齐 Automation 的取消语义）；参数改写
+与 hipFile.save 必须主线程（HOM 非线程安全），由 worker 的 done 信号
+（队列连接自动回主线程）触发。改写/保存不进 worker。
+
+样式：品牌 token 体系——`qss.window_qss(_EXTRA_QSS)`（表格/单选钮等基础
+表没有的控件在 _EXTRA_QSS 里按 token 补），根 objectName=`htWindow`，
+主按钮走 components.PrimaryButton（htRole=primary）。
 """
 
 from __future__ import annotations
@@ -21,7 +30,7 @@ import os
 import shutil
 import zipfile
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QHBoxLayout,
@@ -29,11 +38,14 @@ from PySide6.QtWidgets import (
     QRadioButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
-from houtools.core.log import get_logger
 from houtools.package import collect, paths
-from houtools.ui import dialogs, fonts as tool_fonts, notify, reveal, taskbar
+from houtools.ui import (
+    components, dialogs, fonts as tool_fonts, notify, qss, reveal, taskbar,
+    theme,
+)
 
-log = get_logger("tools.package_project")
+# 失败反馈一律走结果面板 + notify，不打控制台日志（houtools 日志器 DEBUG
+# 级、任何 log 都会刷控制台——同 copy_output_path 的用户拍板）。
 
 TOOL_ID = "package_project"
 
@@ -45,10 +57,177 @@ _COL_SRC = 4
 _COL_DST = 5
 _COL_STATE = 6
 
-_COLOR_OK = "#e0e0e0"
-_COLOR_DIM = "#8a8a8a"
-_COLOR_GOOD = "#4ade80"
-_COLOR_BAD = "#ff6b6b"
+# 扫描排除原因 → 展示文案（collect.collect 返回的统计键）
+_SKIP_LABELS = {
+    "noise": "目录/记账路径",
+    "not_written": "未落盘输出",
+    "expr": "表达式驱动",
+}
+
+# ---------------------------------------------------------------------------
+# 样式：基础表（qss.window_qss）没有的控件按 token 补在这里
+# ---------------------------------------------------------------------------
+_EXTRA_QSS = """
+QRadioButton {{
+    color: {TEXT_2};
+    spacing: 6px;
+    background: transparent;
+}}
+QTableWidget {{
+    background-color: {INK_900};
+    alternate-background-color: {INK_850};
+    color: {TEXT_2};
+    gridline-color: {LINE};
+    border: 1px solid {LINE};
+    border-radius: 8px;
+    selection-background-color: {ACCENT_SOFT};
+    selection-color: {TEXT};
+}}
+QHeaderView::section {{
+    background-color: {INK_850};
+    color: {TEXT_3};
+    border: none;
+    border-right: 1px solid {LINE};
+    border-bottom: 1px solid {LINE};
+    padding: 5px 8px;
+}}
+QTableCornerButton::section {{
+    background-color: {INK_850};
+    border: none;
+}}
+QLabel#pkgHintLabel, QLabel#pkgStatusLbl {{
+    font-size: 11px;
+}}
+QPlainTextEdit#pkgLogView {{
+    font-family: "Consolas", "Courier New", monospace;
+}}
+""".format(**theme.TOKENS)
+
+STYLE_SHEET = qss.window_qss(_EXTRA_QSS)
+
+
+def _repolish(widget):
+    """动态属性（htTextRole）改过后让 QSS 属性选择器重新解析。"""
+    style = widget.style()
+    style.unpolish(widget)
+    style.polish(widget)
+
+
+class _Cancelled(Exception):
+    """_ZipWorker 的协作式取消信号（zip 写到一半，只在文件边界抛）。"""
+
+
+# 运行中的复制/压缩 worker 的进程级保留引用。必须活过 Reload：关闭路径
+# 会把窗口 deleteLater，实例属性随之失去引用根，运行中的 QThread 被 GC
+# 析构即 Qt6 qFatal（同 videoseq/window_manager._closing 的守卫语义）。
+# worker 的内建 finished 到达后自动移出。
+try:
+    _LIVE_WORKERS
+except NameError:
+    _LIVE_WORKERS = set()
+
+
+class _CopyWorker(QThread):
+    """后台线程：按计划复制素材进包目录（纯文件 IO，不碰 hou）。
+
+    协作式取消：单个 copy2 不可打断，只能在文件边界检查 cancel 标志
+    （对齐 Automation 的取消语义）；每个文件发一次 progress，结束发
+    done（取消/失败同样发 done，由窗口按 worker.cancelled 分流）。
+    """
+
+    progress = Signal(int, int)       # 已复制数, 总数
+    # 注意：完成信号不可叫 finished——会覆盖 QThread 内建的 finished
+    # （retire 兜底依赖内建信号区分"线程收尾"与"业务完成"）
+    done = Signal(int, list)          # 已复制数, [(源路径, 原因), ...]
+
+    def __init__(self, plan):
+        super().__init__()
+        self._items = list(plan.items())
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+
+    def run(self):
+        copied = 0
+        failures = []
+        for source, target in self._items:
+            if self.cancelled:
+                break
+            try:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                shutil.copy2(source, target)
+                copied += 1
+            except OSError as exc:
+                failures.append((source, str(exc)))
+            self.progress.emit(copied, len(self._items))
+        self.done.emit(copied, failures)
+
+
+class _ZipWorker(QThread):
+    """后台线程：包目录整体压成 zip。
+
+    先写 ``<zip>.part``、成功后 ``os.replace`` 原子替换——取消/失败不会
+    在正式路径留半截 zip 被下次误当成品（os.replace 同盘原子）。
+    """
+
+    done = Signal(int, str)           # 文件数, 错误文本（空串 = 成功）
+
+    def __init__(self, zip_path, base, package_dir, hip_path):
+        super().__init__()
+        self.zip_path = zip_path
+        self._base = base
+        self._package_dir = package_dir
+        self._hip_path = hip_path
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+
+    def run(self):
+        tmp_path = self.zip_path + ".part"
+        count = 0
+        try:
+            with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                for root, _dirs, files in os.walk(self._package_dir):
+                    for name in files:
+                        if self.cancelled:
+                            raise _Cancelled()
+                        full = os.path.join(root, name)
+                        arc = os.path.relpath(full, self._base).replace("\\", "/")
+                        archive.write(full, arc)
+                        count += 1
+                # 覆盖模式时 hip 不在包目录里，单独带上
+                hip = self._hip_path
+                if hip and os.path.isfile(hip) and \
+                        not paths.is_within(hip, self._package_dir):
+                    if self.cancelled:
+                        raise _Cancelled()
+                    archive.write(hip, os.path.basename(hip))
+                    count += 1
+        except _Cancelled:
+            self._discard(tmp_path)
+            self.done.emit(0, "")
+            return
+        except Exception as exc:                  # 错误文本回结果面板展示
+            self._discard(tmp_path)
+            self.done.emit(0, str(exc))
+            return
+        try:
+            os.replace(tmp_path, self.zip_path)
+        except OSError as exc:
+            self._discard(tmp_path)
+            self.done.emit(0, str(exc))
+            return
+        self.done.emit(count, "")
+
+    @staticmethod
+    def _discard(path):
+        # 清理 .part 临时文件：已不存在/被占用时留着无碍（.part 不是正式名）
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 class PackageProjectWindow(QDialog):
@@ -56,6 +235,7 @@ class PackageProjectWindow(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Window)
+        self.setObjectName("htWindow")
         self.setWindowTitle("Package Project")
         self.setMinimumSize(1040, 680)
         self.resize(1260, 840)
@@ -70,12 +250,22 @@ class PackageProjectWindow(QDialog):
         self._last_base = ""
         self._last_pkg = ""
         self._last_package_dir = ""
+        # 复制/压缩 worker（QThread）：None = 空闲；_apply_ctx 是复制
+        # 完成后主线程继续改写/保存所需的上下文
+        self._copy_worker = None
+        self._zip_worker = None
+        self._apply_ctx = None
+        # 延迟关闭协议（window_manager）：worker 运行中关窗先取消、隐藏，
+        # 线程退出后再真正 close + 自删（见 is_close_deferred/closeEvent）
+        self._pending_close = False
+        self._close_poll = None
 
         self._build_ui()
-        self._apply_styles()
+        self.setStyleSheet(STYLE_SHEET)
         tool_fonts.apply(self)
         taskbar.apply_appwindow_flags(self)
         self._set_hint("点「扫描」收集当前工程用到的文件。")
+        self._set_status("—")
         self._log("等待扫描…")
 
     # ------------------------------------------------------------------
@@ -157,6 +347,7 @@ class PackageProjectWindow(QDialog):
         layout.addWidget(self._table, 1)
 
         self._hint_label = QLabel("")
+        self._hint_label.setObjectName("pkgHintLabel")
         self._hint_label.setWordWrap(True)
         layout.addWidget(self._hint_label)
 
@@ -164,11 +355,12 @@ class PackageProjectWindow(QDialog):
         result_row = QHBoxLayout()
         result_row.addWidget(QLabel("执行结果"))
         self._status_label = QLabel("—")
-        self._status_label.setStyleSheet("color: #888888; font-weight: bold;")
+        self._status_label.setObjectName("pkgStatusLbl")
         result_row.addWidget(self._status_label)
         result_row.addStretch()
         layout.addLayout(result_row)
         self._log_view = QPlainTextEdit()
+        self._log_view.setObjectName("pkgLogView")
         self._log_view.setReadOnly(True)
         self._log_view.setMaximumHeight(120)
         self._log_view.setPlaceholderText("打包完成后在这里显示逐条结果")
@@ -183,8 +375,7 @@ class PackageProjectWindow(QDialog):
         self._clear_btn.clicked.connect(lambda: self._set_all_checked(False))
         btn_row.addWidget(self._clear_btn)
         btn_row.addSpacing(16)
-        self._apply_btn = QPushButton("打包")
-        self._apply_btn.setObjectName("okBtn")
+        self._apply_btn = components.PrimaryButton("打包")
         self._apply_btn.setEnabled(False)
         self._apply_btn.setToolTip(
             "把勾选的文件复制到包目录，改写参数，并按所选方式保存 hip")
@@ -201,33 +392,6 @@ class PackageProjectWindow(QDialog):
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
 
-    def _apply_styles(self):
-        self.setStyleSheet(
-            "QDialog { background-color: #1D1D20; }"
-            "QLabel { color: #e0e0e0; background: transparent; }"
-            "QLineEdit, QComboBox { background-color: #2d2d2d; color: #e0e0e0;"
-            " border: 1px solid #3d3d3d; border-radius: 4px; padding: 5px 8px; }"
-            "QLineEdit:focus, QComboBox:focus { border-color: #0d6399; }"
-            "QComboBox QAbstractItemView { background-color: #2d2d2d;"
-            " color: #e0e0e0; selection-background-color: #0d6399; }"
-            "QRadioButton { color: #e0e0e0; }"
-            "QPushButton { background-color: #2d2d2d; color: #e0e0e0;"
-            " border: 1px solid #3d3d3d; border-radius: 4px; padding: 6px 16px; }"
-            "QPushButton:hover { background-color: #3d3d3d; }"
-            "QPushButton:disabled { color: #6a6a6a; }"
-            "QPushButton#okBtn { background-color: #0d6399; color: white;"
-            " font-weight: bold; }"
-            "QPushButton#okBtn:hover { background-color: #0e7bc9; }"
-            "QTableWidget { background-color: #202024; color: #e0e0e0;"
-            " gridline-color: #333338; border: 1px solid #3d3d3d;"
-            " border-radius: 4px; }"
-            "QPlainTextEdit { background-color: #16161a; color: #c8c8c8;"
-            " border: 1px solid #3d3d3d; border-radius: 4px;"
-            " font-family: Consolas, monospace; font-size: 11px; }"
-            "QHeaderView::section { background-color: #2a2a2e; color: #c8c8c8;"
-            " border: none; border-right: 1px solid #3d3d3d; padding: 5px 8px; }"
-        )
-
     # ------------------------------------------------------------------
     # 包目录
     # ------------------------------------------------------------------
@@ -235,7 +399,9 @@ class PackageProjectWindow(QDialog):
         return self._root_combo.currentData() or "HIP"
 
     def _pkg_name(self):
-        return self._pkg_edit.text().strip() or paths.PACKAGE_DIR
+        # 包名是用户输入、直接进 os.path.join：必须净化（非法字符换 _、
+        # 防 ".." 穿越），否则会写出包根之外（见 paths.sanitize_pkg_name）
+        return paths.sanitize_pkg_name(self._pkg_edit.text())
 
     def _root_var_value(self):
         """（变量名, 展开值）——给界面与错误提示用，不做可用性判断。"""
@@ -284,19 +450,20 @@ class PackageProjectWindow(QDialog):
 
     # ------------------------------------------------------------------
     def _set_hint(self, text, error=False):
-        color = _COLOR_BAD if error else _COLOR_DIM
         self._hint_label.setText(text)
-        self._hint_label.setStyleSheet(
-            "color: {}; font-size: 11px;".format(color))
+        self._hint_label.setProperty(
+            "htTextRole", "error" if error else "muted")
+        _repolish(self._hint_label)
 
     def _log(self, text):
         self._log_view.appendPlainText(text)
 
-    def _set_status(self, text, ok=True):
+    def _set_status(self, text, ok=None):
+        """执行状态：ok=True 完成 / ok=False 失败 / None 进行中或中性。"""
         self._status_label.setText(text)
-        self._status_label.setStyleSheet(
-            "color: {}; font-weight: bold;".format(
-                _COLOR_GOOD if ok else _COLOR_BAD))
+        self._status_label.setProperty(
+            "htTextRole", {True: "success", False: "error"}.get(ok, "muted"))
+        _repolish(self._status_label)
 
     # ------------------------------------------------------------------
     def _on_scan(self):
@@ -309,14 +476,14 @@ class PackageProjectWindow(QDialog):
             return
         self._check_job()
         self._hip_dir = os.path.normpath(hou.text.expandString("$HIP"))
-        self._refs, skipped = collect.collect(
+        self._refs, skip_stats = collect.collect(
             self._hip_dir, self._include_output_check.isChecked())
         self._checked = set(range(len(self._refs)))
         self._refresh_targets()
-        self._update_status(skipped)
-        self._report_scan(skipped)
+        self._update_status()
+        self._report_scan(skip_stats)
 
-    def _report_scan(self, skipped):
+    def _report_scan(self, skip_stats):
         if not self._refs:
             self._log("[失败] 没有扫到可打包的引用"
                       "（只收用户填过的文件引用与已落盘的缓存）")
@@ -331,8 +498,12 @@ class PackageProjectWindow(QDialog):
             self._log("[失败] 缺失 {}:{} → {}（手动引用了但文件不存在，"
                       "打包时跳过）".format(ref.node_path, ref.parm_name,
                                             ref.abs_path))
-        if skipped:
-            self._log("    （{} 个参数不是文件引用，未列出）".format(skipped))
+        if skip_stats:
+            detail = "、".join(
+                "{} {} 个".format(_SKIP_LABELS.get(key, key), count)
+                for key, count in sorted(skip_stats.items()))
+            self._log("    （另有 {} 个疑似文件路径未列出：{}）".format(
+                sum(skip_stats.values()), detail))
 
     def _on_targets_changed(self, *_args):
         if self._filling:
@@ -366,10 +537,10 @@ class PackageProjectWindow(QDialog):
                 Qt.Checked if row in self._checked else Qt.Unchecked)
             if ref.missing:
                 state_text = "缺失"
-                color = QColor(_COLOR_BAD)
+                color = QColor(theme.color("ERROR_TEXT"))
             elif ref.rewrite_dir:
                 state_text = "缓存目录 · {} 帧".format(len(ref.files))
-                color = QColor(_COLOR_OK)
+                color = QColor(theme.color("TEXT"))
             else:
                 if ref.is_sequence:
                     source_text = "序列 {} 帧".format(len(ref.files))
@@ -377,7 +548,7 @@ class PackageProjectWindow(QDialog):
                     source_text = "{} 个文件".format(len(ref.files))
                 state_text = "{} · {}".format(
                     "$HIP 内" if ref.in_hip else "包外", source_text)
-                color = QColor(_COLOR_DIM if ref.in_hip else _COLOR_OK)
+                color = QColor(theme.color("TEXT_3" if ref.in_hip else "TEXT"))
             cells = [
                 check,
                 QTableWidgetItem(ref.label),
@@ -388,7 +559,6 @@ class PackageProjectWindow(QDialog):
                                  if row < len(self._targets) else ""),
                 QTableWidgetItem(state_text),
             ]
-            color = QColor(color)
             for cell in cells[1:]:
                 cell.setForeground(color)
             for column, cell in enumerate(cells):
@@ -422,7 +592,7 @@ class PackageProjectWindow(QDialog):
         return [ref for index, ref in enumerate(self._refs)
                 if index in self._checked]
 
-    def _update_status(self, skipped=None):
+    def _update_status(self):
         refs = self._selected_refs()
         base = self._last_base or self._base_dir() or os.path.expanduser("~")
         plan = (collect.copy_plan(refs, base,
@@ -439,8 +609,6 @@ class PackageProjectWindow(QDialog):
                  "选中 {}".format(len(refs)),
                  "待复制 {} 个文件（{}）".format(len(plan),
                                                 paths.human_size(total_size))]
-        if skipped:
-            parts.append("跳过 {} 个（非文件/缺失）".format(skipped))
         self._set_hint(" · ".join(parts))
         self._apply_btn.setEnabled(bool(refs))
         self._zip_btn.setEnabled(bool(self._refs))
@@ -487,17 +655,18 @@ class PackageProjectWindow(QDialog):
         try:
             reveal.reveal(path)
         except OSError as exc:
-            log.warning("打开原路径失败 %s: %s", path, exc)
             notify.error("打开失败：{}".format(exc))
             return
         self._set_hint("已在资源管理器中定位：{}".format(path))
 
     # ------------------------------------------------------------------
-    # 打包
+    # 打包（复制在后台线程；改写/保存回主线程）
     # ------------------------------------------------------------------
     def _on_apply(self):
         import hou
 
+        if self._active_worker() is not None:
+            return
         base = self._base_dir()
         if not base:
             name, value = self._root_var_value()
@@ -535,32 +704,63 @@ class PackageProjectWindow(QDialog):
 
         self._log_view.clear()
         self._log("[开始] 包目录：{}".format(package_dir))
-
         missing = [ref for ref in refs if ref.missing]
         for ref in missing:
             self._log("[失败] 缺失 {}:{} → {}（手动引用了但文件不存在，"
                       "已跳过）".format(ref.node_path, ref.parm_name,
                                         ref.abs_path))
 
-        copied, copy_failures = self._copy_files(plan)
-        for source, reason in copy_failures:
+        self._set_busy(True)
+        self._set_status("打包中…")
+        self._apply_ctx = {"refs": refs, "targets": targets,
+                           "missing": missing, "total": len(plan)}
+        worker = _CopyWorker(plan)
+        worker.progress.connect(self._on_copy_progress)
+        worker.done.connect(self._on_copy_done)
+        self._retire_worker(worker)
+        self._copy_worker = worker
+        worker.start()
+
+    def _on_copy_progress(self, copied, total):
+        self._set_hint("复制 {}/{} …".format(copied, total))
+
+    def _on_copy_done(self, copied, failures):
+        worker = self._copy_worker
+        self._copy_worker = None
+        ctx = self._apply_ctx or {}
+        self._apply_ctx = None
+        refs = ctx.get("refs", [])
+        targets = ctx.get("targets", [])
+        total = ctx.get("total", 0)
+        self._set_busy(False)
+        self._update_status()
+
+        if worker is not None and worker.cancelled:
+            self._set_status("已取消", ok=False)
+            self._log("[失败] 已取消：复制 {}/{}".format(copied, total))
+            notify.info("打包已取消")
+            return
+
+        for source, reason in failures:
             self._log("[失败] 复制 {}：{}".format(source, reason))
-        failed_sources = {source for source, _reason in copy_failures}
+        self._log("[信息] 复制完成 {}/{}".format(copied, total))
+        failed_sources = {source for source, _reason in failures}
 
         rewritten, rewrite_failures, skipped = self._rewrite_parms(
             refs, targets, failed_sources)
         for text in rewrite_failures:
             self._log("[失败] 改写 {}".format(text))
 
-        saved_path, save_error = self._save_scene(base, pkg)
+        saved_path, save_error = self._save_scene()
         if save_error:
             self._log("[失败] 保存工程：{}".format(save_error))
         elif saved_path:
             self._log("[完成] 工程已保存：{}".format(saved_path))
 
-        ok = not (copy_failures or rewrite_failures or save_error or missing)
+        missing = ctx.get("missing", [])
+        ok = not (failures or rewrite_failures or save_error or missing)
         summary = "复制 {}/{} 个文件，改写 {}/{} 个参数".format(
-            copied, len(plan), rewritten, len(refs))
+            copied, total, rewritten, len(refs))
         if missing:
             summary += "，缺失 {} 个".format(len(missing))
         if skipped:
@@ -574,20 +774,6 @@ class PackageProjectWindow(QDialog):
             self._log("[失败] " + summary + "（原因见上）")
             notify.error("打包有失败项：" + summary)
         self._set_hint(summary + " · 详见下方执行结果")
-
-    def _copy_files(self, plan):
-        copied = 0
-        failures = []
-        for source, target in plan.items():
-            try:
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                shutil.copy2(source, target)
-                copied += 1
-            except OSError as exc:
-                log.warning("复制失败 %s -> %s: %s", source, target, exc)
-                failures.append((source, str(exc)))
-        self._log("[信息] 复制完成 {}/{}".format(copied, len(plan)))
-        return copied, failures
 
     def _rewrite_parms(self, refs, targets, failed_sources):
         import hou
@@ -609,12 +795,12 @@ class PackageProjectWindow(QDialog):
                 try:
                     parm.set(target)
                     rewritten += 1
-                except Exception as exc:          # noqa: BLE001 - 逐条记录
+                except Exception as exc:          # 逐条记录，批次继续
                     failures.append("{}:{}（{}）".format(
                         ref.node_path, ref.parm_name, exc))
         return rewritten, failures, skipped
 
-    def _save_scene(self, base, pkg):
+    def _save_scene(self):
         """按所选方式保存；返回 (保存后的路径, 错误文本)。"""
         import hou
 
@@ -622,20 +808,24 @@ class PackageProjectWindow(QDialog):
             if self._save_copy_radio.isChecked():
                 hip_path = hou.hipFile.path()
                 stem = os.path.splitext(os.path.basename(hip_path))[0] or "untitled"
-                target = os.path.join(base, pkg, stem + "_packed.hip")
+                target = os.path.join(self._last_base, self._last_pkg,
+                                      stem + "_packed.hip")
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 hou.hipFile.save(file_name=target, save_to_recent_files=False)
                 return target, None
             hou.hipFile.save()
             return hou.hipFile.path(), None
-        except Exception as exc:                  # noqa: BLE001 - 回面板展示
-            log.exception("保存工程失败")
+        except Exception as exc:                  # 原因回结果面板展示
+            # 失败反馈不打控制台：结果面板已含原因（houtools 日志器 DEBUG
+            # 级、任何 log 都刷控制台——同 copy_output_path 的用户拍板）
             return "", str(exc)
 
     # ------------------------------------------------------------------
     def _on_zip(self):
         import hou
 
+        if self._active_worker() is not None:
+            return
         base = self._last_base or self._base_dir()
         if not base:
             name, value = self._root_var_value()
@@ -650,33 +840,135 @@ class PackageProjectWindow(QDialog):
             return
         zip_path = os.path.join(base, pkg + ".zip")
         hip_path = hou.hipFile.path() if not hou.hipFile.isNewFile() else ""
-        try:
-            count = self._write_zip(zip_path, base, package_dir, hip_path)
-        except Exception as exc:                  # noqa: BLE001 - 回面板展示
-            log.exception("打包 zip 失败")
-            self._set_status("失败", ok=False)
-            self._log("[失败] 生成 zip：{}".format(exc))
-            notify.error("打包失败：{}".format(exc))
+        self._set_busy(True)
+        self._set_status("压缩中…")
+        worker = _ZipWorker(zip_path, base, package_dir, hip_path)
+        worker.done.connect(self._on_zip_done)
+        self._retire_worker(worker)
+        self._zip_worker = worker
+        worker.start()
+
+    def _on_zip_done(self, count, error):
+        worker = self._zip_worker
+        self._zip_worker = None
+        self._set_busy(False)
+        self._update_status()
+        zip_path = worker.zip_path if worker is not None else ""
+        if worker is not None and worker.cancelled:
+            self._set_status("已取消", ok=False)
+            self._log("[失败] 已取消：zip 未生成")
             return
-        size = paths.human_size(os.path.getsize(zip_path))
+        if error:
+            self._set_status("失败", ok=False)
+            self._log("[失败] 生成 zip：{}".format(error))
+            notify.error("打包失败：{}".format(error))
+            return
+        try:
+            size = paths.human_size(os.path.getsize(zip_path))
+        except OSError:
+            size = "?"
         self._set_status("完成", ok=True)
         self._log("[完成] 已生成 {}（{}，{} 个文件）".format(
             zip_path, size, count))
         notify.success("已生成 {}".format(os.path.basename(zip_path)))
         self._set_hint("已生成：{}（{}）".format(zip_path, size))
 
-    def _write_zip(self, zip_path, base, package_dir, hip_path):
-        count = 0
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-            for root, _dirs, files in os.walk(package_dir):
-                for name in files:
-                    full = os.path.join(root, name)
-                    arc = os.path.relpath(full, base).replace("\\", "/")
-                    archive.write(full, arc)
-                    count += 1
-            # 覆盖模式时 hip 不在包目录里，单独带上
-            if hip_path and os.path.isfile(hip_path) and \
-                    not paths.is_within(hip_path, package_dir):
-                archive.write(hip_path, os.path.basename(hip_path))
-                count += 1
-        return count
+    # ------------------------------------------------------------------
+    # 忙态与生命周期（worker 运行中锁界面 + 延迟关闭协议）
+    # ------------------------------------------------------------------
+    def _set_busy(self, busy):
+        """复制/压缩进行中锁界面：计划已固定，中途改勾选/包根/生成方式会
+        与在跑的复制错位。解锁后由调用方 _update_status 恢复按钮态。"""
+        for widget in (self._scan_btn, self._apply_btn, self._zip_btn,
+                       self._select_all_btn, self._clear_btn, self._table,
+                       self._root_combo, self._pkg_edit,
+                       self._include_output_check, self._save_copy_radio,
+                       self._overwrite_radio):
+            widget.setEnabled(not busy)
+
+    def _active_worker(self):
+        for worker in (self._copy_worker, self._zip_worker):
+            if worker is not None and worker.isRunning():
+                return worker
+        return None
+
+    def _retire_worker(self, worker):
+        """给运行中的 worker 保引用，直到其线程真正退出。
+
+        引用一旦无人持有，Python 回收会析构运行中的 QThread（Qt6 下
+        qFatal 崩溃）。保留集合在模块级（_LIVE_WORKERS）：Reload 关闭
+        路径会把本窗口 deleteLater，实例属性保不住引用——必须活过
+        Reload。worker 的内建 finished 到达后自动移出保留集合。
+        """
+        if worker is None or worker in _LIVE_WORKERS:
+            return
+        _LIVE_WORKERS.add(worker)
+        worker.finished.connect(
+            lambda w=worker: _LIVE_WORKERS.discard(w))
+
+    def is_close_deferred(self):
+        """window_manager.close_all 用：closeEvent 是否被推迟。
+
+        worker 运行中一律算延迟关闭——无论用户已确认取消（_pending_close）
+        还是刚在 Reload 的 close_all 里被关闭。close_all 对返回 True 的
+        窗口移入 _closing 持引用、不做 deleteLater：本窗口是运行线程的
+        信号接收方（done 回调做改写/保存），删了它运行中的 QThread 会被
+        GC 析构（Qt6 qFatal，Houdini 直接崩）。
+        """
+        if bool(getattr(self, "_pending_close", False)):
+            return True
+        return self._active_worker() is not None
+
+    def showEvent(self, event):  # noqa: N802 — Qt 命名约定
+        # 重开窗口即撤销"取消并关闭"的决定（取消已在进入 pending 时请求）：
+        # 清推迟标记、停轮询，窗口保持打开（同 videoseq 语义）
+        if getattr(self, "_pending_close", False):
+            self._pending_close = False
+            if self._close_poll is not None:
+                self._close_poll.stop()
+        super().showEvent(event)
+
+    def closeEvent(self, event):  # noqa: N802 — Qt 命名约定
+        # Reload 的 close_all 触发的关闭不弹确认（模态框会卡住 reload，
+        # 交互上也是错的）：直接取消 worker 走延迟关闭（同 videoseq）
+        from houtools.ui import window_manager as _wm
+        reload_closing = bool(getattr(_wm, "_closing_all", False))
+        worker = self._active_worker()
+        if worker is None:
+            super().closeEvent(event)
+            return
+        if self._pending_close:
+            # 已处于延迟关闭中（隐藏窗口再被 close_all 触发）：维持推迟
+            event.ignore()
+            return
+        if not reload_closing and not dialogs.question(
+                self, "打包进行中",
+                "打包仍在进行，取消并关闭窗口？",
+        ):
+            event.ignore()
+            return
+        # 协作式取消（文件边界生效），随后隐藏窗口、QTimer 轮询线程退出
+        # 再真正关——直接 wait() 会卡 UI，线程对象也不能先于运行中的
+        # 线程销毁
+        worker.cancel()
+        self._pending_close = True
+        self.hide()
+        event.ignore()
+        if self._close_poll is None:
+            self._close_poll = QTimer(self)
+            self._close_poll.timeout.connect(self._poll_worker_done)
+        self._close_poll.start(200)
+
+    def _poll_worker_done(self):
+        """worker 线程退出后完成延迟关闭。"""
+        if self._active_worker() is not None:
+            return
+        if getattr(self, "_pending_close", False):
+            self._pending_close = False
+            if self._close_poll is not None:
+                self._close_poll.stop()
+            self.close()
+            # 延迟关闭的窗口必须自删：window_manager.close_all 对声明了
+            # is_close_deferred 的窗口移入 _closing 持引用、不再兜底
+            # deleteLater（防 GC 析构运行中的 QThread），收尾在这里销毁
+            self.deleteLater()
