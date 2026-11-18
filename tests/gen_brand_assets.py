@@ -94,6 +94,66 @@ def _draw_corners(p, w, h, color=ACCENT, r=3):
         p.drawEllipse(QtCore.QPointF(x, y), r, r)
 
 
+def _draw_network_motif(p):
+    """右侧蓝图网络母题：抽象节点连线，呼应网络编辑器。
+
+    纯图形装饰——无文字、无版本号，发版不需要重画；绿色走蓝图网格色，
+    其中一个节点用品牌橙当"动作节点"，呼应单屏 ≤~10% 的动作色占比。
+    """
+    line = QtGui.QColor(GRID_LINE); line.setAlpha(150)
+    dot = QtGui.QColor(SUCCESS); dot.setAlpha(180)
+    ink = QtGui.QColor(INK_900)
+    accent = QtGui.QColor(ACCENT)
+    accent_soft = QtGui.QColor(ACCENT); accent_soft.setAlpha(34)
+    accent_bar = QtGui.QColor(ACCENT); accent_bar.setAlpha(200)
+    bar = QtGui.QColor(TEXT_2); bar.setAlpha(120)
+
+    def node(x, y, w, h, accent_node=False):
+        p.setPen(QtGui.QPen(accent if accent_node else line,
+                            1.5 if accent_node else 1.0))
+        p.setBrush(accent_soft if accent_node else ink)
+        p.drawRoundedRect(QtCore.QRectF(x, y, w, h), 7, 7)
+        # 节点内部：语义点 + 名称条（抽象参数行，不写字）
+        p.setPen(QtCore.Qt.PenStyle.NoPen)
+        p.setBrush(accent if accent_node else dot)
+        p.drawEllipse(QtCore.QPointF(x + 13, y + h / 2), 3.2, 3.2)
+        p.setBrush(accent_bar if accent_node else bar)
+        p.drawRoundedRect(QtCore.QRectF(x + 26, y + h / 2 - 2, w - 48, 4),
+                          2, 2)
+
+    def wire(points, color, width):
+        pen = QtGui.QPen(color, width)
+        p.setPen(pen)
+        p.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+        path = QtGui.QPainterPath(QtCore.QPointF(*points[0]))
+        for x, y in points[1:]:
+            path.lineTo(x, y)
+        p.drawPath(path)
+
+    def entry(x, y, color):
+        """Houdini 节点左缘的输入三角。"""
+        p.setPen(QtCore.Qt.PenStyle.NoPen)
+        p.setBrush(color)
+        p.drawPolygon(QtGui.QPolygonF([
+            QtCore.QPointF(x - 7, y - 4.5),
+            QtCore.QPointF(x - 7, y + 4.5),
+            QtCore.QPointF(x - 1, y)]))
+
+    # 连线先画（端点落在节点边缘上，节点后画盖住接缝）
+    wire([(1110, 109), (1143, 109), (1143, 159), (1176, 159)], line, 1.4)
+    wire([(1036, 130), (1036, 214)], line, 1.4)
+    wire([(1174, 235), (1207, 235), (1207, 250), (1240, 250)],
+         accent, 1.6)
+
+    node(962, 88, 148, 42)
+    node(1176, 138, 136, 42)
+    node(1006, 214, 168, 42, accent_node=True)
+    node(1240, 232, 72, 36)
+
+    entry(1176, 159, line)
+    entry(1240, 250, accent)
+
+
 def banner():
     w, h = 1400, 360
     pm = QtGui.QPixmap(w * 2, h * 2)
@@ -108,6 +168,9 @@ def banner():
     p.setPen(QtCore.Qt.PenStyle.NoPen)
     p.setBrush(QtGui.QColor(ACCENT))
     p.drawRect(0, 0, 6, h)
+
+    # 右侧蓝图网络母题（装饰层，先画在字标底下）
+    _draw_network_motif(p)
 
     # 两色字标（无图标、无版本胶囊——版本号走 README 文字，避免每次发版重画头图）
     brand_font = QtGui.QFont(brand_family)
