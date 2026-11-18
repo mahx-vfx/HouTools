@@ -35,14 +35,6 @@ _houtools_dispatcher.run("video_to_sequence")
         ]]></scriptCode>
       </scriptItem>
 
-      <!-- 打包工程：收集用户填过的引用与已落盘缓存，收进 $HIP/$JOB 并改成相对路径 -->
-      <scriptItem id="houtools.package_project">
-        <label>Package Project</label>
-        <scriptCode><![CDATA[
-import houtools.dev.dispatcher as _houtools_dispatcher
-_houtools_dispatcher.run("package_project")
-        ]]></scriptCode>
-      </scriptItem>
       <scriptItem id="houtools.hdr_library">
         <label>HDR Library</label>
         <scriptCode><![CDATA[
@@ -56,6 +48,18 @@ _houtools_dispatcher.run("hdr_library")
         <scriptCode><![CDATA[
 import houtools.dev.dispatcher as _houtools_dispatcher
 _houtools_dispatcher.run("recipe_library")
+        ]]></scriptCode>
+      </scriptItem>
+
+      <separatorItem/>
+
+      <!-- 打包工程：功能特殊（会复制素材进包目录并改写工程路径），单独分组
+           置于设置之上 -->
+      <scriptItem id="houtools.package_project">
+        <label>Package Project</label>
+        <scriptCode><![CDATA[
+import houtools.dev.dispatcher as _houtools_dispatcher
+_houtools_dispatcher.run("package_project")
         ]]></scriptCode>
       </scriptItem>
 

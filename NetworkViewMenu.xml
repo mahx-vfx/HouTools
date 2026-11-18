@@ -27,13 +27,6 @@ _houtools_dispatcher.run("video_to_sequence")
         ]]></scriptCode>
       </scriptItem>
 
-      <scriptItem id="houtools.networkview.package_project">
-        <label>Package Project</label>
-        <scriptCode><![CDATA[
-import houtools.dev.dispatcher as _houtools_dispatcher
-_houtools_dispatcher.run("package_project")
-        ]]></scriptCode>
-      </scriptItem>
       <scriptItem id="houtools.networkview.hdr_library">
         <label>HDR Library</label>
         <scriptCode><![CDATA[
@@ -82,6 +75,18 @@ _houtools_dispatcher.run("copy_output_path", **kwargs)
         <scriptCode><![CDATA[
 import houtools.dev.dispatcher as _houtools_dispatcher
 _houtools_dispatcher.run("filecache_abs_path", **kwargs)
+        ]]></scriptCode>
+      </scriptItem>
+
+      <!-- 打包工程：功能特殊（会复制素材进包目录并改写工程路径），单独分组
+           收尾——本菜单没有 HouTools Settings 条目，与主菜单的「设置上方
+           独立分组」对齐放在菜单末尾 -->
+      <separatorItem/>
+      <scriptItem id="houtools.networkview.package_project">
+        <label>Package Project</label>
+        <scriptCode><![CDATA[
+import houtools.dev.dispatcher as _houtools_dispatcher
+_houtools_dispatcher.run("package_project")
         ]]></scriptCode>
       </scriptItem>
     </subMenu>
