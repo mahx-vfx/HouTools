@@ -1,9 +1,11 @@
 """Generate local brand assets for README / docs (offline, no external URLs).
 
 Outputs to ``docs/brand/``:
-- ``houtools-banner.png`` — brand header (ink + blueprint grid + orange rule)
-- ``badge-houdini.png`` / ``badge-python.png`` / ``badge-pyside6.png`` /
-  ``badge-gpl.png`` — local badges (no shields.io)
+- ``houtools-banner.png`` — README brand header (ink + blueprint grid +
+  orange rule + two-color wordmark; no icon, no version pill)
+- ``houtools-wordmark.png`` — transparent two-color wordmark (About page)
+
+README 的环境徽章走 shields.io（仓库最初的文字+徽章形态），不在本地生成。
 
 Run with Houdini's Python (offscreen):
     "C:/.../python313/python.exe" tests/gen_brand_assets.py
@@ -39,7 +41,7 @@ HFS = _find_houdini_root()
 sys.path.append(str(HFS / "python313" / "lib" / "site-packages-forced"))
 os.add_dll_directory(str(HFS / "bin"))
 
-from PySide6 import QtCore, QtGui, QtWidgets, QtSvg  # noqa: E402
+from PySide6 import QtCore, QtGui, QtWidgets  # noqa: E402
 
 OUT = ROOT / "docs" / "brand"
 OUT.mkdir(parents=True, exist_ok=True)
@@ -107,13 +109,7 @@ def banner():
     p.setBrush(QtGui.QColor(ACCENT))
     p.drawRect(0, 0, 6, h)
 
-    # 产品图标（复用 tool 品牌矢量）
-    icon = QtSvg.QSvgRenderer(
-        str(ROOT / "python3.13libs" / "houtools" / "icons"
-            / "brand_product.svg"))
-    if icon.isValid():
-        icon.render(p, QtCore.QRectF(88, 92, 72, 72))
-
+    # 两色字标（无图标、无版本胶囊——版本号走 README 文字，避免每次发版重画头图）
     brand_font = QtGui.QFont(brand_family)
     brand_font.setPixelSize(86)
     brand_font.setWeight(QtGui.QFont.Weight.DemiBold)
@@ -121,31 +117,20 @@ def banner():
     p.setFont(brand_font)
     fm = QtGui.QFontMetrics(brand_font)
     p.setPen(QtGui.QColor(TEXT))
-    p.drawText(QtCore.QRectF(176, 66, 900, 130),
+    p.drawText(QtCore.QRectF(88, 66, 1000, 130),
                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, "Hou")
     hou_w = fm.horizontalAdvance("Hou") + brand_font.letterSpacing()
     p.setPen(QtGui.QColor(ACCENT))
-    p.drawText(QtCore.QRectF(176 + hou_w, 66, 900 - hou_w, 130),
+    p.drawText(QtCore.QRectF(88 + hou_w, 66, 1000 - hou_w, 130),
                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, "Tools")
 
     sub_font = QtGui.QFont(ui_family)
     sub_font.setPixelSize(25)
     p.setFont(sub_font)
     p.setPen(QtGui.QColor(TEXT_2))
-    p.drawText(QtCore.QRectF(180, 200, 1000, 50),
+    p.drawText(QtCore.QRectF(92, 200, 1000, 50),
                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
                "Houdini 21 / 22  ·  Python 3.11 / 3.13  ·  Plugin Suite")
-
-    # 右侧版本胶囊
-    ver_font = QtGui.QFont("Consolas")
-    ver_font.setPixelSize(22)
-    p.setFont(ver_font)
-    ver_rect = QtCore.QRectF(1160, 84, 160, 46)
-    p.setPen(QtGui.QPen(QtGui.QColor(LINE_STRONG), 1))
-    p.setBrush(QtGui.QColor(INK_900))
-    p.drawRoundedRect(ver_rect, 23, 23)
-    p.setPen(QtGui.QColor(TEXT_3))
-    p.drawText(ver_rect, QtCore.Qt.AlignCenter, "v1.10.2")
 
     # 底部细线 + 四角点
     p.setPen(QtGui.QPen(QtGui.QColor(LINE), 1))
@@ -156,35 +141,6 @@ def banner():
     path = OUT / "houtools-banner.png"
     ok = pm.save(str(path), "PNG")
     print("banner", path, "ok" if ok else "FAIL")
-    return ok
-
-
-def badge(name, label, dot_color):
-    w, h = 260, 56
-    pm = QtGui.QPixmap(w * 2, h * 2)
-    pm.setDevicePixelRatio(2.0)
-    pm.fill(QtCore.Qt.transparent)
-    p = QtGui.QPainter(pm)
-    p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-    rect = QtCore.QRectF(1, 1, w - 2, h - 2)
-    p.setPen(QtGui.QPen(QtGui.QColor(LINE), 1))
-    p.setBrush(QtGui.QColor(INK_900))
-    p.drawRoundedRect(rect, 8, 8)
-    # 语义色点
-    p.setPen(QtCore.Qt.PenStyle.NoPen)
-    p.setBrush(QtGui.QColor(dot_color))
-    p.drawEllipse(QtCore.QPointF(24, h / 2), 4, 4)
-    f = QtGui.QFont(ui_family)
-    f.setPixelSize(19)
-    f.setWeight(QtGui.QFont.Weight.DemiBold)
-    p.setFont(f)
-    p.setPen(QtGui.QColor(TEXT_2))
-    p.drawText(QtCore.QRectF(42, 0, w - 58, h),
-               QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, label)
-    p.end()
-    path = OUT / ("badge-%s.png" % name)
-    ok = pm.save(str(path), "PNG")
-    print("badge", path, "ok" if ok else "FAIL")
     return ok
 
 
@@ -232,10 +188,6 @@ def main():
     results = [
         banner(),
         wordmark(),
-        badge("houdini", "Houdini 21 / 22", ACCENT),
-        badge("python", "Python 3.11 / 3.13", WARNING),
-        badge("pyside6", "PySide6 6.8", SUCCESS),
-        badge("gpl", "GPL-3.0", TEXT_3),
     ]
     print("done:", all(results))
     if not all(results):

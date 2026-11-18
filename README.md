@@ -1,6 +1,6 @@
 ![HouTools 品牌头图](docs/brand/houtools-banner.png)
 
-![Houdini 21 / 22](docs/brand/badge-houdini.png) ![Python 3.11 / 3.13](docs/brand/badge-python.png) ![PySide6 6.8](docs/brand/badge-pyside6.png) ![GPL-3.0](docs/brand/badge-gpl.png)
+![Houdini 21/22](https://img.shields.io/badge/Houdini-21.0%20%7C%2022.0-FF4747?logo=sidefx&logoColor=white) ![Python 3.11/3.13](https://img.shields.io/badge/Python-3.11%20%7C%203.13-3776AB?logo=python&logoColor=white) ![PySide6](https://img.shields.io/badge/PySide6-6.8.3-41CD52?logo=qt&logoColor=white) ![Platform Windows](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows11&logoColor=white) ![License GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue?logo=gnu&logoColor=white)
 
 Houdini 21/22 插件工具集——一份代码两版通用（21.0 走 Python 3.11 入口壳，22.0 走 Python 3.13），开发期支持**手动热加载**：改完代码无需重启 Houdini。
 
@@ -380,7 +380,7 @@ HouTools/
 ├── docs/                         # 离线使用手册（About HouTools 菜单用默认浏览器打开，零外部网络资源）
 │   ├── index.html                # 手册页面（品牌 token / 字体 / 轮播 JS 全部内联或本地）
 │   ├── brand.md                  # 品牌手册（token / 组件 / 图标 / 文案 do&don't）
-│   ├── brand/                    # README 品牌头图 + 本地徽章（tests/gen_brand_assets.py 生成）
+│   ├── brand/                    # README 品牌头图 + 字标（tests/gen_brand_assets.py 生成；环境徽章走 shields.io）
 │   ├── fonts/                    # 钉钉进步体 woff2（离线 @font-face）
 │   └── about_shots/              # 轮播工具截图（tests/gen_about_shots.py 离屏生成，窗口 UI 变更后重跑）
 ├── python_panels/Automation.pypanel  # Automation 的 Python Panel 界面

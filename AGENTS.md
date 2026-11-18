@@ -33,11 +33,11 @@ root/
 │   ├── test_theme_tokens.py     # token lint（theme.py 外禁裸 hex；docs :root/内联 SVG 豁免）+ 对比度
 │   ├── test_fonts.py            # 字体文件/角色回退/逐控件 stamping + ChildAdded enforcer
 │   ├── gen_about_shots.py       # 离屏重生成 docs/about_shots/*.png（无 HDR 库时合成演示库）
-│   └── gen_brand_assets.py      # 离屏重生成 docs/brand/ 品牌头图 + 本地徽章
+│   └── gen_brand_assets.py      # 离屏重生成 docs/brand/ 品牌头图 + 字标（README 环境徽章走 shields.io，不本地生成）
 ├── docs/
 │   ├── index.html               # About 离线使用手册（品牌 token / 钉钉进步体 woff2 / 真实截图，零外部资源）
 │   ├── brand.md                 # 品牌手册（token / 组件 / 图标 / 文案 do&don't / 验收）
-│   ├── brand/                   # README 品牌头图与本地徽章（gen_brand_assets.py 生成）
+│   ├── brand/                   # README 品牌头图与字标（gen_brand_assets.py 生成）
 │   ├── fonts/                   # DingTalk-JinBuTi.woff2（离线 @font-face）
 │   └── about_shots/             # 真实窗口截图（gen_about_shots.py 生成）
 ├── dev-notes/                     # ★ 各功能实现细节与坑表（本文件表格巨行的拆分，改对应模块前必读；不入发行包）
