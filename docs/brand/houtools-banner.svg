@@ -1,0 +1,168 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="600" viewBox="0 0 1600 600" fill="none">
+<title>HouTools 品牌主视觉</title>
+<desc>以精密程序化曲面、几何阵列和节点轨迹为灵感的深色电影级品牌主视觉，不呈现虚构软件界面。</desc>
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1600" y2="600" gradientUnits="userSpaceOnUse"><stop stop-color="#05050A"/><stop offset=".55" stop-color="#090A10"/><stop offset="1" stop-color="#100D12"/></linearGradient>
+  <linearGradient id="textFade" x1="0" y1="0" x2="900" y2="0" gradientUnits="userSpaceOnUse"><stop stop-color="#05050A" stop-opacity=".68"/><stop offset=".58" stop-color="#05050A" stop-opacity=".34"/><stop offset="1" stop-color="#05050A" stop-opacity="0"/></linearGradient>
+  <radialGradient id="amb"><stop stop-color="#FF5C38" stop-opacity=".22"/><stop offset=".55" stop-color="#A52B20" stop-opacity=".08"/><stop offset="1" stop-color="#05050A" stop-opacity="0"/></radialGradient>
+  <linearGradient id="ribbon" x1="890" y1="120" x2="1500" y2="580" gradientUnits="userSpaceOnUse"><stop stop-color="#FFCA9B"/><stop offset=".14" stop-color="#FF8A42"/><stop offset=".31" stop-color="#D94A24"/><stop offset=".49" stop-color="#35140F"/><stop offset=".68" stop-color="#FF6A32"/><stop offset=".83" stop-color="#FF3F1F"/><stop offset="1" stop-color="#24100F"/></linearGradient>
+  <linearGradient id="ribbonHi" x1="980" y1="130" x2="1440" y2="590" gradientUnits="userSpaceOnUse"><stop stop-color="#FFF0D8" stop-opacity=".95"/><stop offset=".25" stop-color="#FFB16D" stop-opacity=".18"/><stop offset=".58" stop-color="#FF7A3D" stop-opacity=".28"/><stop offset=".8" stop-color="#FF5C38" stop-opacity=".92"/><stop offset="1" stop-color="#FF5C38" stop-opacity=".12"/></linearGradient>
+  <linearGradient id="edge" x1="1000" y1="180" x2="1470" y2="520" gradientUnits="userSpaceOnUse"><stop stop-color="#FFD1A5" stop-opacity=".88"/><stop offset=".5" stop-color="#FF8A42" stop-opacity=".30"/><stop offset=".8" stop-color="#FF8A45" stop-opacity=".95"/><stop offset="1" stop-color="#FF5C38" stop-opacity=".25"/></linearGradient>
+  <linearGradient id="glass" x1="1100" y1="250" x2="1420" y2="530" gradientUnits="userSpaceOnUse"><stop stop-color="#FFC18D" stop-opacity=".32"/><stop offset=".4" stop-color="#FF7A38" stop-opacity=".12"/><stop offset=".72" stop-color="#FF5C38" stop-opacity=".30"/><stop offset="1" stop-color="#24100F" stop-opacity=".72"/></linearGradient>
+  <linearGradient id="cubeTop" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#FFD2A8" stop-opacity=".82"/><stop offset="1" stop-color="#FF6A32" stop-opacity=".20"/></linearGradient>
+  <linearGradient id="cubeSide" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#FF9A53" stop-opacity=".68"/><stop offset="1" stop-color="#40160F" stop-opacity=".62"/></linearGradient>
+  <radialGradient id="core"><stop stop-color="#FFF0C9" stop-opacity="1"/><stop offset=".22" stop-color="#FF7A32" stop-opacity=".58"/><stop offset="1" stop-color="#FF5C38" stop-opacity="0"/></radialGradient>
+  <pattern id="microgrid" width="36" height="36" patternUnits="userSpaceOnUse"><path d="M36 0H0V36" stroke="#D8DCE5" stroke-opacity=".055" stroke-width=".8"/></pattern>
+  <filter id="blur"><feGaussianBlur stdDeviation="34"/></filter>
+  <filter id="soft"><feGaussianBlur stdDeviation="12"/></filter>
+  <filter id="shadow"><feGaussianBlur stdDeviation="22"/></filter>
+  <linearGradient id="silkA" x1="930" y1="120" x2="1510" y2="570" gradientUnits="userSpaceOnUse"><stop stop-color="#FFE0B8"/><stop offset=".16" stop-color="#FF9B50"/><stop offset=".34" stop-color="#B93C1D"/><stop offset=".52" stop-color="#29100D"/><stop offset=".72" stop-color="#FF8A43"/><stop offset=".88" stop-color="#F24B24"/><stop offset="1" stop-color="#32120F"/></linearGradient>
+  <linearGradient id="silkB" x1="1000" y1="550" x2="1510" y2="100" gradientUnits="userSpaceOnUse"><stop stop-color="#32130F"/><stop offset=".22" stop-color="#B94320"/><stop offset=".43" stop-color="#FFB36C"/><stop offset=".58" stop-color="#E65A2C"/><stop offset=".78" stop-color="#42170F"/><stop offset="1" stop-color="#FF7540"/></linearGradient>
+  <linearGradient id="silkC" x1="1080" y1="120" x2="1460" y2="600" gradientUnits="userSpaceOnUse"><stop stop-color="#FFD0A0" stop-opacity=".88"/><stop offset=".28" stop-color="#FF8A42" stop-opacity=".24"/><stop offset=".55" stop-color="#35120D" stop-opacity=".24"/><stop offset=".82" stop-color="#FF5C38" stop-opacity=".82"/><stop offset="1" stop-color="#FF5C38" stop-opacity=".16"/></linearGradient>
+  <filter id="glowSmall"><feGaussianBlur stdDeviation="4"/></filter>
+  <linearGradient id="blade" x1="920" y1="130" x2="1510" y2="540" gradientUnits="userSpaceOnUse"><stop stop-color="#FFE1B9"/><stop offset=".18" stop-color="#FF9A4D"/><stop offset=".34" stop-color="#C94A22"/><stop offset=".52" stop-color="#35130E"/><stop offset=".7" stop-color="#FFB06B"/><stop offset=".86" stop-color="#FF6030"/><stop offset="1" stop-color="#5C1E12"/></linearGradient>
+  <linearGradient id="blade2" x1="1030" y1="560" x2="1490" y2="130" gradientUnits="userSpaceOnUse"><stop stop-color="#35140F"/><stop offset=".24" stop-color="#A83A1D"/><stop offset=".43" stop-color="#FFB66F"/><stop offset=".62" stop-color="#E85B2D"/><stop offset=".82" stop-color="#FF8050"/><stop offset="1" stop-color="#40150F"/></linearGradient>
+  <linearGradient id="silverSheen" x1="960" y1="120" x2="1450" y2="470" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFFFF" stop-opacity=".92"/><stop offset=".18" stop-color="#DDE3ED" stop-opacity=".72"/><stop offset=".42" stop-color="#AEB8C8" stop-opacity=".18"/><stop offset=".68" stop-color="#F4F6FA" stop-opacity=".58"/><stop offset="1" stop-color="#FFFFFF" stop-opacity=".04"/></linearGradient>
+  <linearGradient id="silverGlass" x1="-55" y1="-120" x2="75" y2="110" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFFFF" stop-opacity=".88"/><stop offset=".38" stop-color="#E6EBF3" stop-opacity=".38"/><stop offset="1" stop-color="#AAB5C5" stop-opacity=".14"/></linearGradient>
+  <clipPath id="art"><path d="M650 0H1600V600H650z"/></clipPath>
+</defs>
+<rect width="1600" height="600" fill="url(#bg)"/>
+<rect width="1600" height="600" fill="url(#microgrid)" opacity=".45"/>
+<!-- subtle editorial divider and text-safe vignette -->
+<rect x="0" y="0" width="920" height="600" fill="url(#textFade)"/>
+<g clip-path="url(#art)">
+  <g transform="translate(0 -48)">
+  <ellipse cx="1260" cy="350" rx="440" ry="360" fill="url(#amb)" filter="url(#blur)"/>
+  <!-- distant technical construction -->
+  <g stroke="#FF9A63" stroke-opacity=".11" fill="none">
+    <path d="M800 112H1550M760 580H1600M910 42V630M1080 20V650M1250 10V660M1420 15V650" stroke-dasharray="1 11"/>
+    <path d="M790 450C930 340 970 180 1120 165S1370 280 1540 115" stroke-dasharray="2 8"/>
+    <path d="M820 190C1000 90 1100 120 1240 220S1430 410 1580 365" stroke="#FF5C38" stroke-opacity=".25"/>
+    <circle cx="1270" cy="340" r="270" stroke-dasharray="1 10"/>
+    <circle cx="1270" cy="340" r="220" stroke-dasharray="2 12"/>
+  </g>
+  <!-- volumetric glow behind the sculpture -->
+  <ellipse cx="1280" cy="350" rx="260" ry="230" fill="#FF5C38" fill-opacity=".10" filter="url(#soft)"/>
+  <circle cx="1270" cy="345" r="180" fill="url(#core)"/>
+  <!-- central procedural crystalline assembly -->
+  <g transform="translate(1275 345)">
+    <circle r="145" fill="url(#core)" opacity=".8"/>
+    <circle r="132" stroke="#FFB16B" stroke-opacity=".22" stroke-width="1" stroke-dasharray="2 8"/>
+    <circle r="105" stroke="#FF8A6D" stroke-opacity=".45" stroke-width="1.2"/>
+    <circle r="78" stroke="#FFB16B" stroke-opacity=".18" stroke-width="1" stroke-dasharray="2 7"/>
+    <g stroke="#E8EDF5" stroke-opacity=".72" stroke-width="1.1">
+      <path d="M-48 -42L0 -70L48 -42V18L0 46L-48 18Z" fill="url(#silverGlass)"/>
+      <path d="M0 -70V-12L48 18M-48 -42L0 -12L48 -42M0 -12V46"/>
+      <path d="M-100 8L-56 -18L-12 8V60L-56 86L-100 60Z" fill="url(#silverGlass)"/>
+      <path d="M-56 -18V34L-12 60M-100 8L-56 34L-12 8"/>
+      <path d="M16 30L60 4L104 30V82L60 108L16 82Z" fill="url(#silverGlass)"/>
+      <path d="M60 4V56L104 82M16 30L60 56L104 30"/>
+      <path d="M-18 -108L12 -126L42 -108V-72L12 -54L-18 -72Z" fill="url(#cubeSide)"/>
+      <path d="M12 -126V-90L42 -72M-18 -108L12 -90L42 -108"/>
+    </g>
+    <path d="M-135 0H135M0 -135V135" stroke="#FF8A6D" stroke-opacity=".2" stroke-width=".8" stroke-dasharray="2 8"/>
+  </g>
+  <!-- floating instanced geometry, deliberately sparse -->
+  <g stroke="#FFB06B" stroke-opacity=".62" stroke-width="1.1">
+    <path d="M1000 175L1027 160L1054 175V206L1027 221L1000 206Z" fill="url(#glass)"/><path d="M1027 190V221M1000 175L1027 190L1054 175"/>
+    <path d="M1460 500L1480 489L1500 500V523L1480 534L1460 523Z" fill="url(#glass)"/><path d="M1480 511V534M1460 500L1480 511L1500 500"/>
+    <path d="M1510 170L1527 160L1544 170V190L1527 200L1510 190Z" fill="url(#glass)"/><path d="M1527 180V200M1510 170L1527 180L1544 170"/>
+  </g>
+  <!-- subtle node-like points and trajectories, not UI widgets -->
+  <g fill="none" stroke-linecap="round">
+    <path d="M780 300C910 300 930 220 1030 220S1135 145 1220 145" stroke="#FF5C38" stroke-opacity=".62" stroke-width="1.4"/>
+    <path d="M820 470C940 470 965 520 1080 500S1190 455 1260 455" stroke="#FF9A63" stroke-opacity=".28" stroke-width="1.2"/>
+    <path d="M1430 80C1430 155 1490 185 1490 260" stroke="#FFB16B" stroke-opacity=".24" stroke-width="1.1"/>
+  </g>
+  <g fill="#0A0B11" stroke="#FF805F" stroke-width="1.4"><circle cx="780" cy="300" r="4"/><circle cx="1030" cy="220" r="4"/><circle cx="1220" cy="145" r="4"/><circle cx="1080" cy="500" r="4"/></g>
+  <g fill="#FF987C"><circle cx="920" cy="250" r="1.8"/><circle cx="960" cy="205" r="1.3"/><circle cx="1110" cy="120" r="1.6"/><circle cx="1460" cy="220" r="1.5"/><circle cx="1510" cy="360" r="1.8"/><circle cx="1380" cy="555" r="1.5"/><circle cx="1170" cy="570" r="1.4"/></g>
+  <!-- premium folded parametric blades -->
+  <g opacity=".98">
+    <path d="M1000 520C940 465 920 365 963 266C1008 162 1125 95 1248 100C1378 104 1482 184 1505 290C1524 379 1478 457 1400 493C1324 528 1232 505 1172 450C1110 393 1104 316 1155 253C1202 196 1284 176 1365 203L1395 248C1308 220 1227 239 1184 292C1138 348 1160 410 1215 451C1280 500 1370 493 1420 445C1470 398 1475 326 1440 260C1400 183 1325 139 1245 138C1135 136 1040 198 1005 280C970 363 985 447 1045 500Z" fill="url(#blade)" stroke="#FFB16B" stroke-opacity=".35" stroke-width="1.3"/>
+    <path d="M1000 520C940 465 920 365 963 266C1008 162 1125 95 1248 100C1378 104 1482 184 1505 290" fill="none" stroke="#FFFFFF" stroke-opacity=".7" stroke-width="1.4"/>
+    <path d="M950 385C1035 280 1135 228 1248 236C1370 245 1460 333 1465 424C1470 482 1434 526 1376 545L1340 510C1390 472 1395 420 1360 378C1315 324 1234 302 1162 327C1084 354 1048 422 1080 490C1010 468 965 431 950 385Z" fill="url(#blade2)" stroke="#FFB16B" stroke-opacity=".32" stroke-width="1.2"/>
+    <path d="M950 385C1035 280 1135 228 1248 236C1370 245 1460 333 1465 424" fill="none" stroke="#FFFFFF" stroke-opacity=".58" stroke-width="1.4"/>
+    <g fill="none" stroke-linecap="round" stroke-width=".9">
+      <path d="M970 250C1065 135 1210 95 1340 139M960 273C1050 157 1200 116 1360 160M950 298C1040 182 1190 140 1380 184M948 324C1030 208 1180 166 1400 210M952 350C1030 235 1170 194 1420 238" stroke="#FFB16B" stroke-opacity=".34"/>
+      <path d="M1035 180C1000 270 1010 390 1070 475M1060 160C1028 260 1040 385 1100 490M1088 145C1060 260 1075 390 1132 500M1118 132C1090 260 1105 400 1165 510M1150 122C1125 260 1140 410 1200 520" stroke="#FFB6A2" stroke-opacity=".38"/>
+      <path d="M1110 270C1200 220 1320 230 1400 300M1095 292C1190 245 1310 255 1390 325M1080 315C1180 270 1300 282 1378 350M1070 340C1170 300 1280 310 1360 375" stroke="#FFB16B" stroke-opacity=".3"/>
+    </g>
+    <path d="M1000 520C940 465 920 365 963 266C1008 162 1125 95 1248 100" fill="none" stroke="#FFF9F5" stroke-opacity=".8" stroke-width="2" filter="url(#glowSmall)"/>
+  </g>
+  <!-- restrained silver-white specular accents over the orange metal -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M1010 214C1060 150 1148 112 1238 112C1322 112 1398 145 1448 205" stroke="url(#silverSheen)" stroke-width="7" opacity=".68"/>
+    <path d="M1028 231C1082 174 1155 143 1236 142" stroke="#F7F8FC" stroke-width="1.5" opacity=".72"/>
+    <path d="M1090 455C1130 500 1184 520 1236 520" stroke="url(#silverSheen)" stroke-width="5" opacity=".52"/>
+    <path d="M1372 473C1414 448 1440 411 1447 371" stroke="#E9EDF5" stroke-width="1.7" opacity=".55"/>
+    <path d="M1160 250C1220 218 1300 220 1355 250" stroke="#F4F6FA" stroke-width="1.2" opacity=".48"/>
+  </g>
+  <!-- additional cool-silver reflections: visible but secondary to the orange sculpture -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M1042 190C1102 132 1180 105 1260 108C1300 110 1338 120 1370 139" stroke="#F7F9FC" stroke-width="3.2" opacity=".56"/>
+    <path d="M1068 174C1130 125 1195 111 1258 116" stroke="#C9D2E0" stroke-width="1.2" opacity=".72"/>
+    <path d="M1190 226C1250 205 1320 216 1372 252" stroke="#F4F6FA" stroke-width="2.4" opacity=".42"/>
+    <path d="M1112 480C1160 515 1215 531 1274 523" stroke="#E8EDF5" stroke-width="2.8" opacity=".46"/>
+    <path d="M1385 488C1430 459 1460 417 1468 372" stroke="#F8FAFF" stroke-width="2.2" opacity=".48"/>
+    <path d="M1460 286C1480 330 1480 370 1465 405" stroke="#DCE3ED" stroke-width="1.4" opacity=".42"/>
+  </g>
+  <!-- foreground crystal cubes: redraw complete geometry above the orange ribbons
+       so every visible edge belongs to the same front-facing object -->
+  <g transform="translate(1275 345)" stroke="#F3F6FB" stroke-width="1.35" stroke-linejoin="round" stroke-linecap="round">
+    <g opacity=".94">
+      <path d="M-48 -42L0 -70L48 -42L0 -12Z" fill="#F4F6FA" fill-opacity=".22"/>
+      <path d="M-48 -42L0 -12V46L-48 18Z" fill="#DDE4EF" fill-opacity=".18"/>
+      <path d="M0 -12L48 -42V18L0 46Z" fill="#FFFFFF" fill-opacity=".12"/>
+      <path d="M-48 -42L0 -70L48 -42V18L0 46L-48 18Z" fill="none"/>
+      <path d="M0 -70V-12L48 18M-48 -42L0 -12L48 -42M0 -12V46" fill="none"/>
+    </g>
+    <g opacity=".88">
+      <path d="M-100 8L-56 -18L-12 8L-56 34Z" fill="#E5EAF2" fill-opacity=".19"/>
+      <path d="M-100 8L-56 34V86L-100 60Z" fill="#DDE4EF" fill-opacity=".13"/>
+      <path d="M-56 34L-12 8V60L-56 86Z" fill="#FFFFFF" fill-opacity=".10"/>
+      <path d="M-100 8L-56 -18L-12 8V60L-56 86L-100 60Z" fill="none"/>
+      <path d="M-56 -18V34L-12 60M-100 8L-56 34L-12 8" fill="none"/>
+    </g>
+    <g opacity=".88">
+      <path d="M16 30L60 4L104 30L60 56Z" fill="#FFFFFF" fill-opacity=".20"/>
+      <path d="M16 30L60 56V108L16 82Z" fill="#DDE4EF" fill-opacity=".14"/>
+      <path d="M60 56L104 30V82L60 108Z" fill="#FFFFFF" fill-opacity=".11"/>
+      <path d="M16 30L60 4L104 30V82L60 108L16 82Z" fill="none"/>
+      <path d="M60 4V56L104 82M16 30L60 56L104 30" fill="none"/>
+    </g>
+  </g>
+  <g fill="#F3F5FA" opacity=".88">
+    <circle cx="1120" cy="139" r="2.2"/><circle cx="1395" cy="177" r="1.7"/><circle cx="1450" cy="371" r="1.8"/>
+    <circle cx="1088" cy="455" r="1.6"/><circle cx="1248" cy="236" r="1.5"/>
+    <circle cx="1260" cy="108" r="1.8"/><circle cx="1370" cy="139" r="1.5"/><circle cx="1468" cy="372" r="1.5"/>
+  </g>
+  <!-- understated ground reflection -->
+  <ellipse cx="1280" cy="610" rx="350" ry="35" fill="#FF5C38" fill-opacity=".10" filter="url(#shadow)"/>
+  <path d="M850 620C1050 600 1320 600 1600 620" stroke="#FF8A6D" stroke-opacity=".25"/>
+  <path d="M900 636C1100 620 1370 620 1600 636" stroke="#FF9A63" stroke-opacity=".10"/>
+  </g>
+</g>
+<!-- Chinese product copy -->
+<g font-family="Noto Sans CJK SC, Microsoft YaHei, sans-serif">
+  <rect x="104" y="116" width="42" height="3" rx="1.5" fill="#FF5C38"/>
+  <text x="104" y="158" fill="#C6C8D2" font-size="18" font-weight="500" letter-spacing="2">面向 Houdini 创作者的效率工具集</text>
+  <text x="97" y="266" fill="#F0F0F3" font-family="Arial, Helvetica, sans-serif" font-size="92" font-weight="700" letter-spacing="-3">Hou<tspan fill="#FF5C38">Tools</tspan></text>
+  <rect x="104" y="304" width="48" height="3" rx="1.5" fill="#FF5C38"/>
+  <text x="104" y="356" fill="#F0F0F3" font-size="24" font-weight="600" letter-spacing="1">让工作流更顺畅，让创作更专注</text>
+  <text x="104" y="400" fill="#A3A6B0" font-size="15.5" letter-spacing=".5">整合常用操作、自动化处理与制作管线工具，</text>
+  <text x="104" y="428" fill="#A3A6B0" font-size="15.5" letter-spacing=".5">减少重复劳动，提升日常制作效率。</text>
+  <g font-size="14" font-weight="500" fill="#FFB29C" letter-spacing="1">
+    <rect x="104" y="464" width="116" height="34" rx="17" fill="#FF5C38" fill-opacity=".10" stroke="#FF5C38" stroke-opacity=".38"/>
+    <circle cx="120" cy="481" r="2.5" fill="#FF5C38"/>
+    <text x="130" y="486">工作流优化</text>
+    <rect x="234" y="464" width="116" height="34" rx="17" fill="#FF5C38" fill-opacity=".10" stroke="#FF5C38" stroke-opacity=".38"/>
+    <circle cx="250" cy="481" r="2.5" fill="#FF5C38"/>
+    <text x="260" y="486">自动化处理</text>
+    <rect x="364" y="464" width="101" height="34" rx="17" fill="#FF5C38" fill-opacity=".10" stroke="#FF5C38" stroke-opacity=".38"/>
+    <circle cx="380" cy="481" r="2.5" fill="#FF5C38"/>
+    <text x="390" y="486">制作管线</text>
+  </g>
+</g>
+<path d="M0 0H1600V600H0z" stroke="#FFB16B" stroke-opacity=".07"/>
+<path d="M0 0H380M0 0V150" stroke="#FF5C38" stroke-width="2" stroke-opacity=".55"/>
+</svg>

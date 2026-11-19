@@ -1,4 +1,4 @@
-![HouTools 品牌头图](docs/brand/houtools-banner.png?v=3)
+![HouTools 品牌头图](docs/brand/houtools-banner.png?v=4)
 
 ![Houdini 21/22](https://img.shields.io/badge/Houdini-21.0%20%7C%2022.0-FF4747?logo=sidefx&logoColor=white) ![Python 3.11/3.13](https://img.shields.io/badge/Python-3.11%20%7C%203.13-3776AB?logo=python&logoColor=white) ![PySide6](https://img.shields.io/badge/PySide6-6.8.3-41CD52?logo=qt&logoColor=white) ![Platform Windows](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows11&logoColor=white) ![License GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue?logo=gnu&logoColor=white)
 

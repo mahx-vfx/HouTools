@@ -98,6 +98,7 @@ PAGE_ONLY_SECTIONS = {"install", "dragdrop-import"}
 OTHER_CONSUMERS = {
     "brand.md": ("README.md", "AGENTS.md"),
     "brand/houtools-banner.png": ("README.md",),
+    "brand/houtools-banner.svg": ("AGENTS.md",),
 }
 
 
