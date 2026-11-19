@@ -30,7 +30,7 @@ import os
 import shutil
 import zipfile
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QEvent, QThread, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout,
@@ -385,6 +385,8 @@ class PackageProjectWindow(QDialog):
         self.setStyleSheet(STYLE_SHEET)
         tool_fonts.apply(self)
         taskbar.apply_appwindow_flags(self)
+        # 表格字号缩放基线（2026-11-20 用户要求：长列表可放大缩小查看）
+        self._table_default_pt = self._table.font().pointSize() or 9
         self._scan_busy = _ScanBusyOverlay(self)   # 扫描等待遮罩（最后加，置顶）
         self._set_default_package_name()
         self._set_hint("点「扫描」收集当前工程用到的文件。")
@@ -530,6 +532,8 @@ class PackageProjectWindow(QDialog):
         self._table.setContextMenuPolicy(Qt.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._on_context_menu)
         self._table.doubleClicked.connect(self._on_row_activated)
+        # Ctrl+滚轮缩放表格字号（长分类/长路径看不清时放大，见 eventFilter）
+        self._table.viewport().installEventFilter(self)
         # tooltip 只挂在具体单元项上（见 _fill_table）：鼠标停在打包项上才
         # 弹出操作说明，停在表格空白区域不再弹（用户反馈）。
         # H21 / PySide6 6.5 会把表头指针粘连成 QAbstractScrollArea 包装，
@@ -878,6 +882,8 @@ class PackageProjectWindow(QDialog):
                 cell.setToolTip("双击跳转到节点；右键可打开原路径")
                 self._table.setItem(row, column, cell)
         self._table.setUpdatesEnabled(True)
+        # 行高跟随当前字号（缩放后重扫的场景行数会变，新行也要套用）
+        self._table.resizeRowsToContents()
         self._filling = False
 
     def _on_item_changed(self, item):
@@ -947,13 +953,50 @@ class PackageProjectWindow(QDialog):
     def _on_context_menu(self, pos):
         index = self._table.indexAt(pos)
         ref = self._ref_at(index)
-        if ref is None:
-            return
         menu = QMenu(self)
-        menu.addAction("跳转到节点", lambda: self._jump_to_node(ref))
-        menu.addAction("在资源管理器中打开原路径",
-                       lambda: self._reveal_source(ref))
+        # 字号调整不依赖行（2026-11-20 用户要求：长分类可放大缩小查看）
+        font_menu = menu.addMenu("表格字号")
+        pt = self._table_pt()
+        font_menu.addAction("增大（Ctrl+滚轮上）",
+                            lambda: self._set_table_pt(pt + 1))
+        font_menu.addAction("减小（Ctrl+滚轮下）",
+                            lambda: self._set_table_pt(pt - 1))
+        font_menu.addAction("恢复默认",
+                            lambda: self._set_table_pt(self._table_default_pt))
+        if ref is not None:
+            menu.addAction("跳转到节点", lambda: self._jump_to_node(ref))
+            menu.addAction("在资源管理器中打开原路径",
+                           lambda: self._reveal_source(ref))
         menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    # ---- 表格字号缩放（Ctrl+滚轮 / 右键菜单，仅本窗口会话内生效） ----
+    _FONT_MIN_PT = 7
+    _FONT_MAX_PT = 24
+
+    def _table_pt(self):
+        """当前表格字号（字体对象是唯一事实源，不另设缓存）。"""
+        pt = self._table.font().pointSize()
+        return pt if pt > 0 else self._table_default_pt
+
+    def _set_table_pt(self, pt):
+        pt = max(self._FONT_MIN_PT, min(self._FONT_MAX_PT, int(pt)))
+        if pt == self._table.font().pointSize():
+            return
+        font = self._table.font()
+        font.setPointSize(pt)
+        self._table.setFont(font)
+        self._table.resizeRowsToContents()
+        self._set_hint("表格字号：{}pt（7–24，Ctrl+滚轮或右键调整）".format(pt))
+
+    def eventFilter(self, obj, event):  # noqa: N802 — Qt 命名约定
+        if obj is self._table.viewport() and event.type() == QEvent.Wheel \
+                and event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta:
+                self._set_table_pt(self._table_pt() +
+                                   (1 if delta > 0 else -1))
+            return True
+        return super().eventFilter(obj, event)
 
     def _jump_to_node(self, ref):
         from houtools.ui import networknav

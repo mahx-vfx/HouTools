@@ -356,3 +356,39 @@ WorkBuddy 的「类型分类 + 8 项体验改进」提交整体复核通过：
 **修正一处**：打包确认弹窗此前对覆盖模式 + 自定义包根也说「改写为相对路径」，
 实际该组合只能写绝对路径（不随包移植）——现按 生成方式 × 包根 区分措辞
 （另存 / $HIP / $JOB → 相对路径；覆盖 + 自定义 → 绝对路径并注明不移植）。
+
+## 2026-11-20 用户实测反馈（H22 真机，pkg-enh 首轮）
+
+### ① `$HIP/...` 正斜杠序列全部误判「缺失」（高，已修）
+
+**现象**：karma `picture` = `$HIP/render/thrusterfx/thrusterfx.$F4.exr`，磁盘
+18 帧都在，扫描却标缺失（旧截图里同参数还只显示过 1 帧）。
+
+**根因**：`$HIP` 展开成 `D:/...` **正斜杠**，Windows 上 `glob.glob` 返回的
+最后一层分隔符是 **反斜杠**（`os.path.join` 拼 basename 所致）——
+`_digit_files`/`_udim_files` 的严格正则按原样用 prefix 拼，混合分隔符
+一条都不中 → files 空 → `Ref.missing`。filecache 没中招是因为 basedir
+过了 `os.path.normpath`（统一反斜杠）。冒烟此前全用 `os.path.join`
+（反斜杠）造数据，测不出正斜杠形态。
+
+**修复**：`collect._norm_slash()` 把 pattern 与 glob 结果统一成正斜杠再
+匹配；`_digit_files`、`_udim_files`（UDIM + 正斜杠参数同样会 0 Tile）
+都走它。hython 对真实工程复现：修复前 0 帧，修复后 18 帧。
+冒烟新增「mixed separator glob」组（正斜杠 prefix + 磁盘反斜杠文件）。
+
+### ② 打包日志瘦身（复制计划按目录聚合）
+
+`collect.compact_copy_plan(plan)`：同一对（源目录 → 目标目录）的搬运合并
+成一行 + 文件数（`D:\...\v1 -> <包>\geo\pyro_thruster_plasma\v1（50 个文件）`），
+散文件保持逐条；`build_package_log` 的复制计划段改用它。150 帧序列不再
+刷几百行。纯函数，冒烟断言「序列帧不逐文件列」。
+
+### ③ 表格字号可调（Ctrl+滚轮 / 右键菜单）
+
+- **Ctrl+滚轮** 在表格上缩放字号（7–24pt 夹紧），行高
+  `resizeRowsToContents()` 跟随；`_fill_table` 末尾也调一次，重扫后
+  新行保持当前字号。
+- 右键菜单新增「表格字号」组（增大/减小/恢复默认），**不再要求指针
+  停在行上**——空白区域也能调。
+- 基线字号 `_table_default_pt` 在 tool_fonts.apply 之后取一次；只影响
+  本窗口会话，不持久化（窗口复用重建即回默认）。

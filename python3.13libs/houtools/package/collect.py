@@ -199,17 +199,28 @@ def _looks_like_file_path(raw):
     return ("/" in value) or ("\\" in value) or value.startswith("$")
 
 
+def _norm_slash(path):
+    """分隔符统一成正斜杠（匹配用）。
+
+    ``$HIP`` 展开是 ``D:/...`` 正斜杠，Windows 上 ``glob.glob`` 返回的
+    最后一层分隔符却是 ``\\``——严格正则若按原样拼 prefix，混合分隔符
+    一条都匹配不上，序列全部误判"缺失"（2026-11-20 用户实测发现）。
+    匹配前两边都归一成正斜杠，Windows/Linux 语义都不变。
+    """
+    return (path or "").replace(os.sep, "/")
+
+
 def _digit_files(prefix, suffix):
     """严格数字序列：glob 之后再用 ``^prefix\\d+suffix$`` 二次过滤。
 
     只用 ``prefix*suffix`` 会把 ``sim.backup.bgeo.sc`` 这类文件一起收进来
-    （报告 P3-01）。
+    （报告 P3-01）。匹配在归一化分隔符后进行（见 _norm_slash）。
     """
     pattern = prefix + "*" + suffix
-    rx = re.compile("^" + re.escape(prefix) + r"[0-9]+" +
-                    re.escape(suffix) + "$", re.IGNORECASE)
+    rx = re.compile("^" + re.escape(_norm_slash(prefix)) + r"[0-9]+" +
+                    re.escape(_norm_slash(suffix)) + "$", re.IGNORECASE)
     return sorted(f for f in glob.glob(pattern)
-                  if os.path.isfile(f) and rx.match(f))
+                  if os.path.isfile(f) and rx.match(_norm_slash(f)))
 
 
 def _frames_from_path(path):
@@ -224,7 +235,12 @@ def _frames_from_path(path):
 
 
 def _udim_files(expanded):
-    """``texture.<UDIM>.exr`` → 枚举同目录 1001–1999 的 4 位 Tile。"""
+    """``texture.<UDIM>.exr`` → 枚举同目录 1001–1999 的 4 位 Tile。
+
+    分隔符归一化后匹配（同 _digit_files：正斜杠展开路径 + Windows glob
+    反斜杠返回值，不归一就是 0 Tile、整条 UDIM 误判缺失）。
+    """
+    expanded = _norm_slash(expanded)
     lowered = expanded.lower()
     index = lowered.find(paths.UDIM_TOKEN.lower())
     if index < 0:
@@ -239,11 +255,11 @@ def _udim_files(expanded):
     for candidate in glob.glob(pattern):
         if not os.path.isfile(candidate):
             continue
-        match = rx.match(candidate)
+        match = rx.match(_norm_slash(candidate))
         # UDIM 规范只允许 1001–1999；只匹配 \d{4} 会把 0001/2001/9999
         # 这类别的 4 位数字序列误收进包（2026-11-19 合并后复审）
         if match and 1001 <= int(match.group(1)) <= 1999:
-            found.append(candidate)
+            found.append(_norm_slash(candidate))
     return sorted(found)
 
 
@@ -524,6 +540,27 @@ def selection_summary(refs, checked, plan, size_of=None):
     return len(sources), total
 
 
+def compact_copy_plan(plan):
+    """复制计划按「源目录 → 目标目录」聚合（纯函数，日志瘦身用）。
+
+    逐文件列序列会把日志刷成几百行（2026-11-20 用户反馈可读性差）；
+    同一对目录之间的搬运合并成一行 + 文件数，散文件保持逐条可读。
+    返回 ``[(显示源, 显示目标, 文件数)]``：文件数 > 1 时显示目录对，
+    == 1 时显示完整文件路径。
+    """
+    groups = {}
+    for source, target in plan.items():
+        key = (os.path.dirname(source), os.path.dirname(target))
+        groups.setdefault(key, []).append((source, target))
+    entries = []
+    for (src_dir, dst_dir), pairs in sorted(groups.items()):
+        if len(pairs) == 1:
+            entries.append((pairs[0][0], pairs[0][1], 1))
+        else:
+            entries.append((src_dir, dst_dir, len(pairs)))
+    return entries
+
+
 def build_package_log(refs, plan, targets, stats, package_dir, package_name,
                       mode_text, prefix, failures=None, notes=None):
     """生成写入包目录的打包日志文本（纯函数，无 hou/Qt 依赖）。
@@ -550,9 +587,12 @@ def build_package_log(refs, plan, targets, stats, package_dir, package_name,
         lines.append("         源: {}".format(ref.raw))
         lines.append("         目标: {}".format(target))
     lines.append("-" * 60)
-    lines.append(" 复制计划（共 {} 个文件）:".format(len(plan)))
-    for source, target in plan.items():
-        lines.append("  {}  ->  {}".format(source, target))
+    lines.append(" 复制计划（共 {} 个文件，按来源目录聚合）:".format(len(plan)))
+    for source, target, count in compact_copy_plan(plan):
+        if count > 1:
+            lines.append("  {}  ->  {}（{} 个文件）".format(source, target, count))
+        else:
+            lines.append("  {}  ->  {}".format(source, target))
     if notes:
         lines.append("-" * 60)
         lines.append(" 目录改名:")

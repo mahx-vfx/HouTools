@@ -5500,6 +5500,27 @@ def main():
         shutil.rmtree(_frame_dir, ignore_errors=True)
     print("strict frame glob OK")
 
+    # 2026-11-20 用户实测回归：$HIP 展开是正斜杠（D:/...），Windows glob
+    # 返回的最后一层分隔符是反斜杠——匹配前必须归一化分隔符，否则严格
+    # 正则一条都不中，$HIP/... 写法的序列全部误判"缺失"。
+    _mix_dir = tempfile.mkdtemp(prefix="pkg_mixsep_")
+    try:
+        for name in ("shot.0001.exr", "shot.0002.exr", "shot.backup.exr"):
+            (Path(_mix_dir) / name).write_bytes(b"x")
+        _fwd = Path(_mix_dir).as_posix()    # 正斜杠形态（$HIP 展开风格）
+        _mix_frames = pkg_collect._digit_files(
+            _fwd + "/shot.", ".exr")
+        assert [os.path.basename(p) for p in _mix_frames] == \
+            ["shot.0001.exr", "shot.0002.exr"], _mix_frames
+        _mix_masked = pkg_collect._masked_files(
+            _fwd + "/shot." + pkg_paths.MARKER + ".exr")
+        assert len(_mix_masked) == 2, _mix_masked
+        _mix_udim = pkg_collect._udim_files(_fwd + "/shot.<UDIM>.exr")
+        assert _mix_udim == [], _mix_udim   # 001/002 不是 UDIM Tile，不误收
+    finally:
+        shutil.rmtree(_mix_dir, ignore_errors=True)
+    print("mixed separator glob OK")
+
     # P3-02：Windows 保留设备名不能直接当包名
     assert pkg_paths.sanitize_pkg_name("CON") == "pkg_CON"
     assert pkg_paths.sanitize_pkg_name("NUL.txt") == "pkg_NUL.txt"
@@ -5707,6 +5728,26 @@ def main():
         [_ref_a, _ref_b], set(), _sel_plan, size_of=lambda p: _sizes[p])
     assert (_count3, _bytes3) == (0, 0)
     print("package selection summary OK")
+
+    # 复制计划聚合：同目录序列合并成一行目录对 + 文件数，散文件逐条
+    _seq_plan = {
+        "D:/p/seq/a.0001.exr": "C:/pkg/render/a.0001.exr",
+        "D:/p/seq/a.0002.exr": "C:/pkg/render/a.0002.exr",
+        "D:/p/seq/a.0003.exr": "C:/pkg/render/a.0003.exr",
+        "D:/p/other/one.jpg": "C:/pkg/tex/one.jpg",
+    }
+    _entries = pkg_collect.compact_copy_plan(_seq_plan)
+    assert _entries == [
+        ("D:/p/other/one.jpg", "C:/pkg/tex/one.jpg", 1),
+        ("D:/p/seq", "C:/pkg/render", 3),
+    ], _entries
+    _agg_text = pkg_collect.build_package_log(
+        refs=[], plan=_seq_plan, targets=[], stats="", package_dir="C:/pkg",
+        package_name="pack", mode_text="", prefix="$HIP")
+    assert "（3 个文件）" in _agg_text and "a.0001.exr" not in _agg_text, \
+        "序列帧必须按目录聚合，不逐文件列"
+    assert "D:/p/other/one.jpg  ->  C:/pkg/tex/one.jpg" in _agg_text
+    print("package log compact plan OK")
 
     # 打包日志文本：含引用/复制计划/失败/汇总，不需要 hou/Qt
     _log_text = pkg_collect.build_package_log(
