@@ -1,7 +1,8 @@
 # Package Project（打包工程）
 
 入口：`HouTools → Package Project`（主菜单 + 网络编辑器菜单各一条）。
-代码：`houtools/package/paths.py`（纯逻辑）、`collect.py`（扫描）、`window.py`、
+代码：`houtools/package/paths.py`（纯逻辑：路径/分类/包名/默认值/场景指纹）、
+`collect.py`（扫描 + 布局 + 统计 + 日志文本）、`window.py`（界面/等待遮罩）、
 `houtools/ui/reveal.py`（资源管理器定位）、`houtools/tools/package_project.py`。
 
 ## 解决什么问题
@@ -35,7 +36,7 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
   大工程/网络盘扫描不再阻塞界面；`collect()` 是两者串联（无窗口调用）。
 - **其它输出参数**（`sopoutput` / `vm_picture` / `picture` / `outputimage`，以及
   `dcmfilename` / `productName` / `savepath` / `soho_diskfile` 这类语义输出）
-  默认**只收已落盘**的；勾「含空输出路径」才列未生成的。
+  只收**已落盘**的（未落盘输出不复制也不改写，列出来只是缺失行——「含空输出路径」勾选已移除）；。
 - **挡住非文件值**（`_looks_like_file_path`）：空值、带空白/`%`/`*` 的菜单值与
   token、无扩展名的值、节点路径（`/obj/...`）、`shfs:`/`op:` 协议路径、
   目录值、`$HIP/galleries`、`$HIP/backup`。节点路径的判定是"`/` 开头**且末段
@@ -60,33 +61,63 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
 
 ## 包目录与目标写法
 
+**按文件类型分类（2026-11-19 用户要求）**：包内不再有统一 `assets/` 层，
+顶层直接是 Houdini 官方 New Project 目录，解压后即可当工程用：
+
 ```
-<包根>/<包名>/assets/<子目录>/<文件名>
+<包根>/<包名>/<类型>/<原始目录或展平目录>/<文件名>
+类型 ∈ geo / hda / sim / abc / tex / render / flip / scripts / other
 ```
 
-- `$HIP` 内的素材保留**相对 $HIP 的目录结构**：`$HIP/geo/shot.bgeo.sc` →
-  `assets/geo/shot.bgeo.sc`（不再把整条绝对路径拍平成
-  `C_Users_..._hip_geo/`）。
-- 包外素材用展平目录（`D:\proj\tex` → `D_proj_tex`），避免同名互相覆盖。
+- `paths.category_for(path, kind)` 按扩展名 + 引用语义归类：几何 `.bgeo[.sc]`/
+  `.vdb`/`.obj`/`.usd` → `geo`；`.abc` → `abc`；`.sim` → `sim`；HDA → `hda`；
+  图片/序列按引用语义——输入贴图 → `tex`，渲染输出 → `render`；视频 → `flip`；
+  脚本 → `scripts`；其余 → `other`。`.bgeo.sc` 双扩展名整链匹配，不误判成 `.sc`。
+- `paths.category_subdir_for()` 生成 `<类型>[/<原始目录>]`：素材在 `$HIP` 内
+  保留相对目录（`$HIP/geo/shot.bgeo.sc` → `geo/shot.bgeo.sc`，类型与首段同名
+  不重复）；包外素材展平（`D:\proj\tex\x.jpg` → `tex/D_proj_tex/x.jpg`）。
+- **兼容模式**：`collect.build_layout(..., by_category=False)` 保留旧的
+  `assets/<展平目录>/` 布局供无窗口调用/测试；窗口固定用 `by_category=True`。
 - **目标唯一性**（2026-11-19 修复）：`collect.build_layout()` 统一生成
   「每条引用的改写目标 + 复制计划」。不同源目录展平后重名（如
   `D:\proj\foo\bar` 与 `D:\proj_foo\bar` 都得到 `D_proj_foo_bar`）时，后来
   的自动加 `_2/_3`，复制目标和参数改写目标共用这份映射——不会再静默覆盖。
 
-- **包根**：`$HIP`（默认）或 `$JOB`（未设置/非绝对时 UI 禁用该选项）。
-- **包名**：默认 `ht_package`，可改；**用户输入必须过 `paths.sanitize_pkg_name`**
-  （2026-11 复审补充）——包名直接进 `os.path.join(base, pkg, ...)`，不净化的话
-  `..`、含 `/` 的输入会写出包根之外，Windows 禁用符（`\ / : * ? " < > |` 与
-  控制字符）让复制/zip 直接报错。非法字符换 `_`、剥首尾点（防 `..` 与
-  Windows 尾点陷阱），空值回落默认名。
+- **包根**：`$HIP`（默认）、`$JOB`（未设置/非绝对时 UI 禁用该选项）、
+  **自定义绝对路径**（新增）。`$JOB` 若与 `$HIP` 相同/为空，点打包时会弹窗
+  提醒，用户确认后可执意打包到该默认路径（每次换包根选项只提醒一次）。
+- **包名**：默认取 **工程名 + `-pack`**（如 `shot_v001-pack`，无 hou/未保存时
+  回落 `ht_package`），可改；**用户输入必须过 `paths.sanitize_pkg_name`**——
+  包名直接进 `os.path.join(base, pkg, ...)`，不净化的话 `..`、含 `/` 的输入会
+  写出包根之外，Windows 禁用符与保留设备名让复制/zip 报错。非法字符换 `_`、
+  剥首尾点、避开 CON/NUL/COM1…，空值回落默认名。
 - **参数改写按生成方式区分**（这是最容易写错的一处）：
 
   | 生成方式 | 参数前缀 | 原因 |
   |---|---|---|
-  | 另存到包目录 | `$HIP/assets/…` | hip 存进包目录后，`$HIP` **就是包目录**；再带一层包名会多出一级目录、路径直接失效 |
-  | 覆盖当前工程 | `$HIP/<包名>/assets/…` 或 `$JOB/<包名>/assets/…` | hip 留在原地，包目录是它的子目录 |
+  | 另存到包目录 | `$HIP/<类型>/…` | hip 存进包目录后，`$HIP` **就是包目录**；再带一层包名会多出一级目录、路径直接失效 |
+  | 覆盖当前工程 | `$HIP/<包名>/<类型>/…`、`$JOB/<包名>/<类型>/…` 或 `<自定义>/<包名>/<类型>/…` | hip 留在原地，包目录是它的子目录 |
 
-  帧模板 `$F4` 原样保留；`$JOB` 未设置/非绝对时 UI 禁用该包根。
+  帧模板 `$F4` 原样保留；另存模式无论包根是哪个都写 `$HIP/…`（原因是 hip 会
+  被存进包目录，保存后 `$HIP` 即包目录）。
+
+## 打包日志（2026-11-19 新增）
+
+打包完成后（`_on_copy_done`，成功/失败都写）由 `collect.build_package_log()`
+生成纯文本明细，写入 `<包根>/<包名>/package_log.txt`（UTF-8），随包目录一起
+被 zip 归档。内容：生成时间、包目录/包名/包根前缀/生成方式、逐条引用
+（节点:参数 → 源 → 目标）、复制计划、改名说明、失败项、汇总。写日志失败只在
+结果面板记一条，不改变打包成功/失败判定。
+
+## 等待动画与场景切换（2026-11-19 新增）
+
+- 扫描的文件系统检查阶段（`_ScanWorker`，后台线程）显示 `_ScanBusyOverlay`
+  全窗口半透明遮罩 + marquee 进度条，避免"扫描中…"文字太小让人以为卡死。
+- 窗口经 window_manager 跨工程复用；`_sync_scene()` 用
+  `paths.scene_signature()` 比对场景指纹，new/open 不同工程后清空上一工程的
+  日志/扫描结果/包名复位，防止残留（用户反馈）。worker 运行中不做，避免打断。
+- 待复制文件数/体积由 `collect.selection_summary()` 按当前勾选实时重算，
+  取消勾选某项后立即减少（用户反馈该项曾不更新）。
 - `flatten_dir()` 只对包外素材使用（按源目录分文件夹，不丢可读性）。
 - filecache 改的是**目录参数** `basedir`：`$HIP/geo` → `$HIP/assets/geo`
   （另存模式）或 `$HIP/<包名>/assets/geo`（覆盖模式），
@@ -223,7 +254,10 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
 ## 测试
 
 - `tests/smoke_test.py`：`paths` 纯函数（帧模板 / needs_packaging / POSIX
-  绝对形态 / flatten_dir / 包名净化）、`target_for` 的 $HIP/$JOB 两种写法、
+  绝对形态 / flatten_dir / 包名净化）、分类 `category_for` / `_ext_chain` /
+  `category_subdir_for`、默认包名 `default_package_name`、`job_is_default`、
+  `scene_signature`、`selection_summary`（取消勾选联动）、`build_package_log`、
+  分类布局 `build_layout(by_category=True)`；`target_for` 的 $HIP/$JOB 两种写法、
   `copy_plan` 去重、`_is_noise` 节点路径 vs POSIX 文件、菜单接线、窗口可
   实例化（htWindow / is_close_deferred / worker 可构造）、`reveal` 缺失路径
   必须抛 OSError；另跑 `test_theme_tokens.py`（窗口不得写裸 hex）。
@@ -308,3 +342,81 @@ AttributeError，重包后 `setSectionResizeMode` 恢复可用。
 H22 短路零开销、重包分支指针传递，以及窗口实例化后列 0 Fixed/34px、
 列 4 Stretch 确实生效。H21 6.5.3 端到端实测窗口构造通过
 （`col0=Fixed / col4=Stretch / width0=34`）。
+## 2026-11-19 接手审查（ZCode，b7dda05 复核）
+
+WorkBuddy 的「类型分类 + 8 项体验改进」提交整体复核通过：
+
+- refs/targets 索引对齐正确（`_on_package` 里 `targets = [all_targets[i] for i in selected]`
+  与所选 refs 一一对应，日志逐条目标不串行）；
+- `package_log.txt` 在 `_on_copy_done` 落盘，zip 是独立按钮、走
+  `_pack_session` 校验，日志必然先于归档写入、随 zip 带走；
+- 分类去重（raw 首段 == category 不重复前缀）、UDIM 与 `$F` 混合模板拒绝、
+  `selection_summary` normcase 匹配等均与既有回归断言一致。
+
+**修正一处**：打包确认弹窗此前对覆盖模式 + 自定义包根也说「改写为相对路径」，
+实际该组合只能写绝对路径（不随包移植）——现按 生成方式 × 包根 区分措辞
+（另存 / $HIP / $JOB → 相对路径；覆盖 + 自定义 → 绝对路径并注明不移植）。
+
+## 2026-11-20 用户实测反馈（H22 真机，pkg-enh 首轮）
+
+### ① `$HIP/...` 正斜杠序列全部误判「缺失」（高，已修）
+
+**现象**：karma `picture` = `$HIP/render/thrusterfx/thrusterfx.$F4.exr`，磁盘
+18 帧都在，扫描却标缺失（旧截图里同参数还只显示过 1 帧）。
+
+**根因**：`$HIP` 展开成 `D:/...` **正斜杠**，Windows 上 `glob.glob` 返回的
+最后一层分隔符是 **反斜杠**（`os.path.join` 拼 basename 所致）——
+`_digit_files`/`_udim_files` 的严格正则按原样用 prefix 拼，混合分隔符
+一条都不中 → files 空 → `Ref.missing`。filecache 没中招是因为 basedir
+过了 `os.path.normpath`（统一反斜杠）。冒烟此前全用 `os.path.join`
+（反斜杠）造数据，测不出正斜杠形态。
+
+**修复**：`collect._norm_slash()` 把 pattern 与 glob 结果统一成正斜杠再
+匹配；`_digit_files`、`_udim_files`（UDIM + 正斜杠参数同样会 0 Tile）
+都走它。hython 对真实工程复现：修复前 0 帧，修复后 18 帧。
+冒烟新增「mixed separator glob」组（正斜杠 prefix + 磁盘反斜杠文件）。
+
+### ② 打包日志瘦身（复制计划按目录聚合）
+
+`collect.compact_copy_plan(plan)`：同一对（源目录 → 目标目录）的搬运合并
+成一行 + 文件数（`D:\...\v1 -> <包>\geo\pyro_thruster_plasma\v1（50 个文件）`），
+散文件保持逐条；`build_package_log` 的复制计划段改用它。150 帧序列不再
+刷几百行。纯函数，冒烟断言「序列帧不逐文件列」。
+
+### ③ 表格字号可调（Ctrl+滚轮；右键菜单按用户要求已去掉）
+
+- **Ctrl+滚轮** 在表格上缩放字号（7–24pt 夹紧），行高
+  `resizeRowsToContents()` 跟随；`_fill_table` 末尾也调一次，重扫后
+  新行保持当前字号。
+- 右键「表格字号」菜单 2026-11-20 按用户要求移除——缩放只留 Ctrl+滚轮，
+  右键恢复只有「跳转节点 / 打开原路径」两项。
+- 基线字号 `_table_default_pt` 在 tool_fonts.apply 之后取一次；只影响
+  本窗口会话，不持久化（窗口复用重建即回默认）。
+
+### ④ 列宽直接拖动（2026-11-20 用户要求）
+
+- 数据列（节点/参数/原路径/目标/状态）全部 `Interactive`——之前
+  `ResizeToContents`/`Stretch` 模式 Qt 不响应拖动，用户拖不动；勾选列
+  仍 `Fixed` 34px；`setStretchLastSection(True)` 让状态列吸收余宽，
+  其余列宽保持用户拖过的值。
+- 初始宽度 200/90/300/300，用户可自行调整；冒烟断言已同步
+  （6 列、0=Fixed/34px、1–5=Interactive、stretchLastSection、col4=300）。
+
+### ⑤ 「含空输出路径」勾选移除（2026-11-20 用户拍板）
+
+- 未落盘的输出既不会被复制也不会被改写（缺失引用打包时跳过），勾了
+  只多一行「缺失」、无可操作价值——移除，扫描固定只收已落盘输出。
+- `collect.gather/resolve/_ScanWorker` 的 `include_output` 参数保留
+  （无窗口调用/测试用），窗口固定传 False；跳过统计 not_written
+  照常记，结果面板仍会显示「未落盘输出 N 个」。
+
+### ⑥ 「类型」列并入「状态」列（2026-11-20 用户拍板）
+
+- 表格 7 列 → 6 列：`_COL_KIND` 删除、后续列号前移（节点/参数/原路径/
+  目标/状态），`Ref.label` 属性保留（日志/调试用）但表格不再展示。
+- 合并后的状态文案吸收两列信息：缺失 → 「缓存缺失/引用缺失」（kind
+  前缀保留）；filecache → 「缓存目录 · N 帧」；UDIM → 「`$HIP` 内|包外 ·
+  UDIM N 块」（此前状态列把 UDIM 误写成「序列 N 帧」，顺手修正）；
+  序列 → 「`$HIP` 内|包外 · 序列 N 帧」；散文件 → 「`$HIP` 内|包外 ·
+  N 个文件」。
+- 行色逻辑不变：缺失红、缓存目录全亮、`$HIP` 内弱化（TEXT_3）。

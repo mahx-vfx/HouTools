@@ -30,12 +30,13 @@ import os
 import shutil
 import zipfile
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QEvent, QThread, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMenu, QPlainTextEdit, QPushButton,
-    QRadioButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QMenu, QPlainTextEdit, QProgressBar,
+    QPushButton, QRadioButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from houtools.package import collect, paths
@@ -50,12 +51,13 @@ from houtools.ui import (
 TOOL_ID = "package_project"
 
 _COL_CHECK = 0
-_COL_KIND = 1
-_COL_NODE = 2
-_COL_PARM = 3
-_COL_SRC = 4
-_COL_DST = 5
-_COL_STATE = 6
+_COL_NODE = 1
+_COL_PARM = 2
+_COL_SRC = 3
+_COL_DST = 4
+_COL_STATE = 5
+# 类型列已并入状态列（2026-11-20 用户拍板：两列信息重复——
+# 「缓存（序列 50 帧）」vs「缓存目录 · 50 帧」），表格 7 列 → 6 列。
 
 # 扫描排除原因 → 展示文案（collect.collect 返回的统计键）
 _SKIP_LABELS = {
@@ -115,6 +117,74 @@ def _repolish(widget):
 
 class _Cancelled(Exception):
     """_ZipWorker 的协作式取消信号（zip 写到一半，只在文件边界抛）。"""
+
+
+def _scrim_color():
+    """半透明遮罩底色：来自 token，仅设 alpha（不引入裸 hex）。"""
+    color = QColor(theme.color("INK_950"))
+    color.setAlpha(205)
+    return color
+
+
+# 扫描等待遮罩的样式（token 化，无裸 hex）：半透明盖住整个窗口，中央一条
+# marquee 进度条 + 提示，避免"扫描中…"文字太小让人以为卡死（用户反馈）。
+_scrim = _scrim_color()
+_BUSY_STYLE = """
+QWidget#htScanBusy {{
+    background-color: rgba({r}, {g}, {b}, {a});
+}}
+QLabel#htScanBusyLabel {{
+    color: {TEXT};
+    font-size: 13px;
+}}
+QProgressBar#htScanBusyBar {{
+    min-height: 8px;
+    max-height: 8px;
+    border: none;
+    background-color: {INK_800};
+}}
+""".format(r=_scrim.red(), g=_scrim.green(), b=_scrim.blue(),
+           a=_scrim.alpha(), **theme.TOKENS)
+
+
+class _ScanBusyOverlay(QWidget):
+    """覆盖整个窗口的扫描等待遮罩：半透明底 + 滚动条 + 提示文字。
+
+    挂在窗口上、随窗口尺寸变化；只在扫描阶段显示，扫描结束（完成/失败/
+    取消）即隐藏。鼠标事件被遮罩吞掉，避免扫描中误触底部控件。
+    """
+
+    def __init__(self, host):
+        super().__init__(host)
+        self.setObjectName("htScanBusy")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(_BUSY_STYLE)
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setContentsMargins(0, 0, 0, 120)
+        label = QLabel("正在扫描场景文件引用，请稍候…")
+        label.setObjectName("htScanBusyLabel")
+        label.setAlignment(Qt.AlignCenter)
+        bar = QProgressBar(self)
+        bar.setObjectName("htScanBusyBar")
+        bar.setRange(0, 0)          # 0/0 = indeterminate marquee 动画
+        bar.setTextVisible(False)
+        bar.setFixedWidth(360)
+        layout.addStretch(1)
+        layout.addWidget(label)
+        layout.addSpacing(14)
+        layout.addWidget(bar, 0, Qt.AlignCenter)
+        layout.addStretch(1)
+        self.hide()
+
+    def show_over(self):
+        self.setGeometry(0, 0, self.parentWidget().width(),
+                         self.parentWidget().height())
+        self.raise_()
+        self.show()
+
+    def hide_over(self):
+        self.hide()
 
 
 # 运行中的复制/压缩 worker 的进程级保留引用。必须活过 Reload：关闭路径
@@ -309,14 +379,77 @@ class PackageProjectWindow(QDialog):
         # 线程退出后再真正 close + 自删（见 is_close_deferred/closeEvent）
         self._pending_close = False
         self._close_poll = None
+        # 场景指纹：new/open 工程后窗口复用，指纹变化时清空上一工程残留
+        self._scene_sig = None
 
         self._build_ui()
         self.setStyleSheet(STYLE_SHEET)
         tool_fonts.apply(self)
         taskbar.apply_appwindow_flags(self)
+        # 表格字号缩放基线（2026-11-20 用户要求：长列表可放大缩小查看）
+        self._table_default_pt = self._table.font().pointSize() or 9
+        self._scan_busy = _ScanBusyOverlay(self)   # 扫描等待遮罩（最后加，置顶）
+        self._set_default_package_name()
         self._set_hint("点「扫描」收集当前工程用到的文件。")
         self._set_status("—")
         self._log("等待扫描…")
+
+    def _current_scene_sig(self):
+        """当前场景指纹（未保存 / hip 路径）——new/open 后用于清空残留。"""
+        import hou
+        try:
+            is_new = bool(hou.hipFile.isNewFile())
+            path = "" if is_new else hou.hipFile.path()
+        except Exception:
+            is_new, path = True, ""
+        return paths.scene_signature(path, is_new)
+
+    def _sync_scene(self):
+        """场景切换检测：new/open 工程后清空上一工程的日志与扫描结果。
+
+        window_manager 让工具窗口跨工程复用；若不清理，用户 new 一个新工程
+        后仍看到上一工程的日志与引用列表（用户反馈）。这里在扫描前与显示时
+        比对指纹，变化则整体复位。worker 运行中不做，避免打断在跑的打包。
+        """
+        if self._active_worker() is not None:
+            return
+        sig = self._current_scene_sig()
+        if self._scene_sig is None:
+            self._scene_sig = sig
+            return
+        if sig == self._scene_sig:
+            return
+        self._scene_sig = sig
+        self._refs = []
+        self._targets = []
+        self._plan = {}
+        self._layout_notes = []
+        self._conflicts = []
+        self._checked = set()
+        self._pack_session = None
+        self._set_default_package_name()
+        self._log_view.clear()
+        self._set_hint("已切换工程：点「扫描」收集当前工程用到的文件。")
+        self._set_status("—")
+        self._log("已切换工程，等待扫描…")
+
+    def _set_default_package_name(self, force=False):
+        """包名默认取「工程名-pack」（用户要求）；已手改则不覆盖，除非 force。
+
+        无 hou 环境（冒烟测试）回落默认包名，不 import 失败。
+        """
+        current = self._pkg_edit.text().strip() if hasattr(self, "_pkg_edit") else ""
+        default_like = current in (paths.PACKAGE_DIR, "") or current.endswith("-pack")
+        if not force and current and not default_like:
+            return
+        hip_path = ""
+        try:
+            import hou
+            if not hou.hipFile.isNewFile():
+                hip_path = hou.hipFile.path()
+        except Exception:
+            pass
+        self._pkg_edit.setText(paths.default_package_name(hip_path))
 
     # ------------------------------------------------------------------
     def _build_ui(self):
@@ -330,10 +463,24 @@ class PackageProjectWindow(QDialog):
         self._root_combo = QComboBox()
         self._root_combo.addItem("$HIP", "HIP")
         self._root_combo.addItem("$JOB", "JOB")
+        self._root_combo.addItem("自定义路径", "CUSTOM")
         self._root_combo.setToolTip(
-            "$HIP = 工程目录；$JOB = 项目根（需在 houdini.env / 环境变量里设置）")
-        self._root_combo.currentIndexChanged.connect(self._on_targets_changed)
+            "$HIP = 工程目录；$JOB = 项目根；自定义路径 = 任意绝对目录"
+            "（包将写到该目录下）")
+        self._root_combo.currentIndexChanged.connect(self._on_root_changed)
         top.addWidget(self._root_combo)
+        # 自定义路径输入（选中"自定义路径"时启用）
+        self._custom_root_edit = QLineEdit()
+        self._custom_root_edit.setPlaceholderText("输入绝对目录，如 D:/projects/packs")
+        self._custom_root_edit.setMinimumWidth(220)
+        self._custom_root_edit.setEnabled(False)
+        self._custom_root_edit.textChanged.connect(self._on_targets_changed)
+        top.addWidget(self._custom_root_edit)
+        self._custom_root_btn = QPushButton("浏览…")
+        self._custom_root_btn.setEnabled(False)
+        self._custom_root_btn.setToolTip("选择一个已存在的绝对目录作为包根")
+        self._custom_root_btn.clicked.connect(self._on_browse_root)
+        top.addWidget(self._custom_root_btn)
         top.addSpacing(12)
         top.addWidget(QLabel("包名"))
         self._pkg_edit = QLineEdit(paths.PACKAGE_DIR)
@@ -341,12 +488,6 @@ class PackageProjectWindow(QDialog):
         self._pkg_edit.textChanged.connect(self._on_targets_changed)
         top.addWidget(self._pkg_edit)
         top.addStretch()
-        self._include_output_check = QCheckBox("含空输出路径")
-        self._include_output_check.setToolTip(
-            "默认只收磁盘上已有文件的输出（filecache 的 geo 缓存这类）；"
-            "勾上才把还没落盘的输出参数也列出来")
-        self._include_output_check.toggled.connect(self._on_scan)
-        top.addWidget(self._include_output_check)
         top.addSpacing(8)
         self._scan_btn = QPushButton("扫描")
         self._scan_btn.setToolTip("收集用户手动填过的文件引用与已落盘的缓存，"
@@ -375,9 +516,9 @@ class PackageProjectWindow(QDialog):
         layout.addLayout(mode_row)
 
         # 预览表
-        self._table = QTableWidget(0, 7, self)
+        self._table = QTableWidget(0, 6, self)
         self._table.setHorizontalHeaderLabels(
-            ["", "类型", "节点", "参数", "原路径", "目标", "状态"])
+            ["", "节点", "参数", "原路径", "目标", "状态"])
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -386,19 +527,27 @@ class PackageProjectWindow(QDialog):
         self._table.setContextMenuPolicy(Qt.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._on_context_menu)
         self._table.doubleClicked.connect(self._on_row_activated)
-        self._table.setToolTip("双击跳转到节点；右键可打开原路径 / 复制路径")
+        # Ctrl+滚轮缩放表格字号（长分类/长路径看不清时放大，见 eventFilter）
+        self._table.viewport().installEventFilter(self)
+        # tooltip 只挂在具体单元项上（见 _fill_table）：鼠标停在打包项上才
+        # 弹出操作说明，停在表格空白区域不再弹（用户反馈）。
         # H21 / PySide6 6.5 会把表头指针粘连成 QAbstractScrollArea 包装，
         # 取派生 API 前按 C++ 指针重包（见 ui/qtcompat）。重包失败也要
         # 保住窗口可用：只是少几列自适应策略，不能让整个工具打不开。
         header = qtcompat.rewrap(self._table.horizontalHeader(), QHeaderView)
         self._table.setColumnWidth(_COL_CHECK, 34)
+        # 全部数据列 Interactive：鼠标拖列边界直接调宽（2026-11-20 用户要求）。
+        # ResizeToContents / Stretch 模式 Qt 不响应拖动，之前拖不动就是它们。
+        # 勾选列保持固定 34px；末列吸收余宽，其余列宽保持用户拖过的值。
         if hasattr(header, "setSectionResizeMode"):
             header.setSectionResizeMode(_COL_CHECK, QHeaderView.Fixed)
-            for column in (_COL_KIND, _COL_NODE, _COL_PARM, _COL_STATE):
-                header.setSectionResizeMode(column,
-                                            QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(_COL_SRC, QHeaderView.Stretch)
-            header.setSectionResizeMode(_COL_DST, QHeaderView.Stretch)
+            for column in (_COL_NODE, _COL_PARM,
+                           _COL_SRC, _COL_DST, _COL_STATE):
+                header.setSectionResizeMode(column, QHeaderView.Interactive)
+            header.setStretchLastSection(True)
+        for column, width in ((_COL_NODE, 200), (_COL_PARM, 90),
+                              (_COL_SRC, 300), (_COL_DST, 300)):
+            self._table.setColumnWidth(column, width)
         layout.addWidget(self._table, 1)
 
         self._hint_label = QLabel("")
@@ -458,9 +607,32 @@ class PackageProjectWindow(QDialog):
         # 防 ".." 穿越），否则会写出包根之外（见 paths.sanitize_pkg_name）
         return paths.sanitize_pkg_name(self._pkg_edit.text())
 
+    def _on_root_changed(self, *_args):
+        """切换包根选项：仅"自定义路径"时启用输入框/浏览按钮。"""
+        custom = self._root_var() == "CUSTOM"
+        self._custom_root_edit.setEnabled(custom)
+        self._custom_root_btn.setEnabled(custom)
+        self._job_warned = False    # 换包根选项后可重新提醒一次
+        self._on_targets_changed()
+
+    def _on_browse_root(self):
+        start = self._custom_root_edit.text().strip() or os.path.expanduser("~")
+        folder = QFileDialog.getExistingDirectory(
+            self, "选择包根目录", start, QFileDialog.Option.ShowDirsOnly)
+        if folder:
+            self._custom_root_edit.setText(os.path.normpath(folder))
+
+    def _custom_root_value(self):
+        value = self._custom_root_edit.text().strip().strip('"')
+        if len(value) > 1 and value[0] == '"' and value[-1] == '"':
+            value = value[1:-1].strip()
+        return value
+
     def _root_var_value(self):
         """（变量名, 展开值）——给界面与错误提示用，不做可用性判断。"""
         import hou
+        if self._root_var() == "CUSTOM":
+            return "自定义路径", self._custom_root_value()
         name = "$" + self._root_var()
         value = hou.text.expandString(name).strip()
         if len(value) > 1 and value[0] == '"' and value[-1] == '"':
@@ -468,9 +640,10 @@ class PackageProjectWindow(QDialog):
         return name, value
 
     def _base_dir(self):
-        """包根目录的绝对路径；$JOB 未设置/不可用时返回空串。"""
+        """包根目录的绝对路径；$JOB 未设置/自定义路径非法时返回空串。"""
         name, value = self._root_var_value()
-        if not value or value == name or not os.path.isabs(value):
+        if not value or (self._root_var() != "CUSTOM" and value == name) \
+                or not os.path.isabs(value):
             return ""
         return os.path.normpath(value.rstrip("\\/"))
 
@@ -503,6 +676,32 @@ class PackageProjectWindow(QDialog):
             value = value[1:-1].strip()
         return value
 
+    def _warn_job_if_default(self):
+        """第 3 项：$JOB 处于默认值时弹窗提醒，用户仍可执意打包到默认路径。
+
+        只在用户确实选了 $JOB 作包根时提醒；每次勾选后只提醒一次（避免反复
+        弹窗骚扰）。返回 True 表示可以继续，False 表示用户想改用 $HIP。
+        """
+        if self._root_var() != "JOB":
+            return True
+        if getattr(self, "_job_warned", False):
+            return True
+        job = self._job_value()
+        hip = ""
+        import hou
+        try:
+            hip = hou.text.expandString("$HIP").strip().strip('"')
+        except Exception:
+            pass
+        if not paths.job_is_default(job, hip):
+            return True
+        self._job_warned = True
+        text = ("检测到 $JOB 处于默认值（$JOB = {}）。\n"
+                "打包到默认路径可能导致工程结构不符合预期，建议先设置 $JOB\n"
+                "或改用「自定义路径」。\n\n"
+                "仍要打包到该默认路径吗？").format(job or "（空）")
+        return dialogs.question(self, "$JOB 未正确设置", text)
+
     # ------------------------------------------------------------------
     def _set_hint(self, text, error=False):
         self._hint_label.setText(text)
@@ -526,6 +725,7 @@ class PackageProjectWindow(QDialog):
 
         if self._active_worker() is not None:
             return
+        self._sync_scene()
         if hou.hipFile.isNewFile():
             self._set_hint("工程还没保存：先保存 hip，$HIP 才有确定的目录。",
                            error=True)
@@ -534,7 +734,11 @@ class PackageProjectWindow(QDialog):
         self._check_job()
         self._hip_dir = os.path.normpath(hou.text.expandString("$HIP"))
         self._drop_stale_session()
-        include_output = self._include_output_check.isChecked()
+        # 「含空输出路径」勾选已移除（2026-11-20 用户拍板）：未落盘的输出
+        # 既不会被复制也不会被改写，列出来只是一行缺失、无可操作价值。
+        # 扫描固定只收已落盘输出；collect 的 include_output 参数保留给
+        # 无窗口调用/测试。
+        include_output = False
         try:
             candidates, skip_stats = collect.gather(self._hip_dir, include_output)
         except Exception as exc:                  # HOM 读取失败直接报
@@ -544,6 +748,10 @@ class PackageProjectWindow(QDialog):
         self._pending_skip_stats = skip_stats
         self._set_busy(True)
         self._set_status("扫描中…")
+        # 第 8 项：全窗口等待遮罩（marquee 进度条），文件检查在后台线程，
+        # 主线程事件循环空闲，动画正常滚动，用户不会误以为卡死。
+        self._scan_busy.show_over()
+        QApplication.processEvents()
         worker = _ScanWorker(candidates, self._hip_dir, include_output)
         worker.done.connect(self._on_scan_done)
         self._retire_worker(worker)
@@ -553,6 +761,7 @@ class PackageProjectWindow(QDialog):
     def _on_scan_done(self, refs, skip_stats):
         worker = self._scan_worker
         self._scan_worker = None
+        self._scan_busy.hide_over()
         self._set_busy(False)
         pending = getattr(self, "_pending_skip_stats", {}) or {}
         self._pending_skip_stats = {}
@@ -591,10 +800,8 @@ class PackageProjectWindow(QDialog):
                       "（只收用户填过的文件引用与已落盘的缓存）")
             return
         missing = [ref for ref in self._refs if ref.missing]
-        mode_text = "输入 + 输出" if self._include_output_check.isChecked() \
-            else "输入 + 已落盘输出"
-        self._log("[{}] 扫描到 {} 个引用（{}），{} 个文件".format(
-            "失败" if missing else "完成", len(self._refs), mode_text,
+        self._log("[{}] 扫描到 {} 个引用（输入 + 已落盘输出），{} 个文件".format(
+            "失败" if missing else "完成", len(self._refs),
             sum(len(ref.files) for ref in self._refs)))
         for ref in missing:
             self._log("[失败] 缺失 {}:{} → {}（手动引用了但文件不存在，"
@@ -619,14 +826,20 @@ class PackageProjectWindow(QDialog):
         if self._save_copy_radio.isChecked():
             # hip 会存进包目录：保存后 $HIP 就是包目录，不能再带包名
             return "$HIP"
-        return "${}/{}".format(self._root_var(), self._pkg_name())
+        root = self._root_var()
+        if root == "CUSTOM":
+            base = self._base_dir()
+            return "{}/{}".format(base, self._pkg_name()) if base \
+                else "<自定义路径>/{}".format(self._pkg_name())
+        return "${}/{}".format(root, self._pkg_name())
 
     def _refresh_targets(self):
         prefix = self._target_prefix()
         base = self._base_dir()
         self._targets, self._plan, self._layout_notes, self._conflicts = \
             collect.build_layout(
-                self._refs, prefix, base, self._pkg_name(), self._hip_dir)
+                self._refs, prefix, base, self._pkg_name(), self._hip_dir,
+                by_category=True)
         self._fill_table()
 
     def _fill_table(self):
@@ -640,13 +853,17 @@ class PackageProjectWindow(QDialog):
             check.setCheckState(
                 Qt.Checked if row in self._checked else Qt.Unchecked)
             if ref.missing:
-                state_text = "缺失"
+                # 类型列并入状态列后，缺失行保留 缓存/引用 前缀（kind 信息）
+                state_text = "{}缺失".format(
+                    "缓存" if ref.kind == "output" else "引用")
                 color = QColor(theme.color("ERROR_TEXT"))
             elif ref.rewrite_dir:
                 state_text = "缓存目录 · {} 帧".format(len(ref.files))
                 color = QColor(theme.color("TEXT"))
             else:
-                if ref.is_sequence:
+                if ref.token == paths.UDIM_TOKEN:
+                    source_text = "UDIM {} 块".format(len(ref.files))
+                elif ref.is_sequence:
                     source_text = "序列 {} 帧".format(len(ref.files))
                 else:
                     source_text = "{} 个文件".format(len(ref.files))
@@ -655,7 +872,6 @@ class PackageProjectWindow(QDialog):
                 color = QColor(theme.color("TEXT_3" if ref.in_hip else "TEXT"))
             cells = [
                 check,
-                QTableWidgetItem(ref.label),
                 QTableWidgetItem(ref.node_path),
                 QTableWidgetItem(ref.parm_name),
                 QTableWidgetItem(ref.raw),
@@ -666,8 +882,13 @@ class PackageProjectWindow(QDialog):
             for cell in cells[1:]:
                 cell.setForeground(color)
             for column, cell in enumerate(cells):
+                # tooltip 按单元项挂载，只在悬停打包项时显示（用户反馈：
+                # 表格级 tooltip 会在空白区域也弹，干扰视线）
+                cell.setToolTip("双击跳转到节点；右键可打开原路径")
                 self._table.setItem(row, column, cell)
         self._table.setUpdatesEnabled(True)
+        # 行高跟随当前字号（缩放后重扫的场景行数会变，新行也要套用）
+        self._table.resizeRowsToContents()
         self._filling = False
 
     def _on_item_changed(self, item):
@@ -698,23 +919,14 @@ class PackageProjectWindow(QDialog):
 
     def _update_status(self):
         refs = self._selected_refs()
-        plan = {}
-        for index, ref in enumerate(self._refs):
-            if index not in self._checked:
-                continue
-            for source in ref.files:
-                target = self._plan.get(source)
-                if target:
-                    plan[source] = target
-        total_size = 0
-        for path in plan:
-            try:
-                total_size += os.path.getsize(path)
-            except OSError:
-                pass
+        # 用纯函数按当前勾选重算：取消勾选某项后，它的文件立刻从"待复制
+        # 文件数/体积"里消失（用户反馈该项曾不更新）。plan 的键可能与
+        # ref.files 大小写/分隔符不同，用 normcase 匹配兜底。
+        count, total_size = collect.selection_summary(
+            self._refs, self._checked, self._plan)
         parts = ["共 {} 个引用".format(len(self._refs)),
                  "选中 {}".format(len(refs)),
-                 "待复制 {} 个文件（{}）".format(len(plan),
+                 "待复制 {} 个文件（{}）".format(count,
                                                 paths.human_size(total_size))]
         if self._layout_notes:
             parts.append("重名已改名 {} 处".format(len(self._layout_notes)))
@@ -753,6 +965,35 @@ class PackageProjectWindow(QDialog):
         menu.addAction("在资源管理器中打开原路径",
                        lambda: self._reveal_source(ref))
         menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    # ---- 表格字号缩放（Ctrl+滚轮，仅本窗口会话内生效） ----
+    _FONT_MIN_PT = 7
+    _FONT_MAX_PT = 24
+
+    def _table_pt(self):
+        """当前表格字号（字体对象是唯一事实源，不另设缓存）。"""
+        pt = self._table.font().pointSize()
+        return pt if pt > 0 else self._table_default_pt
+
+    def _set_table_pt(self, pt):
+        pt = max(self._FONT_MIN_PT, min(self._FONT_MAX_PT, int(pt)))
+        if pt == self._table.font().pointSize():
+            return
+        font = self._table.font()
+        font.setPointSize(pt)
+        self._table.setFont(font)
+        self._table.resizeRowsToContents()
+        self._set_hint("表格字号：{}pt（7–24，Ctrl+滚轮或右键调整）".format(pt))
+
+    def eventFilter(self, obj, event):  # noqa: N802 — Qt 命名约定
+        if obj is self._table.viewport() and event.type() == QEvent.Wheel \
+                and event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta:
+                self._set_table_pt(self._table_pt() +
+                                   (1 if delta > 0 else -1))
+            return True
+        return super().eventFilter(obj, event)
 
     def _jump_to_node(self, ref):
         from houtools.ui import networknav
@@ -800,14 +1041,18 @@ class PackageProjectWindow(QDialog):
         if hou.hipFile.isNewFile() and self._overwrite_radio.isChecked():
             self._set_hint("工程还没保存，无法「覆盖当前工程」。", error=True)
             return
+        # 第 3 项：选中 $JOB 且处于默认值时提醒，用户可执意继续
+        if not self._warn_job_if_default():
+            self._root_combo.setCurrentIndex(0)   # 用户选择改用 $HIP
+            return
         pkg = self._pkg_name()
         root = self._root_var()
         package_dir = paths.package_dir_abs(base, pkg)
         prefix = self._target_prefix()
-        # 复用扫描时算定的"目标唯一"布局；包根/包名变化后按当前值重算，
-        # 保证复制目标与参数改写目标来自同一份映射（报告 P1-01）
+        # 复用扫描时算定的"目标唯一 + 类型分类"布局；包根/包名变化后按当前值
+        # 重算，保证复制目标与参数改写目标来自同一份映射（报告 P1-01）
         all_targets, all_plan, _notes, conflicts = collect.build_layout(
-            self._refs, prefix, base, pkg, self._hip_dir)
+            self._refs, prefix, base, pkg, self._hip_dir, by_category=True)
         if conflicts:
             self._log_view.clear()
             self._log("[失败] 打包布局有冲突，已中止（未复制/改写任何文件）：")
@@ -826,13 +1071,24 @@ class PackageProjectWindow(QDialog):
             for source in ref.files:
                 if source in all_plan:
                     plan[source] = all_plan[source]
+        mode_text = ("另存到包目录（原工程不动）" if self._save_copy_radio.isChecked()
+                     else "覆盖当前工程")
+        root_label = {"HIP": "$HIP", "JOB": "$JOB"}.get(root, base)
+        # 另存模式前缀固定 $HIP、覆盖模式 $HIP/$JOB 是变量写法，都随包可移植；
+        # 覆盖模式 + 自定义包根只能写绝对路径——明确告诉用户不随包移植，
+        # 不再一律说"相对路径"误导（2026-11-19 接手审查发现）。
+        if self._save_copy_radio.isChecked() or root != "CUSTOM":
+            path_text = "改写 {} 个参数为 {} 下的相对路径".format(
+                len(refs), root_label)
+        else:
+            path_text = "改写 {} 个参数为绝对路径（{} 下，不随包移植）".format(
+                len(refs), root_label)
         if not dialogs.question(
                 self, "打包工程",
-                "将把 {} 个文件复制到\n{}\n\n并把 {} 个参数改写成 ${} 相对路径。\n"
+                "将把 {} 个文件复制到\n{}\n\n并按文件类型归入官方工程目录"
+                "（geo/tex/render/…），{}。\n"
                 "生成方式：{}".format(
-                    len(plan), package_dir, len(refs), root,
-                    "另存到包目录（原工程不动）" if self._save_copy_radio.isChecked()
-                    else "覆盖当前工程")):
+                    len(plan), package_dir, path_text, mode_text)):
             return
 
         self._log_view.clear()
@@ -852,7 +1108,9 @@ class PackageProjectWindow(QDialog):
                            "missing": missing, "total": len(plan),
                            "base": base, "pkg": pkg,
                            "package_dir": package_dir,
-                           "source_hip": source_hip}
+                           "source_hip": source_hip,
+                           "mode_text": mode_text, "prefix": prefix,
+                           "plan": dict(plan), "notes": list(_notes)}
         worker = _CopyWorker(plan)
         worker.progress.connect(self._on_copy_progress)
         worker.done.connect(self._on_copy_done)
@@ -924,6 +1182,39 @@ class PackageProjectWindow(QDialog):
             notify.error("打包有失败项：" + summary)
         self._update_status()
         self._set_hint(summary + " · 详见下方执行结果")
+        # 第 2 项：把本次打包明细写成日志文件放进包目录（随包一起交付）
+        all_failures = (["复制 {}：{}".format(s, r) for s, r in failures]
+                        + ["改写 " + t for t in rewrite_failures])
+        if save_error:
+            all_failures.append("保存工程：" + save_error)
+        self._write_package_log(ctx, refs, targets, summary, all_failures)
+
+    def _write_package_log(self, ctx, refs, targets, summary, failures):
+        """把打包明细写到包目录内的 package_log.txt（失败不影响打包结果）。
+
+        日志随包目录一起存在，zip 生成时会被一并归档；写入失败只在结果面板
+        记一条，不改变打包成功/失败的判定。
+        """
+        package_dir = ctx.get("package_dir", "")
+        if not package_dir or not os.path.isdir(package_dir):
+            return
+        try:
+            from datetime import datetime
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            text = collect.build_package_log(
+                refs=refs, plan=ctx.get("plan", {}), targets=targets,
+                stats="[{}] {}".format("完成" if self._pack_session else "失败",
+                                       summary),
+                package_dir=package_dir, package_name=ctx.get("pkg", ""),
+                mode_text=ctx.get("mode_text", ""), prefix=ctx.get("prefix", ""),
+                failures=failures, notes=ctx.get("notes", []))
+            text = stamp + " 生成\n" + text
+            log_path = os.path.join(package_dir, "package_log.txt")
+            with open(log_path, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            self._log("[信息] 打包日志已写入：{}".format(log_path))
+        except OSError as exc:
+            self._log("[失败] 写打包日志失败：{}".format(exc))
 
     def _rewrite_parms(self, refs, targets, failed_sources):
         import hou
@@ -1044,8 +1335,7 @@ class PackageProjectWindow(QDialog):
         for widget in (self._scan_btn, self._apply_btn, self._zip_btn,
                        self._select_all_btn, self._clear_btn, self._table,
                        self._root_combo, self._pkg_edit,
-                       self._include_output_check, self._save_copy_radio,
-                       self._overwrite_radio):
+                       self._save_copy_radio, self._overwrite_radio):
             widget.setEnabled(not busy)
 
     def _active_worker(self):
@@ -1081,6 +1371,13 @@ class PackageProjectWindow(QDialog):
             return True
         return self._active_worker() is not None
 
+    def resizeEvent(self, event):  # noqa: N802 — Qt 命名约定
+        # 等待遮罩覆盖整个窗口：窗口缩放时同步尺寸
+        overlay = getattr(self, "_scan_busy", None)
+        if overlay is not None and not overlay.isHidden():
+            overlay.setGeometry(0, 0, self.width(), self.height())
+        super().resizeEvent(event)
+
     def showEvent(self, event):  # noqa: N802 — Qt 命名约定
         # 重开窗口即撤销"取消并关闭"的决定（取消已在进入 pending 时请求）：
         # 清推迟标记、停轮询，窗口保持打开（同 videoseq 语义）
@@ -1088,6 +1385,7 @@ class PackageProjectWindow(QDialog):
             self._pending_close = False
             if self._close_poll is not None:
                 self._close_poll.stop()
+        self._sync_scene()
         super().showEvent(event)
 
     def closeEvent(self, event):  # noqa: N802 — Qt 命名约定

@@ -5,8 +5,12 @@
 - 判断哪些路径需要"搬进 $HIP"（只有绝对路径需要，`$HIP/...` 与相对路径已经
   可移植；绝对判定兼容 POSIX 形态——``/proj/...`` 在 Windows 上
   ``os.path.isabs`` 返 False、Houdini 视为绝对，同 filecache_abs_path._is_abs）；
-- 生成包内目标路径（``$HIP/ht_package/<展平目录>/<文件名>``）；
-- 包名净化（用户输入直接进 os.path.join，必须收敛）、zip 路径、可读大小。
+- 生成包内目标路径，并按**文件类型**归入 Houdini 官方 New Project 目录
+  （``geo / hda / sim / abc / tex / render / flip / scripts``）；
+- 包名净化（用户输入直接进 os.path.join，必须收敛）、默认包名、$JOB 默认值
+  检测、场景切换检测、可读大小。
+
+本模块不 import hou / PySide6，全部纯函数，可直接无头测试。
 """
 
 from __future__ import annotations
@@ -25,8 +29,37 @@ MARKER = "__HTFRAME__"
 # 包目录名（默认；UI 可改）
 PACKAGE_DIR = "ht_package"
 
-# 包内素材子目录
+# 包内素材子目录（兼容旧调用：target_for/copy_plan 仍保留 assets 前缀语义；
+# 新的窗口打包走 build_layout，按文件类型分到下面的官方目录）
 PACKAGE_ASSETS = "assets"
+
+# Houdini 官方 New Project 默认子目录（SideFX 文档 / File > New Project 实测）：
+#   Geometry geo / Digital Assets hda / Simulation sim / Alembic abc /
+#   Textures tex / Renders render / Flipbooks flip / Scripts scripts
+# 打包按文件类型归入这些目录，让包结构与官方工程一致、到农场可直接当工程用。
+CATEGORY_GEO = "geo"
+CATEGORY_HDA = "hda"
+CATEGORY_SIM = "sim"
+CATEGORY_ABC = "abc"
+CATEGORY_TEX = "tex"
+CATEGORY_RENDER = "render"
+CATEGORY_FLIP = "flip"
+CATEGORY_SCRIPTS = "scripts"
+CATEGORY_OTHER = "other"
+
+# 扩展名 → 官方目录（小写、不带点）。分类函数是纯函数，不 import hou。
+_EXT_GEO = {"bgeo", "vdb", "obj", "fbx", "ply", "stl", "usd", "usdc", "usdz",
+            "gltf", "glb"}
+_EXT_ABC = {"abc"}
+_EXT_SIM = {"sim", "hi"}
+_EXT_HDA = {"hda", "otl", "hdalc"}
+_EXT_FLIP = {"mov", "mp4", "avi", "mkv", "webm"}
+_EXT_SCRIPTS = {"py", "pyc", "cmd", "ps1", "bat", "sh", "js"}
+# 图片类：输入引用（贴图）归 tex，输出引用（渲染结果）归 render
+_EXT_IMAGE = {"exr", "hdr", "dpx", "tif", "tiff", "png", "jpg", "jpeg", "rat",
+              "pic", "tex", "dds", "tga", "bmp", "psd", "webp", "tx"}
+# 序列 .bgeo.sc 的末段扩展名是 .sc，需整链匹配（见 _ext_chain）
+_EXT_GEO_CHAIN = {"bgeo.sc", "bgeo.gz", "bgeo.sc.gz"}
 
 _DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
@@ -96,6 +129,94 @@ def flatten_dir(directory):
     key = "_".join(parts) or "files"
     key = re.sub(r"[^\w\u4e00-\u9fff.-]+", "_", key, flags=re.UNICODE)
     return key.strip("_.") or "files"
+
+
+def _ext_chain(basename):
+    """文件名的扩展名链（小写、去掉首点）：``cache.bgeo.sc`` → ``bgeo.sc``。
+
+    Houdini 几何缓存常是 ``.bgeo.sc`` / ``.bgeo.gz`` 双扩展名，只看最后一段
+    ``.sc`` 会误判，先尝试整链再回退到最后一段。帧号模板 ``$F4`` / ``<UDIM>``
+    与点同级，取扩展名时从右侧取连续字母段。
+    """
+    name = (basename or "").replace("\\", "/").rpartition("/")[2]
+    name = name.strip().strip('"')
+    parts = name.rsplit(".", 2)
+    candidates = []
+    if len(parts) >= 3:
+        candidates.append(".".join(p.lower() for p in parts[-2:]))
+    if len(parts) >= 2:
+        candidates.append(parts[-1].lower())
+    return candidates
+
+
+def category_for(path, kind="input"):
+    """按文件类型 + 引用语义归入 Houdini 官方 New Project 目录。
+
+    - 几何 ``.bgeo[.sc] / .vdb / .obj / .fbx / .usd`` → ``geo``；
+    - ``.abc`` → ``abc``；``.sim`` → ``sim``；HDA → ``hda``；
+    - 图片/序列：输入引用 → ``tex``，输出引用（渲染结果）→ ``render``；
+    - 视频序列 → ``flip``；脚本 → ``scripts``；其余 → ``other``。
+
+    ``kind`` 取自 collect.Ref.kind（``input`` / ``output``）；filecache 的缓存
+    是 output 但扩展名是 bgeo，仍按扩展名优先归 geo（不进 render）。
+    """
+    chain = _ext_chain(path or "")
+    for ext in chain:
+        if ext in _EXT_GEO_CHAIN or ext in _EXT_GEO:
+            return CATEGORY_GEO
+        if ext in _EXT_ABC:
+            return CATEGORY_ABC
+        if ext in _EXT_SIM:
+            return CATEGORY_SIM
+        if ext in _EXT_HDA:
+            return CATEGORY_HDA
+        if ext in _EXT_FLIP:
+            return CATEGORY_FLIP
+        if ext in _EXT_SCRIPTS:
+            return CATEGORY_SCRIPTS
+        if ext in _EXT_IMAGE:
+            return CATEGORY_RENDER if kind == "output" else CATEGORY_TEX
+    return CATEGORY_OTHER
+
+
+def default_package_name(hip_path, suffix="-pack"):
+    """``D:/proj/shot_v001.hip`` → ``shot_v001-pack``；无路径回落默认包名。
+
+    包名默认取工程名 + ``-pack``（用户要求）。工程名含空格等非法字符时交给
+    sanitize_pkg_name 收敛；空值（未保存工程）回落默认包名。
+    """
+    if not hip_path:
+        return PACKAGE_DIR
+    stem = os.path.splitext(os.path.basename(hip_path.replace("\\", "/")))[0]
+    return sanitize_pkg_name(stem + suffix) if stem else PACKAGE_DIR
+
+
+def job_is_default(job_value, hip_value):
+    """$JOB 是否处于"默认值"——未设置、展开成自身、或与 $HIP 相同。
+
+    Houdini 空工程里 $JOB 常与 $HIP 相同（或没设置时展开成字面 ``$JOB``）。
+    此时把包根目录默认当成项目根是不安全的，窗口据此弹提醒；用户仍可选择
+    继续打包到该默认路径。
+    """
+    job = (job_value or "").strip().strip('"')
+    hip = (hip_value or "").strip().strip('"')
+    if not job or job == "$JOB":
+        return True
+    if hip and os.path.normcase(os.path.normpath(job)) == \
+            os.path.normcase(os.path.normpath(hip)):
+        return True
+    return False
+
+
+def scene_signature(hip_path, is_new_file):
+    """场景指纹（未保存 / 已保存的具体 hip 路径）——用于 new/open 后清空日志。
+
+    window_manager 让工具窗口跨工程复用；两次打开若是不同工程（或其中一次是
+    新工程），指纹变化，窗口据此丢弃上一工程的日志与扫描结果，避免残留。
+    """
+    if is_new_file:
+        return ("new", "")
+    return ("hip", os.path.normcase(os.path.normpath(hip_path or "")))
 
 
 def is_within(path, root):
@@ -177,6 +298,40 @@ def package_abs_path(base_dir, package_name, sub, name):
         parts.append(sub)
     parts.append(name)
     return os.path.normpath(os.path.join(*parts))
+
+
+def category_subdir_for(path, kind="input", hip_dir="", dir_path=None):
+    """按文件类型返回素材在包内的顶层目录（Houdini 官方 New Project 结构）。
+
+    ``<category>[/<raw sub>]/``：category 取 category_for(path, kind)，raw 取
+    原始展平/相对目录（dir_path 缺省为 path 的父目录）。若 raw 首段已等于
+    category（如 ``$HIP/geo/x.bgeo`` 的 raw=``geo``），不再重复前缀。
+
+    包内不再有统一 ``assets/`` 层，顶层直接是 ``geo/ tex/ render/ …``，
+    与 File > New Project 生成的工程目录一致。
+    """
+    cat = category_for(path, kind)
+    raw = subdir_for_dir(dir_path if dir_path is not None
+                         else os.path.dirname(path or ""), hip_dir)
+    first = raw.replace("\\", "/").split("/")[0].lower() if raw else ""
+    if raw and first == cat:
+        return raw
+    return "{}/{}".format(cat, raw) if raw else cat
+
+
+def package_cat_abs_path(base_dir, package_name, sub, name):
+    """``<base>/<pkg>/<sub>/<name>`` 的磁盘路径（分类布局，无 assets 层）。"""
+    parts = [base_dir, package_name]
+    if sub:
+        parts.append(sub)
+    parts.append(name)
+    return os.path.normpath(os.path.join(*parts))
+
+
+def cat_target(prefix, sub, name=""):
+    """分类布局的 Houdini 写法目标：``<prefix>/<sub>[/<name>]``。"""
+    base = "{}/{}".format(prefix, sub) if sub else prefix
+    return "{}/{}".format(base, name) if name else base
 
 
 # 包名非法字符：Windows 文件名禁用符 + 控制字符 + 路径分隔符。分隔符被
