@@ -30,9 +30,17 @@ PACKAGE_ASSETS = "assets"
 
 _DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
+# UDIM 贴图模板（Houdini 标准写法）
+UDIM_TOKEN = "<UDIM>"
+
 
 def has_frame_token(raw):
     return bool(raw) and _FRAME_RE.search(raw) is not None
+
+
+def has_udim_token(raw):
+    """是否含 UDIM 模板 ``<UDIM>``（大小写不敏感）。"""
+    return UDIM_TOKEN.lower() in (raw or "").lower()
 
 
 def mask_frame_tokens(raw):
@@ -114,20 +122,24 @@ def relative_to_hip(abs_path, hip_dir):
     return "$HIP/" + rel_posix(rel)
 
 
-def asset_subdir(abs_path, hip_dir=""):
-    """素材在包内 `assets/` 下的子目录。
-
-    - 文件在 `$HIP` 内 → 保留**相对 $HIP 的目录结构**（`$HIP/geo/x.bgeo.sc`
-      → `geo`），不再把整条绝对路径拍平；
-    - 包外 → 用展平后的源目录（`D:\\proj\\tex` → `D_proj_tex`），避免同名覆盖。
-    """
-    directory = os.path.dirname(abs_path)
+def subdir_for_dir(directory, hip_dir=""):
+    """目录在包内 `assets/` 下的子目录（目录版 asset_subdir）。"""
     if hip_dir and is_within(directory, hip_dir):
         rel = os.path.relpath(directory, hip_dir)
         if rel in (".", ""):
             return ""
         return rel_posix(rel)
     return flatten_dir(directory)
+
+
+def asset_subdir(abs_path, hip_dir=""):
+    """素材在包内 `assets/` 下的子目录。
+
+    - 文件在 `$HIP` 内 → 保留**相对 $HIP 的目录结构**（`$HIP/geo/x.bgeo.sc`
+      → `geo`），不再把整条绝对路径拍平；
+    - 包外 → 用展平后的源目录（`D:\\proj\\tex` → `D_proj_tex`）。
+    """
+    return subdir_for_dir(os.path.dirname(abs_path), hip_dir)
 
 
 def package_target(abs_path, prefix, hip_dir=""):
@@ -158,21 +170,44 @@ def package_dir_abs(base_dir, package_name=PACKAGE_DIR):
     return os.path.join(base_dir, package_name)
 
 
+def package_abs_path(base_dir, package_name, sub, name):
+    """``<base>/<pkg>/assets/<sub>/<name>`` 的磁盘绝对路径（复制用）。"""
+    parts = [base_dir, package_name, PACKAGE_ASSETS]
+    if sub:
+        parts.append(sub)
+    parts.append(name)
+    return os.path.normpath(os.path.join(*parts))
+
+
 # 包名非法字符：Windows 文件名禁用符 + 控制字符 + 路径分隔符。分隔符被
 # 换掉后 "../.." 这类穿越写法只剩字面下划线，写不出包根之外
 _PKG_NAME_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
+# Windows 保留设备名（不区分大小写；带扩展名也不允许，如 CON.txt）
+_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+}
+
+
 def sanitize_pkg_name(text, default=PACKAGE_DIR):
-    """包名净化成合法目录名：非法字符换 _、剥首尾点/空格，空值回落默认。
+    """包名净化成合法目录名：非法字符换 _、剥首尾点/空格、避开保留设备名。
 
     包名来自 UI 输入、直接进 ``os.path.join(base, pkg, ...)``：不净化的话
     ".."、含 ``/`` 的输入会写出包根之外，Windows 禁用符则让复制/zip 直接
     报错。首尾点剥掉防 ``..``（点全剥后空串走默认）与 Windows 尾点陷阱。
+    保留设备名（CON/NUL/COM1…）即使带扩展名也不能做目录名，统一加 pkg_ 前缀。
     """
     value = _PKG_NAME_RE.sub("_", (text or "").strip())
     value = value.strip(". ")
-    return value or default
+    if not value:
+        return default
+    stem = value.split(".")[0].upper()
+    if stem in _RESERVED_NAMES:
+        value = "pkg_" + value
+    return value
 
 
 def zip_path_for(hip_path):

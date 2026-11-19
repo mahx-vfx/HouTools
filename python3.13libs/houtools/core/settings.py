@@ -95,6 +95,12 @@ class JsonStore:
                     log.warning("cannot read %s: %s", self.path, exc)
                     text = None
                     disk_ok = False   # 磁盘内容未知：现有键全标脏，save 全量重写
+                except UnicodeError as exc:
+                    # 非法 UTF-8（外部编辑器按 ANSI 存 / 字节损坏）：属于
+                    # "文件坏了"，留底 .bak 后回退默认；留底失败则拒绝覆盖
+                    log.warning("cannot decode %s: %s", self.path, exc)
+                    text = None
+                    disk_ok = self._backup_corrupt()
                 if text is not None:
                     try:
                         on_disk = json.loads(text)
@@ -137,6 +143,13 @@ class JsonStore:
             except OSError as exc:
                 log.warning("cannot read %s: %s", self.path, exc)
                 return None, False
+            except UnicodeError as exc:
+                # 编码损坏按"文件坏了"处理：留底后回退空基线；留底失败
+                # 拒绝本次写入，保留原文件人工抢救（同 JSON 解析失败）
+                log.warning("cannot decode %s: %s", self.path, exc)
+                if not self._backup_corrupt():
+                    return None, False
+                return {}, True
             try:
                 on_disk = json.loads(text)
                 if not isinstance(on_disk, dict):
