@@ -4,7 +4,7 @@
 
 1. **扫描**：遍历已启用节点上的文件参数，收外部引用 / 节点缓存 /
    `$HIP` 内相对引用——凡是场景真正用到的、磁盘上存在的文件；
-2. **预览**：逐行「类型 / 节点 / 参数 / 原路径 / 目标」，可勾选；
+2. **预览**：逐行「节点 / 参数 / 参数现值 / 打包后参数值 / 状态」，可勾选；
 3. **打包**：后台线程把勾选的文件复制到 `<包根>/<包名>/assets/<展平源目录>/`，
    完成后主线程改写成 `$HIP/…` 或 `$JOB/…`（帧模板 `$F4` 原样保留）；
 4. **生成方式**（二选一）：
@@ -518,7 +518,7 @@ class PackageProjectWindow(QDialog):
         # 预览表
         self._table = QTableWidget(0, 6, self)
         self._table.setHorizontalHeaderLabels(
-            ["", "节点", "参数", "原路径", "目标", "状态"])
+            ["", "节点", "参数", "参数现值", "打包后参数值", "状态"])
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
