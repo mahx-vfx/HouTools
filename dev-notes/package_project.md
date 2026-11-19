@@ -36,7 +36,7 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
   大工程/网络盘扫描不再阻塞界面；`collect()` 是两者串联（无窗口调用）。
 - **其它输出参数**（`sopoutput` / `vm_picture` / `picture` / `outputimage`，以及
   `dcmfilename` / `productName` / `savepath` / `soho_diskfile` 这类语义输出）
-  只收**已落盘**的（未落盘输出不复制也不改写，列出来只是缺失行——「含空输出路径」勾选已移除）；。
+  只收**已落盘**的（未落盘输出不复制也不改写，列出来只是缺失行——「含空输出路径」勾选已移除）。
 - **挡住非文件值**（`_looks_like_file_path`）：空值、带空白/`%`/`*` 的菜单值与
   token、无扩展名的值、节点路径（`/obj/...`）、`shfs:`/`op:` 协议路径、
   目录值、`$HIP/galleries`、`$HIP/backup`。节点路径的判定是"`/` 开头**且末段

@@ -623,10 +623,8 @@ class PackageProjectWindow(QDialog):
             self._custom_root_edit.setText(os.path.normpath(folder))
 
     def _custom_root_value(self):
-        value = self._custom_root_edit.text().strip().strip('"')
-        if len(value) > 1 and value[0] == '"' and value[-1] == '"':
-            value = value[1:-1].strip()
-        return value
+        # 右键复制路径常带首尾引号；strip('"') 已覆盖任意多对引号，无须再剥
+        return self._custom_root_edit.text().strip().strip('"')
 
     def _root_var_value(self):
         """（变量名, 展开值）——给界面与错误提示用，不做可用性判断。"""
