@@ -14,13 +14,6 @@ Houdini 21/22 插件工具集——一份代码两版通用（21.0 走 Python 3.
 | **HDR Library** | **Recipe Library** |
 | ![HDR Library](docs/about_shots/hdr.png) | ![Recipe Library](docs/about_shots/recipe.png) |
 
-统一视觉：墨黑工作区 + 品牌橙动作色 + 深绿蓝图点缀；窗口、图标、Toast、
-Settings 与离线手册共用同一套 token（`houtools/ui/theme.py`）。工具面板
-沿用原阿里妈妈数黑体 Bold（功能优先，不额外加品牌顶栏）；钉钉进步体只用于
-docs/README 品牌字标，Recipe 文档用方圆体 VF。品牌手册见
-[docs/brand.md](docs/brand.md)。
-
-
 ## 安装
 
 **[下载 HouTools.zip](https://gitcode.com/mahx-vfx/HouTools/releases/download/latest/HouTools.zip)**（GitCode Releases）
@@ -360,16 +353,6 @@ _houtools_dispatcher.run("<tool_id>")
 无头验证菜单 XML、全包导入、各窗口实例化（Automation / 视频转序列图 / HDR Library / Recipe Library）、
 拖放导入的 .abc/.fbx 过滤与节点名清洗，以及 `reload_all()`。
 
-视觉回归：
-
-```text
-python tests/test_theme_tokens.py   # 禁止 theme.py 之外裸 hex（允许 SVG 内容色）
-python tests/test_about_sync.py     # About 页与版本号 / token / 菜单 / 资源的同步断言
-python tests/test_fonts.py          # 品牌字/UI/等宽/文档字角色与回退
-python tests/gen_about_shots.py     # 重生成 3 张 About 截图（hdr.png 固定保留）
-python tests/gen_brand_assets.py    # 重生成 README 品牌头图与徽章
-```
-
 ## 结构
 
 ```
@@ -379,34 +362,34 @@ HouTools/
 ├── HouTools.json                # 包清单副本（生效的一份在 packages/ 下）
 ├── scripts/externaldragdrop.py  # 官方拖放钩子分发器（拖 .abc/.fbx 导入，逻辑在 houtools/dragdrop.py）
 ├── docs/                         # 离线使用手册（About HouTools 菜单用默认浏览器打开，零外部网络资源）
-│   ├── index.html                # 手册页面（品牌 token / 字体 / 轮播 JS 全部内联或本地）
-│   ├── brand.md                  # 品牌手册（token / 组件 / 图标 / 文案 do&don't）
-│   ├── brand/                    # README 品牌头图 + 字标（tests/gen_brand_assets.py 生成；环境徽章走 shields.io）
-│   ├── fonts/                    # 钉钉进步体 woff2（离线 @font-face）
-│   └── about_shots/              # 窗口截图（3 张由 gen_about_shots.py 离屏生成；hdr.png 用户精修图固定保留）
+│   ├── index.html                # 手册页面（资源全部内联或本地）
+│   ├── brand.md                  # 品牌手册
+│   ├── brand/                    # README 头图资源（tests/gen_brand_assets.py 生成）
+│   ├── fonts/                    # 离线字体文件
+│   └── about_shots/              # 窗口截图（hdr.png 用户精修图固定保留）
 ├── python_panels/Automation.pypanel  # Automation 的 Python Panel 界面
 ├── python3.13libs/
 │   ├── uiready.py                 # UI 启动钩子：装默认键位（会话启动时执行）
 │   └── houtools/
 │       ├── dev/                   # 热加载框架（reloader / dispatcher，不参与重载）
 │       ├── core/                  # 路径常量 / 日志 / JSON 设置
-│       ├── ui/                    # theme（唯一 token 源）/ qss（样式表）/ components（品牌头/区块标题/空状态）
-│       │                          # + window_manager / taskbar / fonts（角色化）/ dialogs / sidebar / badge / notify
+│       ├── ui/                    # theme / qss / components + window_manager / taskbar
+│       │                          # + fonts / dialogs / sidebar / badge / notify
 │       ├── automation/            # Automation（任务类型/持久化/执行引擎/窗口）
 │       ├── dragdrop.py            # 外部拖放导入 .abc（obj 层级 Alembic Archive / SOP 层级 alembic）
 │       ├── videoseq/              # 视频转序列图（ffmpeg 查找 + 窗口）
 │       ├── hdrlight/              # HDR Library（HDR 库浏览 + 缩略图 + 灯光赋值）
 │       ├── recipelib/             # Recipe Library（资产库浏览/元数据/文档/数据导入导出/缩略图裁剪）
 │       ├── package/               # Package Project（引用扫描 + 收进 $HIP + 改相对路径 + zip）
-│       ├── icons/                 # UI 图标（SVG，1.5px 线稿 / 品牌产品图标）
-│       ├── fonts/                 # 品牌字（钉钉进步体 TTF）+ 文档阅读字体回退
+│       ├── icons/                 # UI 图标（SVG）
+│       ├── fonts/                 # 字体文件
 │       └── tools/                 # 工具入口（<tool_id>.py 暴露 run()）
 ├── tests/
 │   ├── smoke_test.py             # 无头回归（菜单/导入/窗口实例化/行为断言）
-│   ├── test_theme_tokens.py      # token lint（禁止 theme.py 之外裸 hex）
-│   ├── test_fonts.py             # 字体文件/角色回退/加载
+│   ├── test_theme_tokens.py      # token lint
+│   ├── test_fonts.py             # 字体加载测试
 │   ├── gen_about_shots.py        # 离屏重生成 3 张 About 截图（hdr.png 不重生成）
-│   └── gen_brand_assets.py       # 离屏重生成 README 品牌头图与徽章
+│   └── gen_brand_assets.py       # 离屏重生成 README 头图与徽章
 ```
 
 配置目录（默认 `Documents\HouTools\settings`，不在仓库内；开发机旧版在插件根 `settings/`，
