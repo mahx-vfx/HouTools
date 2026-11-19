@@ -255,3 +255,27 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
 | P3-01 | filecache glob 过宽 | `_digit_files()` 严格 `^前缀\d+后缀$` 二次过滤 |
 | P3-02 | 保留设备名未处理 | `sanitize_pkg_name()` 检测 CON/PRN/AUX/NUL/COM1-9/LPT1-9，加 `pkg_` 前缀 |
 | P3-03 | COM 初始化未释放 | `reveal._shell_select()` 用 try/finally 配对 `CoUninitialize`（S_OK/S_FALSE 都算成功） |
+
+## 2026-11-19 合并后复审修复（PR #6 已合并，另起本地修复）
+
+PR #6 合并进 `main`（`5417fec`）后按第三方审核结论继续收紧，改动只落在
+package 模块与其冒烟测试：
+
+| 级别 | 问题 | 处理 |
+|---|---|---|
+| 高 | `collect()` 串联入口把**未展开**的 `hip_dir` 交给 `resolve()`，`gather()` 内展开的 `$HIP` 是死变量——无窗口调用时 `$HIP/galleries` 排除失效、`in_hip` 全 False、`$HIP` 内素材被展平 | `collect()` 先展开 `$HIP` 再同时传给 `gather`/`resolve`；`gather()` 去掉死代码，`hip_dir` 仅保留签名兼容 |
+| 高 | `_session_matches` 第三条「当前 hip 在包目录内即放行」过宽，包目录里另存/打开别的 hip 仍会把旧工程打进 zip | 抽纯函数 `collect.session_matches_hip()`，只认 `source_hip`/`saved_hip` 精确匹配；窗口包装它，删掉宽松分支 |
+| 中 | `build_layout` 把 `relpath` 结果直接拼进 `file_sub`，`sopoutput` 指到 `basedir` 之外时 `normpath` 会把复制目标写出包目录 | 显式拒绝带 `..` 的 `rel_dir`，并对每个目标做 `is_within(target, <包根>/<包名>)` 兜底 |
+| 中 | `plan` 字典对「同一源文件被映射到两个不同目标」静默覆盖 | 冲突不再覆盖，统一收进 `conflicts`；`build_layout()` 改返回 4 元组，窗口发现冲突即中止打包并在结果面板逐条列出 |
+| 中 | UDIM 只校验 `\d{4}`，`0001/2001/9999` 会被当 Tile；`<UDIM>` 与 `$F` 同现会把 `__HTFRAME__` 写进目标 | `_udim_files()` 补 1001–1999 数值判定；`_expand()` 对混合模板返回 None（拒绝） |
+| 中 | zip 只统计文件链接、目录链接不计数；空包仍报「完成」 | 抽纯函数 `collect.archivable()` 供文件/目录共用；目录链接计数并从 `dirs` 摘掉；`count==0` 改「空包」告警态 |
+| 低 | 重名 note 对同目录每条引用重复计数；UNC `//` 路径被 gather 提前判 noise；`_drop_stale_session(hip_dir)` 死参数 | note 按源目录去重、node-path 判定补 `not startswith("//")`、去掉死参数 |
+
+**已知边界补充**：`gather()` 仍在主线程全量遍历 HOM 并逐参数 `expandString`，
+两段式扫描只把文件系统 IO 移出主线程，超大场景仍可能有可感知停顿；
+`<UDIM>` 与 `$F` 同时出现的路径模板不支持（直接跳过，不再写坏参数）；
+`<UVTILE>` 仍不支持。
+
+**回归**：`tests/smoke_test.py` 新增 `collect()` hip_dir 串联、会话精确匹配、
+UDIM 范围/混合模板、布局越界与重复目标冲突、zip 归档边界纯函数等断言；
+非法 UTF-8 用例补 `try/finally` 清理，不再在配置目录累积 `.bak`。

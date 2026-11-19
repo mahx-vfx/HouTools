@@ -223,18 +223,29 @@ class _ZipWorker(QThread):
         real_pkg = os.path.realpath(self._package_dir)
         try:
             with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as archive:
-                for root, _dirs, files in os.walk(self._package_dir):
+                for root, dirs, files in os.walk(self._package_dir):
+                    if self.cancelled:
+                        raise _Cancelled()
+                    # 目录级链接：os.walk 默认不跟随，但要计数并显式摘掉，
+                    # 否则用户看不到「跳过」，且 followlinks 语义一变就泄漏
+                    for name in list(dirs):
+                        full_dir = os.path.join(root, name)
+                        if not collect.archivable(full_dir, real_pkg):
+                            skipped += 1
+                            dirs.remove(name)
                     for name in files:
                         if self.cancelled:
                             raise _Cancelled()
                         full = os.path.join(root, name)
-                        if not paths.is_within(os.path.realpath(full), real_pkg):
+                        if not collect.archivable(full, real_pkg):
                             skipped += 1       # 指向包外的链接：跳过，不泄漏
                             continue
                         arc = os.path.relpath(full, self._base).replace("\\", "/")
                         archive.write(full, arc)
                         count += 1
-                # 覆盖模式时 hip 不在包目录里，单独带上
+                # 覆盖模式时 hip 不在包目录里，单独带上：hip 是用户当前工程
+                # 本身（不是包内链接），由 hou.hipFile.path() 给出，故意不做
+                # 边界检查；否则覆盖模式打包必然缺工程文件。
                 hip = self._hip_path
                 if hip and os.path.isfile(hip) and \
                         not paths.is_within(hip, self._package_dir):
@@ -281,6 +292,7 @@ class PackageProjectWindow(QDialog):
         self._targets = []
         self._plan = {}
         self._layout_notes = []
+        self._conflicts = []
         self._checked = set()
         self._filling = False
         self._hip_dir = ""
@@ -516,7 +528,7 @@ class PackageProjectWindow(QDialog):
             return
         self._check_job()
         self._hip_dir = os.path.normpath(hou.text.expandString("$HIP"))
-        self._drop_stale_session(self._hip_dir)
+        self._drop_stale_session()
         include_output = self._include_output_check.isChecked()
         try:
             candidates, skip_stats = collect.gather(self._hip_dir, include_output)
@@ -560,22 +572,12 @@ class PackageProjectWindow(QDialog):
         """打包会话是否仍属于当前 hip（P1-02：换工程后旧快照必须失效）。"""
         import hou
 
-        if not session or hou.hipFile.isNewFile():
-            return False
-        current = os.path.normcase(os.path.normpath(hou.hipFile.path()))
-        source = session.get("source_hip") or ""
-        saved = session.get("saved_hip") or ""
-        if source and current == os.path.normcase(os.path.normpath(source)):
-            return True
-        if saved and current == os.path.normcase(os.path.normpath(saved)):
-            return True
-        # 另存后当前 hip 就在包目录内（例如再次另存到同一包目录）：仍算同一次
-        return bool(saved) and paths.is_within(current, session.get("package_dir", ""))
+        return collect.session_matches_hip(
+            session, hou.hipFile.path(), hou.hipFile.isNewFile())
 
-    def _drop_stale_session(self, hip_dir):
-        if self._pack_session is None:
-            return
-        if not self._session_matches(self._pack_session):
+    def _drop_stale_session(self):
+        if self._pack_session is not None and \
+                not self._session_matches(self._pack_session):
             self._pack_session = None
 
     def _report_scan(self, skip_stats):
@@ -617,8 +619,9 @@ class PackageProjectWindow(QDialog):
     def _refresh_targets(self):
         prefix = self._target_prefix()
         base = self._base_dir()
-        self._targets, self._plan, self._layout_notes = collect.build_layout(
-            self._refs, prefix, base, self._pkg_name(), self._hip_dir)
+        self._targets, self._plan, self._layout_notes, self._conflicts = \
+            collect.build_layout(
+                self._refs, prefix, base, self._pkg_name(), self._hip_dir)
         self._fill_table()
 
     def _fill_table(self):
@@ -710,8 +713,10 @@ class PackageProjectWindow(QDialog):
                                                 paths.human_size(total_size))]
         if self._layout_notes:
             parts.append("重名已改名 {} 处".format(len(self._layout_notes)))
-        self._set_hint(" · ".join(parts))
-        self._apply_btn.setEnabled(bool(refs))
+        if self._conflicts:
+            parts.append("布局冲突 {} 处（禁止打包）".format(len(self._conflicts)))
+        self._set_hint(" · ".join(parts), error=bool(self._conflicts))
+        self._apply_btn.setEnabled(bool(refs) and not self._conflicts)
         # zip 只对"本次成功打包"的会话开放（换 hip / 没打包过都不行）
         self._zip_btn.setEnabled(self._pack_session is not None)
         self._zip_btn.setToolTip(
@@ -796,8 +801,17 @@ class PackageProjectWindow(QDialog):
         prefix = self._target_prefix()
         # 复用扫描时算定的"目标唯一"布局；包根/包名变化后按当前值重算，
         # 保证复制目标与参数改写目标来自同一份映射（报告 P1-01）
-        all_targets, all_plan, _notes = collect.build_layout(
+        all_targets, all_plan, _notes, conflicts = collect.build_layout(
             self._refs, prefix, base, pkg, self._hip_dir)
+        if conflicts:
+            self._log_view.clear()
+            self._log("[失败] 打包布局有冲突，已中止（未复制/改写任何文件）：")
+            for text in conflicts:
+                self._log("  - " + text)
+            self._set_status("失败", ok=False)
+            self._set_hint("布局冲突 {} 处：详见下方执行结果".format(
+                len(conflicts)), error=True)
+            return
         refs = self._selected_refs()
         selected = [(i, ref) for i, ref in enumerate(self._refs)
                     if i in self._checked]
@@ -1002,6 +1016,12 @@ class PackageProjectWindow(QDialog):
             size = paths.human_size(os.path.getsize(zip_path))
         except OSError:
             size = "?"
+        if count == 0:
+            self._set_status("空包", ok=False)
+            self._log("[警告] 已生成 {}，但没有归档任何文件（跳过 {} 个指向"
+                      "包外的链接）".format(zip_path, skipped))
+            self._set_hint("zip 为空，请检查包目录内容与链接边界", error=True)
+            return
         self._set_status("完成", ok=True)
         text = "[完成] 已生成 {}（{}，{} 个文件）".format(zip_path, size, count)
         if skipped:

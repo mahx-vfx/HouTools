@@ -5406,31 +5406,35 @@ def main():
         raw="D:/proj_foo/bar/albedo.exr",
         abs_path="D:/proj_foo/bar/albedo.exr",
         files=["D:/proj_foo/bar/albedo.exr"])
-    _targets, _plan, _notes = pkg_collect.build_layout(
+    _targets, _plan, _notes, _conflicts = pkg_collect.build_layout(
         [_ref_a, _ref_b], "$HIP", "C:/hip", "ht_package", "C:/hip")
     assert _targets[0] != _targets[1], _targets
     assert _plan["D:/proj/foo/bar/albedo.exr"] != \
         _plan["D:/proj_foo/bar/albedo.exr"], _plan
     assert _notes, "重名应写一条 note"
+    assert not _conflicts, _conflicts
     # 同一源目录的文件共享一个 assets 子目录
     _ref_c = pkg_collect.Ref(
         kind="input", node_path="/obj/c", parm_name="file",
         raw="D:/proj/foo/bar/normal.exr",
         abs_path="D:/proj/foo/bar/normal.exr",
         files=["D:/proj/foo/bar/normal.exr"])
-    _t2, _p2, _ = pkg_collect.build_layout(
+    _t2, _p2, _, _c2 = pkg_collect.build_layout(
         [_ref_a, _ref_c], "$HIP", "C:/hip", "ht_package", "C:/hip")
     assert os.path.dirname(_t2[0]) == os.path.dirname(_t2[1]), _t2
+    assert not _c2, _c2
     print("package target uniqueness OK")
 
     # P2-01：UDIM 模板枚举 4 位 Tile（不把 backup 当 Tile）
     _udim_dir = tempfile.mkdtemp(prefix="pkg_udim_")
     try:
         for name in ("tex.1001.exr", "tex.1002.exr", "tex.backup.exr",
-                     "tex.1003.exr.bak"):
+                     "tex.1003.exr.bak", "tex.0001.exr", "tex.2001.exr",
+                     "tex.9999.exr"):
             (Path(_udim_dir) / name).write_bytes(b"x")
         _udim_files = pkg_collect._udim_files(
             os.path.join(_udim_dir, "tex.<UDIM>.exr"))
+        # 范围外的 4 位数字（0001/2001/9999）不能被当 UDIM Tile
         assert [os.path.basename(p) for p in _udim_files] == \
             ["tex.1001.exr", "tex.1002.exr"], _udim_files
     finally:
@@ -5462,14 +5466,126 @@ def main():
     from houtools.core import settings as pkg_settings
     _bad_name = "pkg_bad_utf8_{}.json".format(os.getpid())
     _bad_path = pkg_settings.SETTINGS_DIR / _bad_name
+    _bak_path = pkg_settings.SETTINGS_DIR / (_bad_name + ".bak")
     _bad_path.parent.mkdir(parents=True, exist_ok=True)
+    _bad_path.unlink(missing_ok=True)   # 清掉上次运行可能留下的残留
     _bad_path.write_bytes(b'{"a": "\xff\xfe"}')
-    _store = pkg_settings.JsonStore(_bad_name, defaults={"a": 1})
-    assert _store.get("a") == 1, dict(_store)
-    assert (pkg_settings.SETTINGS_DIR / (_bad_name + ".bak")).exists(), \
-        "非法 UTF-8 应留底 .bak"
-    assert not _bad_path.exists(), "损坏文件应改名留底"
+    try:
+        _store = pkg_settings.JsonStore(_bad_name, defaults={"a": 1})
+        assert _store.get("a") == 1, dict(_store)
+        assert _bak_path.exists(), "非法 UTF-8 应留底 .bak"
+        assert not _bad_path.exists(), "损坏文件应改名留底"
+    finally:
+        # 不往配置目录累积带 pid 的 .bak（2026-11-19 合并后复审）
+        _bad_path.unlink(missing_ok=True)
+        _bak_path.unlink(missing_ok=True)
     print("settings invalid utf8 recovery OK")
+
+    # ------------------------------------------------------------------
+    # PR #6 合并后复审修复回归（2026-11-19）
+    # ------------------------------------------------------------------
+    import sys as _sys
+    import types as _types
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _patched_hou(expand):
+        _saved = _sys.modules.get("hou")
+        _sys.modules["hou"] = _types.SimpleNamespace(
+            text=_types.SimpleNamespace(expandString=expand))
+        try:
+            yield
+        finally:
+            if _saved is None:
+                _sys.modules.pop("hou", None)
+            else:
+                _sys.modules["hou"] = _saved
+
+    # 高：collect() 串联必须把展开后的 $HIP 交给 resolve
+    _hip_dir = tempfile.mkdtemp(prefix="pkg_hip_")
+    try:
+        _seen = {}
+        _saved_enabled = pkg_collect.enabled_nodes
+        _saved_resolve = pkg_collect.resolve
+
+        def _spy_resolve(candidates, hip_dir, include_output=False,
+                         should_cancel=None):
+            _seen["hip_dir"] = hip_dir
+            return [], {}
+
+        pkg_collect.enabled_nodes = lambda: []
+        pkg_collect.resolve = _spy_resolve
+        try:
+            with _patched_hou(lambda _v: _hip_dir):
+                pkg_collect.collect("", False)
+        finally:
+            pkg_collect.resolve = _saved_resolve
+            pkg_collect.enabled_nodes = _saved_enabled
+        assert _seen.get("hip_dir") == _hip_dir, _seen
+    finally:
+        shutil.rmtree(_hip_dir, ignore_errors=True)
+    print("collect() hip_dir OK")
+
+    # 高：会话只认打包时登记的 hip，包目录内另存别的 hip 必须拒绝
+    _sess = {"source_hip": "C:/proj/a.hip",
+             "saved_hip": "C:/proj/pkg/a_packed.hip",
+             "package_dir": "C:/proj/pkg"}
+    assert pkg_collect.session_matches_hip(_sess, "C:/proj/a.hip")
+    assert pkg_collect.session_matches_hip(
+        _sess, "C:/proj/pkg/a_packed.hip")
+    assert not pkg_collect.session_matches_hip(
+        _sess, "C:/proj/pkg/other_packed.hip"), "包目录内别的 hip 必须拒绝"
+    assert not pkg_collect.session_matches_hip(_sess, "C:/other/b.hip")
+    assert not pkg_collect.session_matches_hip(_sess, "")
+    assert not pkg_collect.session_matches_hip(
+        _sess, "C:/proj/a.hip", True), "未保存的新工程必须拒绝"
+    print("pack session match OK")
+
+    # 中：UDIM 与 $F 同现必须拒绝（不能把 __HTFRAME__ 写进目标）
+    with _patched_hou(lambda v: v):
+        assert pkg_collect._expand(
+            None, "D:/tex/foo.<UDIM>.$F4.exr") is None
+    print("mixed UDIM/frame template OK")
+
+    # 中：布局越界与重复目标必须报冲突，不静默产出错误包
+    _outside = "D:/elsewhere/sim.1001.bgeo.sc"
+    _fc = pkg_collect.Ref(
+        kind="output", node_path="/obj/filecache1", parm_name="basedir",
+        raw=_outside, abs_path=_outside, files=[_outside],
+        rewrite_dir=True, basedir="C:/proj/geo")  # 跨盘符 relpath 会抛 ValueError
+    _t, _p, _n, _c = pkg_collect.build_layout(
+        [_fc], "$HIP", "C:/hip", "ht_package", "C:/hip")
+    assert _c and _outside not in _p, (_c, _p)
+
+    _same = "D:/proj/geo/v001/sim.1001.bgeo.sc"
+    _fc2 = pkg_collect.Ref(
+        kind="output", node_path="/obj/filecache1", parm_name="basedir",
+        raw=_same, abs_path=_same, files=[_same],
+        rewrite_dir=True, basedir="D:/proj/geo")
+    _normal = pkg_collect.Ref(
+        kind="input", node_path="/obj/file1", parm_name="file",
+        raw=_same, abs_path=_same, files=[_same])
+    _t, _p, _n, _c = pkg_collect.build_layout(
+        [_fc2, _normal], "$HIP", "C:/hip", "ht_package", "C:/hip")
+    assert _c, "同一源文件两个不同目标应报冲突"
+    print("layout conflict guards OK")
+
+    # 中：zip 归档边界纯函数
+    _pkg_root = tempfile.mkdtemp(prefix="pkg_zip_")
+    _zip_out = tempfile.mkdtemp(prefix="pkg_zip_out_")
+    try:
+        _inside_file = os.path.join(_pkg_root, "a.exr")
+        Path(_inside_file).write_bytes(b"x")
+        _outside_file = os.path.join(_zip_out, "secret.txt")
+        Path(_outside_file).write_bytes(b"x")
+        assert pkg_collect.archivable(
+            _inside_file, os.path.realpath(_pkg_root))
+        assert not pkg_collect.archivable(
+            _outside_file, os.path.realpath(_pkg_root))
+    finally:
+        shutil.rmtree(_pkg_root, ignore_errors=True)
+        shutil.rmtree(_zip_out, ignore_errors=True)
+    print("zip link boundary OK")
 
     print("SMOKE TEST OK")
 

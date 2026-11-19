@@ -206,8 +206,8 @@ def _digit_files(prefix, suffix):
     （报告 P3-01）。
     """
     pattern = prefix + "*" + suffix
-    rx = re.compile("^" + re.escape(prefix) + r"\d+" + re.escape(suffix) + "$",
-                    re.IGNORECASE)
+    rx = re.compile("^" + re.escape(prefix) + r"[0-9]+" +
+                    re.escape(suffix) + "$", re.IGNORECASE)
     return sorted(f for f in glob.glob(pattern)
                   if os.path.isfile(f) and rx.match(f))
 
@@ -232,10 +232,19 @@ def _udim_files(expanded):
     prefix = expanded[:index]
     suffix = expanded[index + len(paths.UDIM_TOKEN):]
     pattern = prefix + "*" + suffix
-    rx = re.compile("^" + re.escape(prefix) + r"\d{4}" + re.escape(suffix) + "$",
-                    re.IGNORECASE)
-    return sorted(f for f in glob.glob(pattern)
-                  if os.path.isfile(f) and rx.match(f))
+    # 用 [0-9] 而不是 \d：后者会匹配 Unicode 数字，帧/Tile 号只认 ASCII
+    rx = re.compile("^" + re.escape(prefix) + r"([0-9]{4})" +
+                    re.escape(suffix) + "$", re.IGNORECASE)
+    found = []
+    for candidate in glob.glob(pattern):
+        if not os.path.isfile(candidate):
+            continue
+        match = rx.match(candidate)
+        # UDIM 规范只允许 1001–1999；只匹配 \d{4} 会把 0001/2001/9999
+        # 这类别的 4 位数字序列误收进包（2026-11-19 合并后复审）
+        if match and 1001 <= int(match.group(1)) <= 1999:
+            found.append(candidate)
+    return sorted(found)
 
 
 def _masked_files(expanded):
@@ -244,6 +253,18 @@ def _masked_files(expanded):
     if not sep:
         return []
     return _digit_files(prefix, suffix)
+
+
+def archivable(full, real_pkg):
+    """zip 归档边界：``realpath`` 后仍落在包目录内才允许写入。
+
+    包内符号链接/junction 指向包外时返回 False（P2-02 复审）。抽成纯函数
+    便于无头回归，也让文件与目录两种链接共用同一条判定。
+    """
+    try:
+        return paths.is_within(os.path.realpath(full), real_pkg)
+    except OSError:
+        return False
 
 
 def _gather_filecache(node, parm, include_output):
@@ -308,6 +329,10 @@ def _expand(parm, raw):
         expanded = os.path.normpath(os.path.join(
             hou.text.expandString("$HIP"), expanded))
     if paths.has_udim_token(raw):
+        # <UDIM> 与帧模板同现时无法同时保留两套模板：直接拒绝，避免把
+        # __HTFRAME__ 标记写进参数改写目标（2026-11-19 合并后复审）
+        if paths.has_frame_token(raw):
+            return None
         return expanded, paths.UDIM_TOKEN, expanded
     if paths.MARKER in expanded:
         token = paths.first_frame_token(raw)
@@ -360,7 +385,10 @@ def _gather_ref(node, parm, include_output=False):
     if resolved is None:
         return None, None
     expanded, token, abs_path = resolved
-    if _looks_like_node_path(expanded) and expanded.startswith("/"):
+    # 与 _is_noise 同口径：UNC 网络路径（//server/...）不是 Houdini 节点路径，
+    # 不能在这里提前判 noise（2026-11-19 合并后复审）
+    if expanded.startswith("/") and not expanded.startswith("//") \
+            and _looks_like_node_path(expanded):
         return None, "noise"
     return Candidate(
         kind=kind,
@@ -375,9 +403,12 @@ def _gather_ref(node, parm, include_output=False):
 
 
 def gather(hip_dir="", include_output=False):
-    """主线程阶段：遍历节点/参数并展开，返回 (candidates, skip_stats)。"""
-    hou = _hou()
-    hip_dir = hip_dir or hou.text.expandString("$HIP")
+    """主线程阶段：遍历节点/参数并展开，返回 (candidates, skip_stats)。
+
+    ``hip_dir`` 仅为兼容旧签名保留：HOM 阶段不用它，文件系统归一由
+    ``resolve()`` 负责；``collect()`` 串联时会先展开 `$HIP` 再同时传给两
+    个阶段（2026-11-19 合并后复审，原实现展开后丢弃导致兼容回归）。
+    """
     candidates = []
     skip_stats = {}
     for node in enabled_nodes():
@@ -438,6 +469,8 @@ def resolve(candidates, hip_dir, include_output=False, should_cancel=None):
 
 def collect(hip_dir="", include_output=False):
     """扫描整个场景，返回 (refs, skip_stats)（无窗口调用用）。"""
+    hou = _hou()
+    hip_dir = hip_dir or hou.text.expandString("$HIP")
     candidates, stats = gather(hip_dir, include_output)
     refs, more = resolve(candidates, hip_dir, include_output)
     for key, count in more.items():
@@ -446,11 +479,28 @@ def collect(hip_dir="", include_output=False):
     return refs, stats
 
 
+def session_matches_hip(session, current_hip, is_new_file=False):
+    """打包会话是否属于当前 hip（P1-02；纯函数便于无头回归）。
+
+    只认打包时登记的 ``source_hip`` / ``saved_hip`` 精确匹配——不能因为
+    当前 hip 恰好位于包目录内就放行，否则在包目录里另存/打开别的 hip
+    仍会把旧工程内容打进 zip（2026-11-19 合并后复审）。
+    """
+    if not session or is_new_file or not current_hip:
+        return False
+    current = os.path.normcase(os.path.normpath(current_hip))
+    for key in ("source_hip", "saved_hip"):
+        value = session.get(key) or ""
+        if value and current == os.path.normcase(os.path.normpath(value)):
+            return True
+    return False
+
+
 def copy_plan(refs, base_dir, package_name=paths.PACKAGE_DIR, hip_dir=""):
     """{源绝对路径: 包内目标绝对路径}；同一文件只复制一次，缺失的不进计划。
 
-    注意：窗口实际用 ``build_layout()``（带目标唯一性）；这个函数保留给
-    无窗口调用/测试，不处理展平碰撞。
+    注意：窗口实际用 ``build_layout()``（带目标唯一性 + 越界/冲突检测）；
+    这个函数保留给无窗口调用/测试，不处理展平碰撞，**不要用于打包**。
     """
     plan = {}
     for ref in refs:
@@ -474,15 +524,22 @@ def build_layout(refs, prefix, base_dir="", package_name=paths.PACKAGE_DIR,
                  hip_dir=""):
     """统一生成目标路径与复制计划，保证目标唯一。
 
-    返回 ``(targets, plan, notes)``：
+    返回 ``(targets, plan, notes, conflicts)``：
 
     - ``targets`` 与 ``refs`` 一一对应（Houdini 写法，序列/UDIM 保留模板）；
     - ``plan`` 是 ``{源绝对路径: 包内绝对路径}``；
     - 不同源目录展平后重名时，后来的目录加 ``_2/_3``，并写一条 note
-      （复制与改写共用这份映射，杜绝"复制覆盖、参数指同一文件"）。
+      （复制与改写共用这份映射，杜绝"复制覆盖、参数指同一文件"）；
+    - ``conflicts`` 收集「目标越出包目录」与「同一源文件被映射到多个目标」，
+      窗口据此中止打包——不再静默产出缺文件的包（2026-11-19 合并后复审）。
     """
     assigned = {}
     used = {}
+    reported = set()
+    plan = {}
+    notes = []
+    conflicts = []
+    package_root = paths.package_dir_abs(base_dir, package_name) if base_dir else ""
 
     def assign(source_dir, base_sub):
         key = os.path.normcase(os.path.normpath(source_dir))
@@ -498,22 +555,54 @@ def build_layout(refs, prefix, base_dir="", package_name=paths.PACKAGE_DIR,
         used[candidate.casefold()] = key
         return candidate
 
+    def note_renamed(source_dir, sub, base_sub):
+        if sub == base_sub:
+            return
+        key = os.path.normcase(os.path.normpath(source_dir))
+        if key in reported:          # 同一源目录的多条引用只报一次
+            return
+        reported.add(key)
+        notes.append("{} 的目标目录重名，已改为 {}".format(
+            source_dir, sub or "(assets 根)"))
+
+    def add_plan(source, target):
+        if os.path.normcase(target) == os.path.normcase(source):
+            return                   # 源=目标：跳过复制（二次打包）
+        if package_root and not paths.is_within(target, package_root):
+            conflicts.append("{} → {}（目标越出包目录）".format(source, target))
+            return
+        previous = plan.get(source)
+        if previous is not None and \
+                os.path.normcase(previous) != os.path.normcase(target):
+            conflicts.append("{} → {} / {}（多个目标）".format(
+                source, previous, target))
+            return
+        plan[source] = target
+
     targets = []
-    plan = {}
-    notes = []
     for ref in refs:
         if ref.rewrite_dir and ref.basedir:
             base_sub = paths.subdir_for_dir(ref.basedir, hip_dir)
             sub = assign(ref.basedir, base_sub)
-            if sub != base_sub:
-                notes.append("{} 的目标目录重名，已改为 {}".format(
-                    ref.basedir, sub or "(assets 根)"))
+            note_renamed(ref.basedir, sub, base_sub)
             targets.append(_target(prefix, sub, ""))
             if not base_dir:
                 continue
             for file_path in ref.files:
-                rel_dir = os.path.relpath(os.path.dirname(file_path),
-                                          ref.basedir)
+                try:
+                    rel_dir = os.path.relpath(os.path.dirname(file_path),
+                                              ref.basedir)
+                except ValueError:
+                    # Windows 跨盘符时 relpath 会抛 ValueError：无法表示成
+                    # 包内相对路径，一律按越界处理（不能让 Qt 槽炸掉）
+                    rel_dir = ".."
+                # sopoutput 被指到 basedir 之外时 rel_dir 带 ".."，拼进
+                # file_sub 后 normpath 会把复制目标写出包目录
+                if rel_dir == ".." or rel_dir.startswith(".." + os.sep) \
+                        or os.path.isabs(rel_dir):
+                    conflicts.append("{} 不在 basedir {} 内，已跳过".format(
+                        file_path, ref.basedir))
+                    continue
                 if rel_dir in (".", ""):
                     file_sub = sub
                 else:
@@ -522,25 +611,21 @@ def build_layout(refs, prefix, base_dir="", package_name=paths.PACKAGE_DIR,
                 target = paths.package_abs_path(
                     base_dir, package_name, file_sub,
                     os.path.basename(file_path))
-                if os.path.normcase(target) != os.path.normcase(file_path):
-                    plan[file_path] = target
+                add_plan(file_path, target)
             continue
 
         src_dir = os.path.dirname(ref.abs_path)
         base_sub = paths.asset_subdir(ref.abs_path, hip_dir)
         sub = assign(src_dir, base_sub)
-        if sub != base_sub:
-            notes.append("{} 的目标目录重名，已改为 {}".format(
-                src_dir, sub or "(assets 根)"))
+        note_renamed(src_dir, sub, base_sub)
         targets.append(_target(prefix, sub, os.path.basename(ref.abs_path)))
         if not base_dir:
             continue
         for file_path in ref.files:
             target = paths.package_abs_path(
                 base_dir, package_name, sub, os.path.basename(file_path))
-            if os.path.normcase(target) != os.path.normcase(file_path):
-                plan[file_path] = target
-    return targets, plan, notes
+            add_plan(file_path, target)
+    return targets, plan, notes, conflicts
 
 
 def target_for(ref, prefix, hip_dir=""):
