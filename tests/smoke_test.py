@@ -5632,6 +5632,104 @@ def main():
         shutil.rmtree(_zip_out, ignore_errors=True)
     print("zip link boundary OK")
 
+    # ------------------------------------------------------------------
+    # Package Project 增强（2026-11-19）：类型分类 / 默认包名 / $JOB 默认值 /
+    # 场景指纹 / 勾选统计 / 打包日志 / 分类布局——全部纯函数，无头覆盖
+    # ------------------------------------------------------------------
+    # 按文件类型归入 Houdini 官方 New Project 目录
+    assert pkg_paths.category_for("D:/p/geo/rock.bgeo.sc") == "geo"
+    assert pkg_paths.category_for("D:/p/geo/cloud.vdb") == "geo"
+    assert pkg_paths.category_for("char.usd") == "geo"
+    assert pkg_paths.category_for("D:/p/geo/cache.abc") == "abc"
+    assert pkg_paths.category_for("D:/p/out/render.exr", "output") == "render"
+    assert pkg_paths.category_for("D:/p/tex/brick.exr", "input") == "tex"
+    assert pkg_paths.category_for("D:/p/tex/brick.exr", "output") == "render"
+    assert pkg_paths.category_for("D:/p/tex/skin.rat") == "tex"
+    assert pkg_paths.category_for("D:/p/mocap/anim.sim") == "sim"
+    assert pkg_paths.category_for("D:/p/otls/tool.hda") == "hda"
+    assert pkg_paths.category_for("D:/p/flip/preview.mov") == "flip"
+    assert pkg_paths.category_for("D:/p/scripts/run.py") == "scripts"
+    assert pkg_paths.category_for("D:/p/notes/readme.zzz") == "other"
+    print("package category_for OK")
+
+    # _ext_chain：双扩展名 bgeo.sc 不能被末段 .sc 误判
+    assert "bgeo.sc" in pkg_paths._ext_chain("rock.0001.bgeo.sc")
+    print("package ext chain OK")
+
+    # 分类子目录：顶层是类型，去掉统一 assets 层；$HIP 内 raw 首段=类型不重复
+    assert pkg_paths.category_subdir_for(
+        "D:/p/tex/a.jpg", "input", "C:/hip") == "tex/D_p_tex"
+    assert pkg_paths.category_subdir_for(
+        "C:/hip/geo/a.bgeo.sc", "input", "C:/hip") == "geo"
+    assert pkg_paths.category_subdir_for(
+        "C:/hip/geo/sub/a.bgeo.sc", "input", "C:/hip") == "geo/sub"
+    print("package category_subdir_for OK")
+
+    # 默认包名 = 工程名-pack；净化非法字符；无路径回落默认
+    assert pkg_paths.default_package_name("D:/proj/shot_v001.hip") == \
+        "shot_v001-pack"
+    assert pkg_paths.default_package_name("D:/proj/my shot.hip") == \
+        "my shot-pack"
+    assert pkg_paths.default_package_name("") == "ht_package"
+    print("package default name OK")
+
+    # $JOB 默认值检测
+    assert pkg_paths.job_is_default("", "C:/hip")
+    assert pkg_paths.job_is_default("$JOB", "C:/hip")
+    assert pkg_paths.job_is_default("C:/hip", "C:/hip")
+    assert not pkg_paths.job_is_default("D:/projects/main", "C:/hip")
+    print("package job default OK")
+
+    # 场景指纹：new/open 后变化，重开同一工程不变
+    _sig1 = pkg_paths.scene_signature("C:/p/a.hip", False)
+    assert _sig1 == pkg_paths.scene_signature("C:/p/a.hip", False)
+    assert _sig1 != pkg_paths.scene_signature("C:/p/b.hip", False)
+    assert _sig1 != pkg_paths.scene_signature("", True)
+    print("package scene signature OK")
+
+    # 勾选统计：取消一项后文件数/体积随之减少（用户反馈的联动 bug）
+    _ref_a = pkg_collect.Ref(kind="input", node_path="/obj/a", parm_name="file",
+                             raw="a.jpg", abs_path="D:/p/a.jpg",
+                             files=["D:/p/a.jpg"])
+    _ref_b = pkg_collect.Ref(kind="input", node_path="/obj/b", parm_name="file",
+                             raw="b.jpg", abs_path="D:/p/b.jpg",
+                             files=["D:/p/b.jpg"])
+    _sel_plan = {"D:/p/a.jpg": "C:/pkg/tex/a.jpg",
+                 "D:/p/b.jpg": "C:/pkg/tex/b.jpg"}
+    _sizes = {"D:/p/a.jpg": 100, "D:/p/b.jpg": 250}
+    _count, _bytes = pkg_collect.selection_summary(
+        [_ref_a, _ref_b], {0, 1}, _sel_plan, size_of=lambda p: _sizes[p])
+    assert (_count, _bytes) == (2, 350), (_count, _bytes)
+    _count2, _bytes2 = pkg_collect.selection_summary(
+        [_ref_a, _ref_b], {0}, _sel_plan, size_of=lambda p: _sizes[p])
+    assert (_count2, _bytes2) == (1, 100), (_count2, _bytes2)  # 取消 b
+    _count3, _bytes3 = pkg_collect.selection_summary(
+        [_ref_a, _ref_b], set(), _sel_plan, size_of=lambda p: _sizes[p])
+    assert (_count3, _bytes3) == (0, 0)
+    print("package selection summary OK")
+
+    # 打包日志文本：含引用/复制计划/失败/汇总，不需要 hou/Qt
+    _log_text = pkg_collect.build_package_log(
+        refs=[_ref_a], plan=_sel_plan, targets=["$HIP/tex/a.jpg"],
+        stats="[完成] 复制 1/1", package_dir="C:/pkg/xxx-pack",
+        package_name="xxx-pack", mode_text="另存到包目录", prefix="$HIP",
+        failures=["复制 x.jpg：拒绝访问"], notes=["D:/q 已改名"])
+    assert "node_path" not in _log_text and "/obj/a:file" in _log_text
+    assert "C:/pkg/xxx-pack" in _log_text and "拒绝访问" in _log_text
+    assert "已改名" in _log_text and "复制 1/1" in _log_text
+    assert "tex/a.jpg" in _log_text
+    print("package log text OK")
+
+    # 分类布局：目标进官方目录、无 assets 层、复制与改写目标一致
+    _cat_targets, _cat_plan, _cat_notes, _cat_conflicts = \
+        pkg_collect.build_layout(
+            [_ref_a], "$HIP", "C:/hip", "pack", "C:/hip", by_category=True)
+    assert not _cat_conflicts
+    assert _cat_targets[0] == "$HIP/tex/D_p/a.jpg", _cat_targets
+    assert list(_cat_plan.values())[0] == \
+        os.path.normpath("C:/hip/pack/tex/D_p/a.jpg")
+    print("package category layout OK")
+
     print("SMOKE TEST OK")
 
 

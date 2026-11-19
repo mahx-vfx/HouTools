@@ -496,6 +496,78 @@ def session_matches_hip(session, current_hip, is_new_file=False):
     return False
 
 
+def selection_summary(refs, checked, plan, size_of=None):
+    """按当前勾选统计「待复制文件数 + 总体积」（供窗口状态栏，纯函数可测）。
+
+    ``plan`` 是 build_layout 生成的 ``{源: 目标}``；只统计被勾选 ref 的 files
+    且在 plan 中出现的源，按源去重（同一文件被多参数引用只算一次）。取消勾选
+    某个 ref 后，它的文件立即从统计里消失——修复「取消勾选后总数/体积不变」。
+    """
+    size_of = size_of or os.path.getsize
+    # plan 的键与 ref.files 理论上同源；用 normcase 建索引兼容大小写/分隔符
+    # 差异，保证取消勾选后统计正确联动（Windows 大小写不敏感）。
+    plan_keys = {os.path.normcase(k): k for k in plan}
+    sources = set()
+    for index, ref in enumerate(refs):
+        if index not in checked:
+            continue
+        for source in ref.files:
+            key = plan_keys.get(os.path.normcase(source))
+            if key is not None:
+                sources.add(key)
+    total = 0
+    for source in sources:
+        try:
+            total += size_of(source)
+        except OSError:
+            pass
+    return len(sources), total
+
+
+def build_package_log(refs, plan, targets, stats, package_dir, package_name,
+                      mode_text, prefix, failures=None, notes=None):
+    """生成写入包目录的打包日志文本（纯函数，无 hou/Qt 依赖）。
+
+    内容含：时间戳无关的固定段落（生成方式、包目录、包根前缀）、逐条引用
+    （节点:参数 → 目标）、复制计划、失败项、改名说明、汇总。时间戳由调用方
+    生成后作为 ``stamp`` 注入不方便——这里保持纯函数，时间由调用方拼在首行。
+    """
+    failures = failures or []
+    notes = notes or []
+    lines = []
+    lines.append(" HouTools · Package Project 打包日志")
+    lines.append("=" * 60)
+    lines.append(" 包目录   : {}".format(package_dir))
+    lines.append(" 包名     : {}".format(package_name))
+    lines.append(" 包根前缀 : {}".format(prefix))
+    lines.append(" 生成方式 : {}".format(mode_text))
+    lines.append("-" * 60)
+    lines.append(" 引用清单（共 {} 条）:".format(len(refs)))
+    for index, ref in enumerate(refs):
+        target = targets[index] if index < len(targets) else ""
+        lines.append("  [{:>3}] {:<8} {}:{}".format(
+            index + 1, ref.kind, ref.node_path, ref.parm_name))
+        lines.append("         源: {}".format(ref.raw))
+        lines.append("         目标: {}".format(target))
+    lines.append("-" * 60)
+    lines.append(" 复制计划（共 {} 个文件）:".format(len(plan)))
+    for source, target in plan.items():
+        lines.append("  {}  ->  {}".format(source, target))
+    if notes:
+        lines.append("-" * 60)
+        lines.append(" 目录改名:")
+        for note in notes:
+            lines.append("  - {}".format(note))
+    if failures:
+        lines.append("-" * 60)
+        lines.append(" 失败项:")
+        for failure in failures:
+            lines.append("  - {}".format(failure))
+    lines.append("=" * 60)
+    lines.append(" 汇总: {}".format(stats or ""))
+    return "\n".join(lines) + "\n"
+
+
 def copy_plan(refs, base_dir, package_name=paths.PACKAGE_DIR, hip_dir=""):
     """{源绝对路径: 包内目标绝对路径}；同一文件只复制一次，缺失的不进计划。
 
@@ -521,7 +593,7 @@ def _target(prefix, sub, name):
 
 
 def build_layout(refs, prefix, base_dir="", package_name=paths.PACKAGE_DIR,
-                 hip_dir=""):
+                 hip_dir="", by_category=False):
     """统一生成目标路径与复制计划，保证目标唯一。
 
     返回 ``(targets, plan, notes, conflicts)``：
@@ -532,7 +604,26 @@ def build_layout(refs, prefix, base_dir="", package_name=paths.PACKAGE_DIR,
       （复制与改写共用这份映射，杜绝"复制覆盖、参数指同一文件"）；
     - ``conflicts`` 收集「目标越出包目录」与「同一源文件被映射到多个目标」，
       窗口据此中止打包——不再静默产出缺文件的包（2026-11-19 合并后复审）。
+
+    ``by_category=True``（窗口默认开启）：素材按类型归入 Houdini 官方
+    New Project 目录（``geo/ tex/ render/ …``），去掉统一 ``assets/`` 层；
+    默认 False 保留旧的 ``assets/<展平目录>/`` 布局，供旧调用/测试兼容。
     """
+    def subdir_of(path, kind, dir_path=None):
+        if by_category:
+            return paths.category_subdir_for(path, kind, hip_dir, dir_path)
+        return paths.subdir_for_dir(dir_path or os.path.dirname(path or ""), hip_dir)
+
+    def target_of(sub, name=""):
+        if by_category:
+            return paths.cat_target(prefix, sub, name)
+        return _target(prefix, sub, name)
+
+    def abs_of(sub, name):
+        if by_category:
+            return paths.package_cat_abs_path(base_dir, package_name, sub, name)
+        return paths.package_abs_path(base_dir, package_name, sub, name)
+
     assigned = {}
     used = {}
     reported = set()
@@ -563,7 +654,7 @@ def build_layout(refs, prefix, base_dir="", package_name=paths.PACKAGE_DIR,
             return
         reported.add(key)
         notes.append("{} 的目标目录重名，已改为 {}".format(
-            source_dir, sub or "(assets 根)"))
+            source_dir, sub or ("包根" if by_category else "assets 根")))
 
     def add_plan(source, target):
         if os.path.normcase(target) == os.path.normcase(source):
@@ -582,10 +673,10 @@ def build_layout(refs, prefix, base_dir="", package_name=paths.PACKAGE_DIR,
     targets = []
     for ref in refs:
         if ref.rewrite_dir and ref.basedir:
-            base_sub = paths.subdir_for_dir(ref.basedir, hip_dir)
+            base_sub = subdir_of(ref.abs_path, ref.kind, ref.basedir)
             sub = assign(ref.basedir, base_sub)
             note_renamed(ref.basedir, sub, base_sub)
-            targets.append(_target(prefix, sub, ""))
+            targets.append(target_of(sub))
             if not base_dir:
                 continue
             for file_path in ref.files:
@@ -608,22 +699,19 @@ def build_layout(refs, prefix, base_dir="", package_name=paths.PACKAGE_DIR,
                 else:
                     rel = paths.rel_posix(rel_dir)
                     file_sub = "{}/{}".format(sub, rel) if sub else rel
-                target = paths.package_abs_path(
-                    base_dir, package_name, file_sub,
-                    os.path.basename(file_path))
+                target = abs_of(file_sub, os.path.basename(file_path))
                 add_plan(file_path, target)
             continue
 
         src_dir = os.path.dirname(ref.abs_path)
-        base_sub = paths.asset_subdir(ref.abs_path, hip_dir)
+        base_sub = subdir_of(ref.abs_path, ref.kind)
         sub = assign(src_dir, base_sub)
         note_renamed(src_dir, sub, base_sub)
-        targets.append(_target(prefix, sub, os.path.basename(ref.abs_path)))
+        targets.append(target_of(sub, os.path.basename(ref.abs_path)))
         if not base_dir:
             continue
         for file_path in ref.files:
-            target = paths.package_abs_path(
-                base_dir, package_name, sub, os.path.basename(file_path))
+            target = abs_of(sub, os.path.basename(file_path))
             add_plan(file_path, target)
     return targets, plan, notes, conflicts
 

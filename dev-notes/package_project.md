@@ -1,7 +1,8 @@
 # Package Project（打包工程）
 
 入口：`HouTools → Package Project`（主菜单 + 网络编辑器菜单各一条）。
-代码：`houtools/package/paths.py`（纯逻辑）、`collect.py`（扫描）、`window.py`、
+代码：`houtools/package/paths.py`（纯逻辑：路径/分类/包名/默认值/场景指纹）、
+`collect.py`（扫描 + 布局 + 统计 + 日志文本）、`window.py`（界面/等待遮罩）、
 `houtools/ui/reveal.py`（资源管理器定位）、`houtools/tools/package_project.py`。
 
 ## 解决什么问题
@@ -60,33 +61,63 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
 
 ## 包目录与目标写法
 
+**按文件类型分类（2026-11-19 用户要求）**：包内不再有统一 `assets/` 层，
+顶层直接是 Houdini 官方 New Project 目录，解压后即可当工程用：
+
 ```
-<包根>/<包名>/assets/<子目录>/<文件名>
+<包根>/<包名>/<类型>/<原始目录或展平目录>/<文件名>
+类型 ∈ geo / hda / sim / abc / tex / render / flip / scripts / other
 ```
 
-- `$HIP` 内的素材保留**相对 $HIP 的目录结构**：`$HIP/geo/shot.bgeo.sc` →
-  `assets/geo/shot.bgeo.sc`（不再把整条绝对路径拍平成
-  `C_Users_..._hip_geo/`）。
-- 包外素材用展平目录（`D:\proj\tex` → `D_proj_tex`），避免同名互相覆盖。
+- `paths.category_for(path, kind)` 按扩展名 + 引用语义归类：几何 `.bgeo[.sc]`/
+  `.vdb`/`.obj`/`.usd` → `geo`；`.abc` → `abc`；`.sim` → `sim`；HDA → `hda`；
+  图片/序列按引用语义——输入贴图 → `tex`，渲染输出 → `render`；视频 → `flip`；
+  脚本 → `scripts`；其余 → `other`。`.bgeo.sc` 双扩展名整链匹配，不误判成 `.sc`。
+- `paths.category_subdir_for()` 生成 `<类型>[/<原始目录>]`：素材在 `$HIP` 内
+  保留相对目录（`$HIP/geo/shot.bgeo.sc` → `geo/shot.bgeo.sc`，类型与首段同名
+  不重复）；包外素材展平（`D:\proj\tex\x.jpg` → `tex/D_proj_tex/x.jpg`）。
+- **兼容模式**：`collect.build_layout(..., by_category=False)` 保留旧的
+  `assets/<展平目录>/` 布局供无窗口调用/测试；窗口固定用 `by_category=True`。
 - **目标唯一性**（2026-11-19 修复）：`collect.build_layout()` 统一生成
   「每条引用的改写目标 + 复制计划」。不同源目录展平后重名（如
   `D:\proj\foo\bar` 与 `D:\proj_foo\bar` 都得到 `D_proj_foo_bar`）时，后来
   的自动加 `_2/_3`，复制目标和参数改写目标共用这份映射——不会再静默覆盖。
 
-- **包根**：`$HIP`（默认）或 `$JOB`（未设置/非绝对时 UI 禁用该选项）。
-- **包名**：默认 `ht_package`，可改；**用户输入必须过 `paths.sanitize_pkg_name`**
-  （2026-11 复审补充）——包名直接进 `os.path.join(base, pkg, ...)`，不净化的话
-  `..`、含 `/` 的输入会写出包根之外，Windows 禁用符（`\ / : * ? " < > |` 与
-  控制字符）让复制/zip 直接报错。非法字符换 `_`、剥首尾点（防 `..` 与
-  Windows 尾点陷阱），空值回落默认名。
+- **包根**：`$HIP`（默认）、`$JOB`（未设置/非绝对时 UI 禁用该选项）、
+  **自定义绝对路径**（新增）。`$JOB` 若与 `$HIP` 相同/为空，点打包时会弹窗
+  提醒，用户确认后可执意打包到该默认路径（每次换包根选项只提醒一次）。
+- **包名**：默认取 **工程名 + `-pack`**（如 `shot_v001-pack`，无 hou/未保存时
+  回落 `ht_package`），可改；**用户输入必须过 `paths.sanitize_pkg_name`**——
+  包名直接进 `os.path.join(base, pkg, ...)`，不净化的话 `..`、含 `/` 的输入会
+  写出包根之外，Windows 禁用符与保留设备名让复制/zip 报错。非法字符换 `_`、
+  剥首尾点、避开 CON/NUL/COM1…，空值回落默认名。
 - **参数改写按生成方式区分**（这是最容易写错的一处）：
 
   | 生成方式 | 参数前缀 | 原因 |
   |---|---|---|
-  | 另存到包目录 | `$HIP/assets/…` | hip 存进包目录后，`$HIP` **就是包目录**；再带一层包名会多出一级目录、路径直接失效 |
-  | 覆盖当前工程 | `$HIP/<包名>/assets/…` 或 `$JOB/<包名>/assets/…` | hip 留在原地，包目录是它的子目录 |
+  | 另存到包目录 | `$HIP/<类型>/…` | hip 存进包目录后，`$HIP` **就是包目录**；再带一层包名会多出一级目录、路径直接失效 |
+  | 覆盖当前工程 | `$HIP/<包名>/<类型>/…`、`$JOB/<包名>/<类型>/…` 或 `<自定义>/<包名>/<类型>/…` | hip 留在原地，包目录是它的子目录 |
 
-  帧模板 `$F4` 原样保留；`$JOB` 未设置/非绝对时 UI 禁用该包根。
+  帧模板 `$F4` 原样保留；另存模式无论包根是哪个都写 `$HIP/…`（原因是 hip 会
+  被存进包目录，保存后 `$HIP` 即包目录）。
+
+## 打包日志（2026-11-19 新增）
+
+打包完成后（`_on_copy_done`，成功/失败都写）由 `collect.build_package_log()`
+生成纯文本明细，写入 `<包根>/<包名>/package_log.txt`（UTF-8），随包目录一起
+被 zip 归档。内容：生成时间、包目录/包名/包根前缀/生成方式、逐条引用
+（节点:参数 → 源 → 目标）、复制计划、改名说明、失败项、汇总。写日志失败只在
+结果面板记一条，不改变打包成功/失败判定。
+
+## 等待动画与场景切换（2026-11-19 新增）
+
+- 扫描的文件系统检查阶段（`_ScanWorker`，后台线程）显示 `_ScanBusyOverlay`
+  全窗口半透明遮罩 + marquee 进度条，避免"扫描中…"文字太小让人以为卡死。
+- 窗口经 window_manager 跨工程复用；`_sync_scene()` 用
+  `paths.scene_signature()` 比对场景指纹，new/open 不同工程后清空上一工程的
+  日志/扫描结果/包名复位，防止残留（用户反馈）。worker 运行中不做，避免打断。
+- 待复制文件数/体积由 `collect.selection_summary()` 按当前勾选实时重算，
+  取消勾选某项后立即减少（用户反馈该项曾不更新）。
 - `flatten_dir()` 只对包外素材使用（按源目录分文件夹，不丢可读性）。
 - filecache 改的是**目录参数** `basedir`：`$HIP/geo` → `$HIP/assets/geo`
   （另存模式）或 `$HIP/<包名>/assets/geo`（覆盖模式），
@@ -223,7 +254,10 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
 ## 测试
 
 - `tests/smoke_test.py`：`paths` 纯函数（帧模板 / needs_packaging / POSIX
-  绝对形态 / flatten_dir / 包名净化）、`target_for` 的 $HIP/$JOB 两种写法、
+  绝对形态 / flatten_dir / 包名净化）、分类 `category_for` / `_ext_chain` /
+  `category_subdir_for`、默认包名 `default_package_name`、`job_is_default`、
+  `scene_signature`、`selection_summary`（取消勾选联动）、`build_package_log`、
+  分类布局 `build_layout(by_category=True)`；`target_for` 的 $HIP/$JOB 两种写法、
   `copy_plan` 去重、`_is_noise` 节点路径 vs POSIX 文件、菜单接线、窗口可
   实例化（htWindow / is_close_deferred / worker 可构造）、`reveal` 缺失路径
   必须抛 OSError；另跑 `test_theme_tokens.py`（窗口不得写裸 hex）。
