@@ -996,17 +996,18 @@ class PackageProjectWindow(QDialog):
     def _jump_to_node(self, ref):
         from houtools.ui import networknav
         # 跳到重节点（filecache/sim/karma 等）时，Auto Update / OnMouseUp
-        # 模式都会当场重烤、界面卡住（2026-11-20 用户实测：OnMouseUp 下
-        # 也卡）——跳转前无条件切 Manual；已是 Manual 或无 hou 环境
-        # （冒烟）则只跳转不重复记日志。
+        # 模式都会当场重烤、界面卡住（2026-11-20 用户实测）——跳转前无条件
+        # 切 Manual。**setter 是 hou.setUpdateMode**：updateModeSetting 是
+        # 只读 getter，传参会 TypeError——一版误当 setter 且 try/except
+        # 吞错，真机才暴露（hython 验证 setUpdateMode 读回正确）。
         try:
             import hou
             if hou.updateModeSetting() != hou.updateMode.Manual:
-                hou.updateModeSetting(hou.updateMode.Manual)
+                hou.setUpdateMode(hou.updateMode.Manual)
                 self._log("[信息] 更新模式已切到 Manual（避免跳转后自动重烤"
                           "卡顿），需要恢复在播放条选回")
-        except Exception:
-            pass
+        except Exception as exc:
+            self._log("[失败] 切 Manual 更新模式失败：{}".format(exc))
         networknav.jump_to_node(ref.node_path, prefix="Package Project")
 
     def _source_path(self, ref):
