@@ -5413,11 +5413,14 @@ def main():
     assert _pkg_win.is_close_deferred() is False
     # 2026-11-20 用户要求列宽可拖：0=勾选列 Fixed/34px，数据列全部
     # Interactive（ResizeToContents/Stretch 模式 Qt 不响应鼠标拖动），
-    # 末列吸收余宽；初始宽度已按列给默认值
+    # 末列吸收余宽；初始宽度已按列给默认值。类型列并入状态列后共 6 列。
     _pkg_hdr = qtcompat.rewrap(_pkg_win._table.horizontalHeader(),
                                _QtW.QHeaderView)
+    assert _pkg_win._table.columnCount() == 6
+    assert _pkg_win._table.horizontalHeaderItem(1).text() == "节点"
+    assert _pkg_win._table.horizontalHeaderItem(5).text() == "状态"
     assert _pkg_hdr.sectionResizeMode(0) == _QtW.QHeaderView.Fixed
-    for _col in (1, 2, 3, 4, 5, 6):
+    for _col in (1, 2, 3, 4, 5):
         assert _pkg_hdr.sectionResizeMode(_col) == \
             _QtW.QHeaderView.Interactive, _col
     assert _pkg_hdr.stretchLastSection() is True
@@ -5425,6 +5428,23 @@ def main():
     assert _pkg_win._table.columnWidth(4) == 300
     assert not hasattr(_pkg_win, "_include_output_check"), \
         "含空输出路径勾选已按用户要求移除"
+    # 类型列并入状态列：缺失行带 缓存/引用 前缀，普通行 = 位置 + 数量
+    # （in_hip 是 resolve 阶段算好的字段，fixture 直接声明）
+    _pkg_win._refs = [pkg_collect.Ref(
+        kind="input", node_path="/obj/a", parm_name="file",
+        raw="a.jpg", abs_path="D:/p/a.jpg", files=["D:/p/a.jpg"],
+        in_hip=True),
+        pkg_collect.Ref(kind="output", node_path="/obj/b", parm_name="picture",
+                        raw="b.$F4.exr", abs_path="D:/p/b.$F4.exr", files=[])]
+    _pkg_win._targets = ["$HIP/tex/a.jpg", "$HIP/render/b.$F4.exr"]
+    _pkg_win._fill_table()
+    app.processEvents()
+    assert _pkg_win._table.item(0, 5).text() == "$HIP 内 · 1 个文件", \
+        _pkg_win._table.item(0, 5).text()
+    assert _pkg_win._table.item(1, 5).text() == "缓存缺失", \
+        _pkg_win._table.item(1, 5).text()
+    _pkg_win._refs = []
+    _pkg_win._targets = []
     # worker 类可无头构造（不 start）：协作式取消标志就位
     _pkg_copier = pkg_window._CopyWorker({})
     assert _pkg_copier.cancelled is False

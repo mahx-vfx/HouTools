@@ -51,12 +51,13 @@ from houtools.ui import (
 TOOL_ID = "package_project"
 
 _COL_CHECK = 0
-_COL_KIND = 1
-_COL_NODE = 2
-_COL_PARM = 3
-_COL_SRC = 4
-_COL_DST = 5
-_COL_STATE = 6
+_COL_NODE = 1
+_COL_PARM = 2
+_COL_SRC = 3
+_COL_DST = 4
+_COL_STATE = 5
+# 类型列已并入状态列（2026-11-20 用户拍板：两列信息重复——
+# 「缓存（序列 50 帧）」vs「缓存目录 · 50 帧」），表格 7 列 → 6 列。
 
 # 扫描排除原因 → 展示文案（collect.collect 返回的统计键）
 _SKIP_LABELS = {
@@ -515,9 +516,9 @@ class PackageProjectWindow(QDialog):
         layout.addLayout(mode_row)
 
         # 预览表
-        self._table = QTableWidget(0, 7, self)
+        self._table = QTableWidget(0, 6, self)
         self._table.setHorizontalHeaderLabels(
-            ["", "类型", "节点", "参数", "原路径", "目标", "状态"])
+            ["", "节点", "参数", "原路径", "目标", "状态"])
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -540,13 +541,12 @@ class PackageProjectWindow(QDialog):
         # 勾选列保持固定 34px；末列吸收余宽，其余列宽保持用户拖过的值。
         if hasattr(header, "setSectionResizeMode"):
             header.setSectionResizeMode(_COL_CHECK, QHeaderView.Fixed)
-            for column in (_COL_KIND, _COL_NODE, _COL_PARM,
+            for column in (_COL_NODE, _COL_PARM,
                            _COL_SRC, _COL_DST, _COL_STATE):
                 header.setSectionResizeMode(column, QHeaderView.Interactive)
             header.setStretchLastSection(True)
-        for column, width in ((_COL_KIND, 120), (_COL_NODE, 200),
-                              (_COL_PARM, 90), (_COL_SRC, 300),
-                              (_COL_DST, 300)):
+        for column, width in ((_COL_NODE, 200), (_COL_PARM, 90),
+                              (_COL_SRC, 300), (_COL_DST, 300)):
             self._table.setColumnWidth(column, width)
         layout.addWidget(self._table, 1)
 
@@ -853,13 +853,17 @@ class PackageProjectWindow(QDialog):
             check.setCheckState(
                 Qt.Checked if row in self._checked else Qt.Unchecked)
             if ref.missing:
-                state_text = "缺失"
+                # 类型列并入状态列后，缺失行保留 缓存/引用 前缀（kind 信息）
+                state_text = "{}缺失".format(
+                    "缓存" if ref.kind == "output" else "引用")
                 color = QColor(theme.color("ERROR_TEXT"))
             elif ref.rewrite_dir:
                 state_text = "缓存目录 · {} 帧".format(len(ref.files))
                 color = QColor(theme.color("TEXT"))
             else:
-                if ref.is_sequence:
+                if ref.token == paths.UDIM_TOKEN:
+                    source_text = "UDIM {} 块".format(len(ref.files))
+                elif ref.is_sequence:
                     source_text = "序列 {} 帧".format(len(ref.files))
                 else:
                     source_text = "{} 个文件".format(len(ref.files))
@@ -868,7 +872,6 @@ class PackageProjectWindow(QDialog):
                 color = QColor(theme.color("TEXT_3" if ref.in_hip else "TEXT"))
             cells = [
                 check,
-                QTableWidgetItem(ref.label),
                 QTableWidgetItem(ref.node_path),
                 QTableWidgetItem(ref.parm_name),
                 QTableWidgetItem(ref.raw),
