@@ -1034,12 +1034,21 @@ class PackageProjectWindow(QDialog):
         mode_text = ("另存到包目录（原工程不动）" if self._save_copy_radio.isChecked()
                      else "覆盖当前工程")
         root_label = {"HIP": "$HIP", "JOB": "$JOB"}.get(root, base)
+        # 另存模式前缀固定 $HIP、覆盖模式 $HIP/$JOB 是变量写法，都随包可移植；
+        # 覆盖模式 + 自定义包根只能写绝对路径——明确告诉用户不随包移植，
+        # 不再一律说"相对路径"误导（2026-11-19 接手审查发现）。
+        if self._save_copy_radio.isChecked() or root != "CUSTOM":
+            path_text = "改写 {} 个参数为 {} 下的相对路径".format(
+                len(refs), root_label)
+        else:
+            path_text = "改写 {} 个参数为绝对路径（{} 下，不随包移植）".format(
+                len(refs), root_label)
         if not dialogs.question(
                 self, "打包工程",
                 "将把 {} 个文件复制到\n{}\n\n并按文件类型归入官方工程目录"
-                "（geo/tex/render/…），改写 {} 个参数为 {} 下的相对路径。\n"
+                "（geo/tex/render/…），{}。\n"
                 "生成方式：{}".format(
-                    len(plan), package_dir, len(refs), root_label, mode_text)):
+                    len(plan), package_dir, path_text, mode_text)):
             return
 
         self._log_view.clear()

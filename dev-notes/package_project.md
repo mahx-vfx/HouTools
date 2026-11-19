@@ -342,3 +342,17 @@ AttributeError，重包后 `setSectionResizeMode` 恢复可用。
 H22 短路零开销、重包分支指针传递，以及窗口实例化后列 0 Fixed/34px、
 列 4 Stretch 确实生效。H21 6.5.3 端到端实测窗口构造通过
 （`col0=Fixed / col4=Stretch / width0=34`）。
+## 2026-11-19 接手审查（ZCode，b7dda05 复核）
+
+WorkBuddy 的「类型分类 + 8 项体验改进」提交整体复核通过：
+
+- refs/targets 索引对齐正确（`_on_package` 里 `targets = [all_targets[i] for i in selected]`
+  与所选 refs 一一对应，日志逐条目标不串行）；
+- `package_log.txt` 在 `_on_copy_done` 落盘，zip 是独立按钮、走
+  `_pack_session` 校验，日志必然先于归档写入、随 zip 带走；
+- 分类去重（raw 首段 == category 不重复前缀）、UDIM 与 `$F` 混合模板拒绝、
+  `selection_summary` normcase 匹配等均与既有回归断言一致。
+
+**修正一处**：打包确认弹窗此前对覆盖模式 + 自定义包根也说「改写为相对路径」，
+实际该组合只能写绝对路径（不随包移植）——现按 生成方式 × 包根 区分措辞
+（另存 / $HIP / $JOB → 相对路径；覆盖 + 自定义 → 绝对路径并注明不移植）。
