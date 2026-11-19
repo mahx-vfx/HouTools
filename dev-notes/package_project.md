@@ -190,6 +190,15 @@ objectName=`htWindow`，主按钮走 components.PrimaryButton（htRole=primary�
 ## 行操作
 
 - **双击行** → `ui.networknav.jump_to_node(node_path, prefix="Package Project")`。
+- **跳转前无条件切 Manual 更新模式**（2026-11-20 用户要求，二版收紧）：
+  Auto Update / OnMouseUp 下跳到 filecache/sim/karma 等重节点都会当场重烤
+  卡死（用户实测 OnMouseUp 也卡，一版只切 AutoUpdate 不够）；`_jump_to_node`
+  里 `updateModeSetting() != Manual` 即用 **`hou.setUpdateMode()`** 切并在
+  结果面板记一条（已 Manual 不重复记；切失败显式记 [失败]，不再静默吞错），
+  恢复由用户在播放条手动选回。
+  **坑：`hou.updateModeSetting()` 是只读 getter，传参会 TypeError——一版
+  误当 setter 且被 try/except 吞掉，真机才暴露**；hython 实测
+  `setUpdateMode` 设 Manual 读回正确。
 - **右键**只有两项：跳转节点 / 在资源管理器中打开原路径（复制路径两项已按用户
   要求移除）。
 - 原路径取 `ref.files[0]`（序列取第一帧），不是 `abs_path`——序列的 `abs_path`
