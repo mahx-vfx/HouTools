@@ -228,6 +228,20 @@ def check_resources(src):
     print("assets OK (%d local refs, no orphans)" % len(local))
 
 
+def check_curated_shots():
+    """hdr.png 是用户精修展示图：生成脚本只能校验在位，不能重生成。"""
+    gen = (ROOT / "tests" / "gen_about_shots.py").read_text(encoding="utf-8")
+    match = re.search(r"CURATED_SHOTS\s*=\s*\(([^)]*)\)", gen)
+    assert match, "gen_about_shots.py must declare CURATED_SHOTS"
+    assert '"hdr.png"' in match.group(1), (
+        "hdr.png must be declared as a curated (never regenerated) shot")
+    assert not re.search(r"_grab\([^)]*hdr\.png", gen), (
+        "gen_about_shots.py must not grab/regenerate hdr.png")
+    assert (DOCS / "about_shots" / "hdr.png").is_file(), (
+        "curated hdr.png is missing; restore it from the source image")
+    print("curated shots OK (hdr.png kept, not regenerated)")
+
+
 def check_offline(src):
     assert "<style>" in src, "styles must stay inlined"
     assert "<link" not in src, "no external stylesheets (offline page)"
@@ -262,6 +276,7 @@ def main():
     check_anchors(src)
     check_menu_coverage(src)
     check_resources(src)
+    check_curated_shots()
     check_offline(src)
     check_a11y(src)
     print("about sync lint: all OK")

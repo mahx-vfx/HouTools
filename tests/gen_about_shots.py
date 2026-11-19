@@ -1,10 +1,13 @@
 """Generate real-window screenshots for the About page carousel (offline).
 
 Runs headless (QT_QPA_PLATFORM=offscreen) with Houdini's bundled Python.
-Instantiates the four tool windows with stubbed demo data and grabs each
-to docs/about_shots/*.png. Never touches the real settings/ (all stores
-are patched to temp dirs); the user's HDR library is only READ (files
-copied out to a temp dir). Re-run whenever a tool window's UI changes.
+Instantiates the generated tool windows with stubbed demo data and grabs
+each to docs/about_shots/*.png. Never touches the real settings/ (all
+stores are patched to temp dirs).
+
+docs/about_shots/hdr.png is a curated, user-supplied screenshot: it is
+verified but NEVER regenerated here (see CURATED_SHOTS). Re-run whenever
+one of the generated tool windows' UIs changes.
 
 Usage:
     "C:/.../python313/python.exe" tests/gen_about_shots.py
@@ -64,6 +67,10 @@ if _qt_bin.exists():
 OUT_DIR = ROOT / "docs" / "about_shots"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 SHOT_W, SHOT_H = 1080, 620
+
+# 用户提供的精修展示图：只校验在位，不参与离屏重生成。
+# 删掉或改坏时脚本会失败，提醒从源图/版本库恢复，绝不回退到合成截图。
+CURATED_SHOTS = ("hdr.png",)
 
 from PySide6 import QtGui, QtWidgets  # noqa: E402
 from unittest.mock import patch  # noqa: E402
@@ -147,143 +154,7 @@ def shot_videoseq(tmp: Path):
 
 
 # -------------------------------------------------------------------
-# 3) HDR Library — copies from the user's real lib (read-only) into a
-#    temp lib, real hoiiotool thumbnails generated in-process
-# -------------------------------------------------------------------
-def _collect_user_hdrs():
-    try:
-        # 配置目录经 constants 解析链（默认 Documents/HouTools/settings），
-        # 不再写死插件根 settings/
-        from houtools.core.constants import SETTINGS_DIR
-        cfg = json.loads((SETTINGS_DIR / "hdr_library.json")
-                         .read_text(encoding="utf-8"))
-    except (OSError, ImportError):
-        return []
-    lib = Path(cfg.get("lib_dir") or "")
-    if not lib.is_dir():
-        return []
-    found = []
-    for p in sorted(lib.rglob("*")):
-        if p.suffix.lower() in (".hdr", ".hdri", ".exr") and p.is_file():
-            rel = p.relative_to(lib)
-            cat = rel.parts[0] if len(rel.parts) > 1 else ""
-            found.append((p, cat))
-    return found
-
-
-def _write_demo_hdr_library(root: Path):
-    """无真实 HDR 库时生成演示库（渐变 Radiance HDR，OIIO 可读）。
-
-    截图脚本要能在任意机器重跑；用户未配置 HDR 库时用合成图保证
-    hdr.png 仍是最新品牌视觉，而不是留着旧截图。
-    """
-    import math
-
-    specs = [
-        ("Sunset", "sunset_01.hdr", (0.95, 0.38, 0.12)),
-        ("Sunset", "sunset_02.hdr", (0.85, 0.25, 0.18)),
-        ("Studio", "studio_softbox.hdr", (0.55, 0.62, 0.78)),
-        ("Studio", "studio_rim.hdr", (0.78, 0.70, 0.55)),
-        ("Night", "night_city.hdr", (0.08, 0.12, 0.30)),
-        ("Interior", "interior_warm.hdr", (0.62, 0.42, 0.28)),
-    ]
-
-    def _rgbe(r, g, b):
-        m = max(r, g, b)
-        if m < 1e-6:
-            return (0, 0, 0, 0)
-        e = math.frexp(m)[1]
-        s = math.ldexp(1.0, e - 8)
-        return (int(r / s), int(g / s), int(b / s), e + 128)
-
-    picks = []
-    for cat, name, base in specs:
-        path = root / cat / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        w, h = 128, 64
-        with path.open("wb") as f:
-            f.write(b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n")
-            f.write(("-Y %d +X %d\n" % (h, w)).encode())
-            for y in range(h):
-                for x in range(w):
-                    u, v = x / w, y / h
-                    sky = max(0.0, 1.0 - v)
-                    # 简单环境球观感：天顶亮、地平线暗、右上角一轮光源
-                    sun = math.exp(-(((u - 0.72) ** 2
-                                      + (v - 0.30) ** 2) / 0.008))
-                    ground = 0.22 if v > 0.62 else 1.0
-                    r = (base[0] * (0.35 + 0.85 * sky) + 1.4 * sun) * ground
-                    g = (base[1] * (0.30 + 0.70 * sky) + 1.2 * sun) * ground
-                    b = (base[2] * (0.40 + 0.75 * sky) + 0.9 * sun) * ground
-                    f.write(bytes(_rgbe(r, g, b)))
-        picks.append((path, cat))
-    return picks
-
-
-def shot_hdr(tmp: Path):
-    from houtools.core.settings import JsonStore
-    from houtools.hdrlight import browser as hdr_browser
-
-    picks = _collect_user_hdrs()
-    if not picks:
-        print("shot hdr: no user HDR lib, using synthetic demo library")
-        picks = _write_demo_hdr_library(tmp / "demo_hdr_src")
-    # 组间轮转取 6 个,保证侧栏出现多个分类
-    by_cat = {}
-    for p, c in picks:
-        by_cat.setdefault(c, []).append(p)
-    ordered, cats = [], list(by_cat)
-    while len(ordered) < 6 and any(by_cat[c] for c in cats):
-        for c in cats:
-            if by_cat[c] and len(ordered) < 6:
-                ordered.append((c, by_cat[c].pop(0)))
-    lib = tmp / "hdr_lib"
-    for c, p in ordered:
-        dest = lib / c / p.name
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(p, dest)
-
-    store = JsonStore("_about_shots_hdr.json", defaults={
-        "lib_dir": str(lib), "favorites": [], "thumb_size": 151,
-        "pin_on_top": False})
-    # 扫描快照 Store 同样打桩：模块级 _SCAN_INDEX 不隔离会写真实配置
-    # 目录（env 隔离后落到临时目录，双保险）
-    scan_index = JsonStore("_about_shots_scan.json", defaults={
-        "lib_dir": "", "dirs": {}, "files": {}, "thumbs": {}})
-    # offscreen 裸环境缺 qjpeg 插件(与 smoke_test 同一已知限制),
-    # 让缩略图缓存改走 PNG——OIIO 按扩展名选输出写入器,Qt 原生可读
-    _orig_thumb_path = hdr_browser.thumb_path
-
-    def _png_thumb(lib_dir, hdr_path):
-        return _orig_thumb_path(lib_dir, hdr_path)[:-4] + ".png"
-
-    with patch.object(hdr_browser, "_houdini_bin",
-                      lambda: str(HOUDINI_ROOT / "bin")), \
-         patch.object(hdr_browser, "thumb_path", _png_thumb), \
-         patch.object(hdr_browser, "_SETTINGS", store), \
-         patch.object(hdr_browser, "_SCAN_INDEX", scan_index):
-        win = hdr_browser._HdrLibraryWindow(str(lib))
-        win.resize(SHOT_W, SHOT_H)
-        win.show()
-        win.dir_label.setText("当前目录: C:/HDR_Library")
-        win.reload()
-        deadline = time.time() + 90
-        while time.time() < deadline:
-            QtWidgets.QApplication.processEvents()
-            th = win._thread
-            if th is None or not th.isRunning():
-                break
-            time.sleep(0.05)
-        # 缩略图就绪后还有 ~400ms 的批量 setIcon 延迟,多沉淀一轮确保上屏
-        _settle(win, 1800)
-        ok = _grab(win, "hdr.png")
-        win.deleteLater()
-    store.path.unlink(missing_ok=True)
-    return ok
-
-
-# -------------------------------------------------------------------
-# 4) Recipe Library — stubbed store, gradient thumbnails, metadata
+# 3) Recipe Library — stubbed store, gradient thumbnails, metadata
 # -------------------------------------------------------------------
 def shot_recipe(tmp: Path):
     from houtools.core.settings import JsonStore
@@ -412,9 +283,15 @@ def main():
         results = [
             shot_automation(tmp),
             shot_videoseq(tmp),
-            shot_hdr(tmp),
             shot_recipe(tmp),
         ]
+    # 精修图只读校验：缺失即失败，绝不用合成图兜底覆盖。
+    for name in CURATED_SHOTS:
+        path = OUT_DIR / name
+        kept = path.is_file() and path.stat().st_size > 0
+        print("shot %-14s kept (not regenerated): %s" % (
+            name, "ok" if kept else "MISS"))
+        results.append(kept)
     print("done:", ["ok" if r else "MISS" for r in results])
     # 截图缺失/保存失败必须让自动化感知：此前正常返回退出码 0，发布流程
     # 会拿着旧截图或缺图继续

@@ -366,7 +366,7 @@ _houtools_dispatcher.run("<tool_id>")
 python tests/test_theme_tokens.py   # 禁止 theme.py 之外裸 hex（允许 SVG 内容色）
 python tests/test_about_sync.py     # About 页与版本号 / token / 菜单 / 资源的同步断言
 python tests/test_fonts.py          # 品牌字/UI/等宽/文档字角色与回退
-python tests/gen_about_shots.py     # 重生成 docs/about_shots/*.png
+python tests/gen_about_shots.py     # 重生成 3 张 About 截图（hdr.png 固定保留）
 python tests/gen_brand_assets.py    # 重生成 README 品牌头图与徽章
 ```
 
@@ -383,7 +383,7 @@ HouTools/
 │   ├── brand.md                  # 品牌手册（token / 组件 / 图标 / 文案 do&don't）
 │   ├── brand/                    # README 品牌头图 + 字标（tests/gen_brand_assets.py 生成；环境徽章走 shields.io）
 │   ├── fonts/                    # 钉钉进步体 woff2（离线 @font-face）
-│   └── about_shots/              # 轮播工具截图（tests/gen_about_shots.py 离屏生成，窗口 UI 变更后重跑）
+│   └── about_shots/              # 窗口截图（3 张由 gen_about_shots.py 离屏生成；hdr.png 用户精修图固定保留）
 ├── python_panels/Automation.pypanel  # Automation 的 Python Panel 界面
 ├── python3.13libs/
 │   ├── uiready.py                 # UI 启动钩子：装默认键位（会话启动时执行）
@@ -405,7 +405,7 @@ HouTools/
 │   ├── smoke_test.py             # 无头回归（菜单/导入/窗口实例化/行为断言）
 │   ├── test_theme_tokens.py      # token lint（禁止 theme.py 之外裸 hex）
 │   ├── test_fonts.py             # 字体文件/角色回退/加载
-│   ├── gen_about_shots.py        # 离屏重生成 About 截图
+│   ├── gen_about_shots.py        # 离屏重生成 3 张 About 截图（hdr.png 不重生成）
 │   └── gen_brand_assets.py       # 离屏重生成 README 品牌头图与徽章
 ```
 

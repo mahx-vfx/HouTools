@@ -63,8 +63,9 @@ description: HouTools 发版流程（版本号更新、README/About 手册同步
   docs/index.html（工具目录 nav + section 小节；网络编辑器类功能加轮播 SVG 示意卡——
   离屏截不了网络编辑器，参照现有 slide 风格：880×320、#241d1c 底、标题栏三色点、
   #2d2d2d 网格线、左下角操作提示文字）。
-- 工具窗口 UI 有改动 → 用 Houdini 自带 python 重生成四张轮播截图（offscreen，
-  脚本自带打桩演示数据，改的是哪个窗口就全量重跑）：
+- 工具窗口 UI 有改动 → 用 Houdini 自带 python 重生成三张离屏截图（offscreen，
+  脚本自带打桩演示数据，改的是哪个窗口就全量重跑）；`docs/about_shots/hdr.png`
+  是用户精修图，固定保留、不重生成：
   `"$(bash .agents/skills/houtools-release/scripts/find_houdini_python.sh)" tests/gen_about_shots.py`
 - 跑无头回归，必须全绿再继续：
   `"$(bash .agents/skills/houtools-release/scripts/find_houdini_python.sh)" tests/smoke_test.py`

@@ -192,7 +192,7 @@ H1–H6 全部有独立配色（8 色内容板），正文固定 `TEXT_2`：
 - 用 `theme.color("TOKEN")` / `qss.window_qss()`，不写裸 hex。
 - 每个工具窗口只有一个橙色主按钮（Settings 的逐行「应用」按 5.5 规范例外）。
 - 状态同时给颜色 + 图标/文字。
-- 改窗口 UI 后重跑 `tests/gen_about_shots.py` 与 `tests/gen_brand_assets.py`。
+- 改窗口 UI 后重跑 `tests/gen_about_shots.py` 与 `tests/gen_brand_assets.py`；HDR 展示图是用户精修图，固定保留不重生成。
 
 **Don't**
 
@@ -213,7 +213,7 @@ python tests/test_theme_tokens.py
 python tests/test_about_sync.py
 python tests/test_fonts.py
 python tests/smoke_test.py
-python tests/gen_about_shots.py
+python tests/gen_about_shots.py   # 3 张离屏截图；hdr.png 固定保留
 python tests/gen_brand_assets.py
 ```
 
