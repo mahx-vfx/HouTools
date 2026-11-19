@@ -5411,12 +5411,20 @@ def main():
     assert _pkg_win._status_label.text() == "—"
     assert _pkg_win.objectName() == "htWindow"
     assert _pkg_win.is_close_deferred() is False
-    # 修复后列宽策略必须真的生效：0=勾选列 Fixed/34px、4/5=路径列 Stretch
+    # 2026-11-20 用户要求列宽可拖：0=勾选列 Fixed/34px，数据列全部
+    # Interactive（ResizeToContents/Stretch 模式 Qt 不响应鼠标拖动），
+    # 末列吸收余宽；初始宽度已按列给默认值
     _pkg_hdr = qtcompat.rewrap(_pkg_win._table.horizontalHeader(),
                                _QtW.QHeaderView)
     assert _pkg_hdr.sectionResizeMode(0) == _QtW.QHeaderView.Fixed
-    assert _pkg_hdr.sectionResizeMode(4) == _QtW.QHeaderView.Stretch
+    for _col in (1, 2, 3, 4, 5, 6):
+        assert _pkg_hdr.sectionResizeMode(_col) == \
+            _QtW.QHeaderView.Interactive, _col
+    assert _pkg_hdr.stretchLastSection() is True
     assert _pkg_win._table.columnWidth(0) == 34
+    assert _pkg_win._table.columnWidth(4) == 300
+    assert not hasattr(_pkg_win, "_include_output_check"), \
+        "含空输出路径勾选已按用户要求移除"
     # worker 类可无头构造（不 start）：协作式取消标志就位
     _pkg_copier = pkg_window._CopyWorker({})
     assert _pkg_copier.cancelled is False

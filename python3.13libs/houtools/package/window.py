@@ -33,7 +33,7 @@ import zipfile
 from PySide6.QtCore import Qt, QEvent, QThread, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout,
+    QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMenu, QPlainTextEdit, QProgressBar,
     QPushButton, QRadioButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
@@ -487,12 +487,6 @@ class PackageProjectWindow(QDialog):
         self._pkg_edit.textChanged.connect(self._on_targets_changed)
         top.addWidget(self._pkg_edit)
         top.addStretch()
-        self._include_output_check = QCheckBox("含空输出路径")
-        self._include_output_check.setToolTip(
-            "默认只收磁盘上已有文件的输出（filecache 的 geo 缓存这类）；"
-            "勾上才把还没落盘的输出参数也列出来")
-        self._include_output_check.toggled.connect(self._on_scan)
-        top.addWidget(self._include_output_check)
         top.addSpacing(8)
         self._scan_btn = QPushButton("扫描")
         self._scan_btn.setToolTip("收集用户手动填过的文件引用与已落盘的缓存，"
@@ -541,13 +535,19 @@ class PackageProjectWindow(QDialog):
         # 保住窗口可用：只是少几列自适应策略，不能让整个工具打不开。
         header = qtcompat.rewrap(self._table.horizontalHeader(), QHeaderView)
         self._table.setColumnWidth(_COL_CHECK, 34)
+        # 全部数据列 Interactive：鼠标拖列边界直接调宽（2026-11-20 用户要求）。
+        # ResizeToContents / Stretch 模式 Qt 不响应拖动，之前拖不动就是它们。
+        # 勾选列保持固定 34px；末列吸收余宽，其余列宽保持用户拖过的值。
         if hasattr(header, "setSectionResizeMode"):
             header.setSectionResizeMode(_COL_CHECK, QHeaderView.Fixed)
-            for column in (_COL_KIND, _COL_NODE, _COL_PARM, _COL_STATE):
-                header.setSectionResizeMode(column,
-                                            QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(_COL_SRC, QHeaderView.Stretch)
-            header.setSectionResizeMode(_COL_DST, QHeaderView.Stretch)
+            for column in (_COL_KIND, _COL_NODE, _COL_PARM,
+                           _COL_SRC, _COL_DST, _COL_STATE):
+                header.setSectionResizeMode(column, QHeaderView.Interactive)
+            header.setStretchLastSection(True)
+        for column, width in ((_COL_KIND, 120), (_COL_NODE, 200),
+                              (_COL_PARM, 90), (_COL_SRC, 300),
+                              (_COL_DST, 300)):
+            self._table.setColumnWidth(column, width)
         layout.addWidget(self._table, 1)
 
         self._hint_label = QLabel("")
@@ -734,7 +734,11 @@ class PackageProjectWindow(QDialog):
         self._check_job()
         self._hip_dir = os.path.normpath(hou.text.expandString("$HIP"))
         self._drop_stale_session()
-        include_output = self._include_output_check.isChecked()
+        # 「含空输出路径」勾选已移除（2026-11-20 用户拍板）：未落盘的输出
+        # 既不会被复制也不会被改写，列出来只是一行缺失、无可操作价值。
+        # 扫描固定只收已落盘输出；collect 的 include_output 参数保留给
+        # 无窗口调用/测试。
+        include_output = False
         try:
             candidates, skip_stats = collect.gather(self._hip_dir, include_output)
         except Exception as exc:                  # HOM 读取失败直接报
@@ -796,10 +800,8 @@ class PackageProjectWindow(QDialog):
                       "（只收用户填过的文件引用与已落盘的缓存）")
             return
         missing = [ref for ref in self._refs if ref.missing]
-        mode_text = "输入 + 输出" if self._include_output_check.isChecked() \
-            else "输入 + 已落盘输出"
-        self._log("[{}] 扫描到 {} 个引用（{}），{} 个文件".format(
-            "失败" if missing else "完成", len(self._refs), mode_text,
+        self._log("[{}] 扫描到 {} 个引用（输入 + 已落盘输出），{} 个文件".format(
+            "失败" if missing else "完成", len(self._refs),
             sum(len(ref.files) for ref in self._refs)))
         for ref in missing:
             self._log("[失败] 缺失 {}:{} → {}（手动引用了但文件不存在，"
@@ -953,23 +955,15 @@ class PackageProjectWindow(QDialog):
     def _on_context_menu(self, pos):
         index = self._table.indexAt(pos)
         ref = self._ref_at(index)
+        if ref is None:
+            return
         menu = QMenu(self)
-        # 字号调整不依赖行（2026-11-20 用户要求：长分类可放大缩小查看）
-        font_menu = menu.addMenu("表格字号")
-        pt = self._table_pt()
-        font_menu.addAction("增大（Ctrl+滚轮上）",
-                            lambda: self._set_table_pt(pt + 1))
-        font_menu.addAction("减小（Ctrl+滚轮下）",
-                            lambda: self._set_table_pt(pt - 1))
-        font_menu.addAction("恢复默认",
-                            lambda: self._set_table_pt(self._table_default_pt))
-        if ref is not None:
-            menu.addAction("跳转到节点", lambda: self._jump_to_node(ref))
-            menu.addAction("在资源管理器中打开原路径",
-                           lambda: self._reveal_source(ref))
+        menu.addAction("跳转到节点", lambda: self._jump_to_node(ref))
+        menu.addAction("在资源管理器中打开原路径",
+                       lambda: self._reveal_source(ref))
         menu.exec(self._table.viewport().mapToGlobal(pos))
 
-    # ---- 表格字号缩放（Ctrl+滚轮 / 右键菜单，仅本窗口会话内生效） ----
+    # ---- 表格字号缩放（Ctrl+滚轮，仅本窗口会话内生效） ----
     _FONT_MIN_PT = 7
     _FONT_MAX_PT = 24
 
@@ -1338,8 +1332,7 @@ class PackageProjectWindow(QDialog):
         for widget in (self._scan_btn, self._apply_btn, self._zip_btn,
                        self._select_all_btn, self._clear_btn, self._table,
                        self._root_combo, self._pkg_edit,
-                       self._include_output_check, self._save_copy_radio,
-                       self._overwrite_radio):
+                       self._save_copy_radio, self._overwrite_radio):
             widget.setEnabled(not busy)
 
     def _active_worker(self):
