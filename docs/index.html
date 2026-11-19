@@ -257,28 +257,25 @@
     display: inline-flex;
     align-items: center;
     gap: 9px;
-    padding: 5px 14px;
-    border-radius: 4px;
-    border: 1px solid var(--line);
-    background: var(--ink-900);
+    padding: 1px 0;
     color: var(--text-2);
     text-decoration: none;
     font-size: 13px;
   }
-  .repo-link:hover { border-color: var(--accent); color: var(--text); }
+  .repo-link:hover { color: var(--text); }
   .repo-link svg { width: 15px; height: 15px; fill: currentColor; flex: none; }
   .repo-link .repo-url {
     font-family: var(--mono);
     font-size: 12.5px;
     color: var(--warning);
   }
-  .repo-link:hover .repo-url { color: var(--warning); }
+  .repo-link:hover .repo-url { color: var(--accent-hover); }
   .repo-tag {
-    font-size: 11px;
+    font-size: 12.5px;
+    font-weight: 600;
     padding: 1px 9px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, .08);
-    color: var(--text-3);
+    color: var(--bg);
   }
   .repo-label {
     font-size: 13px;
@@ -561,27 +558,44 @@ h2:hover .h2-anchor,h3:hover .h3-anchor{opacity:.7}
 /* ================= B · 文档站 DOCSITE ================= */
 body.ds{ font-size:15px; }
 .ds-top{
-  position:sticky; top:12px; z-index:40; height:58px; display:flex; align-items:center; gap:20px;
-  width:min(1180px, 100% - 40px); margin:0 auto; padding:0 22px;
-  border-radius:999px;
-  /* 液态玻璃（iOS 26 dark material）：悬浮胶囊 + 真实折射。第二条 backdrop-filter 引用
-     内联 SVG feDisplacementMap（#lg-capsule）——Chromium/Edge 下玻璃两端圆帽处背景可见弯曲；
-     不支持 url() 位移的引擎解析时落级为第一条声明 = 普通磨砂玻璃 */
-  background:rgba(8,8,14,.62);
+  position:sticky; top:0; z-index:40; height:58px; display:flex; align-items:center; gap:20px;
+  width:100%; padding:0 26px;
+  /* 液态玻璃（iOS 26 dark material）：全宽拉通。折射由栏内 hero.jpg 背景副本（.lg-replica）
+     承担——SVG 元素滤镜全浏览器支持，不依赖 backdrop-filter:url()（真机/无头都可能
+     落级成纯模糊，已实测）；副本只在顶栏悬浮于 Hero 之上时显示（.lg-on，JS 同步），
+     滚过 hero 后隐藏 = 本磨砂玻璃材质 */
+  background:rgba(8,8,14,.36);
   text-shadow:0 1px 2px rgba(0,0,0,.45);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,.16),
-    inset 0 -1px 0 rgba(255,255,255,.05),
-    inset 1px 0 0 rgba(255,255,255,.07),
-    inset -1px 0 0 rgba(255,255,255,.07),
-    0 12px 32px rgba(0,0,0,.38);
-  backdrop-filter:blur(12px) saturate(1.5);
-  backdrop-filter:url("#lg-capsule") blur(4px) saturate(1.6) brightness(1.06);
+  /* 亮边/内光不能走宿主 inset box-shadow——z:-1 的背景副本会把它盖住
+     （inset 阴影画在堆叠第 1 层、副本在第 2 层），全部画进 ::before 覆盖层（z:1） */
+  box-shadow:0 8px 24px rgba(0,0,0,.35);
+  backdrop-filter:blur(10px) saturate(1.4);
 }
+/* svg 是替换元素：绝对定位下 inset:0 + auto 宽高会落回固有尺寸 300×150，
+   必须显式 width/height:100% 才能铺满栏；z-index:-1 压到栏底色之上、文字之下
+   （.ds-top 有 sticky+z-index 自成堆叠上下文，负 z 不会跌出栏外） */
+.lg-replica,.lg-tint{position:absolute;inset:0;z-index:-1;width:100%;height:100%;pointer-events:none;display:none}
+.ds-top.lg-on .lg-replica{display:block}
+.ds-top.lg-on .lg-tint{display:block;background:rgba(8,8,14,.42)}
 .ds-top::before{
-  content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none;
-  /* 玻璃上缘镜面高光：环境反光随滚动掠过内容 */
+  content:""; position:absolute; inset:0; z-index:1; pointer-events:none;
+  /* 顶部镜面高光（全宽恒定：屏幕顶缘没有外部内容，环境反光天然均匀） */
   background:linear-gradient(180deg, rgba(255,255,255,.15), rgba(255,255,255,.04) 44%, rgba(255,255,255,0) 62%);
+}
+/* 底部亮边：亮度跟随背景。mask 的 17 个 stop 按 hero.jpg 顶栏背景条带（源图 y116-205）
+   实测亮度生成（暗部 lum14-45→alpha .12-.22，机甲壳亮峰 lum186-231→alpha .93-1，
+   右缘回落 lum14-56→alpha .12-.28）——换 hero 图需重新采样生成。
+   滚过 hero 后（无 .lg-on）背景全是暗色内容，整条等比减暗（物理：无光源则无亮边）。
+   亮边独立成 ::after 层 + 水平 mask 调制，而不是把两层渐变塞进一个 background */
+.ds-top::after{
+  content:""; position:absolute; left:0; right:0; bottom:0; height:6px; z-index:1; pointer-events:none;
+  background:linear-gradient(0deg, rgba(255,255,255,.45) 0 1px, rgba(255,255,255,.18) 3.5px, rgba(255,255,255,0) 7px);
+  -webkit-mask-image:linear-gradient(90deg, rgba(0,0,0,.12) 0%, rgba(0,0,0,.12) 6.25%, rgba(0,0,0,.17) 12.5%, rgba(0,0,0,.21) 18.75%, rgba(0,0,0,.22) 25%, rgba(0,0,0,.22) 31.25%, rgba(0,0,0,.22) 37.5%, rgba(0,0,0,.28) 43.75%, rgba(0,0,0,.93) 50%, rgba(0,0,0,1) 56.25%, rgba(0,0,0,1) 62.5%, rgba(0,0,0,.78) 68.75%, rgba(0,0,0,.7) 75%, rgba(0,0,0,.53) 81.25%, rgba(0,0,0,.28) 87.5%, rgba(0,0,0,.13) 93.75%, rgba(0,0,0,.12) 100%);
+  mask-image:linear-gradient(90deg, rgba(0,0,0,.12) 0%, rgba(0,0,0,.12) 6.25%, rgba(0,0,0,.17) 12.5%, rgba(0,0,0,.21) 18.75%, rgba(0,0,0,.22) 25%, rgba(0,0,0,.22) 31.25%, rgba(0,0,0,.22) 37.5%, rgba(0,0,0,.28) 43.75%, rgba(0,0,0,.93) 50%, rgba(0,0,0,1) 56.25%, rgba(0,0,0,1) 62.5%, rgba(0,0,0,.78) 68.75%, rgba(0,0,0,.7) 75%, rgba(0,0,0,.53) 81.25%, rgba(0,0,0,.28) 87.5%, rgba(0,0,0,.13) 93.75%, rgba(0,0,0,.12) 100%);
+}
+.ds-top:not(.lg-on)::after{
+  -webkit-mask-image:linear-gradient(90deg, rgba(0,0,0,.18), rgba(0,0,0,.18));
+  mask-image:linear-gradient(90deg, rgba(0,0,0,.18), rgba(0,0,0,.18));
 }
 /* 玻璃上的幽灵件自带暗 scrim：不依赖身后恰为暗部（版本胶囊 / GitHub / GitCode） */
 .ds-top .ds-ver,.ds-top .ds-btn{background:rgba(5,5,10,.5)}
@@ -623,6 +637,24 @@ body.ds{ font-size:15px; }
 .ds-hero h1 img{height:1em;width:auto;display:block}
 .ds-hero .sub{font-size:15px}
 .ds-hero .hero-glass{background:rgba(21,21,28,.72)}
+/* 仓库地址玻璃卡 = 液态玻璃：毛玻璃/边缘折射由卡内 hero.jpg 双层副本承担
+   （JS 同步几何与 hero 背景严格对齐），这里的底色只是无 JS 兜底 */
+.repo-glass{position:relative;z-index:0;overflow:hidden;border-radius:10px;
+  border:1px solid rgba(255,255,255,.22);
+  box-shadow:0 10px 30px rgba(0,0,0,.35)}
+/* 亮边同样画在 ::before 覆盖层——宿主 inset box-shadow 会被 z:-1 副本盖住 */
+.repo-glass::before{
+  content:""; position:absolute; inset:0; z-index:1; border-radius:inherit; pointer-events:none;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.28),
+    inset 0 -1px 0 rgba(255,255,255,.1),
+    inset 1px 0 0 rgba(255,255,255,.12),
+    inset -1px 0 0 rgba(255,255,255,.12);
+  /* 亮边亮度跟随背景（与顶栏 ::after 同逻辑）：卡片背后左暗右亮，
+     水平 mask 把左缘亮边压暗到 .25 倍、向右渐亮 */
+  -webkit-mask-image:linear-gradient(90deg, rgba(0,0,0,.25) 0%, rgba(0,0,0,.25) 45%, #000 80%, #000 100%);
+  mask-image:linear-gradient(90deg, rgba(0,0,0,.25) 0%, rgba(0,0,0,.25) 45%, #000 80%, #000 100%)}
+.lg-replica-box{position:absolute;inset:0;z-index:-1;width:100%;height:100%;pointer-events:none}
 
 .ds-layout{display:grid;grid-template-columns:236px minmax(0,1fr) 200px;align-items:start;
   max-width:1360px;margin:0 auto}
@@ -707,18 +739,46 @@ body.ds{ font-size:15px; }
 </head>
 <body class="ds">
 
-<!-- 液态玻璃位移滤镜：feImage 携带程序化折射贴图（R=横向位移 G=纵向位移，127=中性），
-     feDisplacementMap 对顶栏背景做真实像素弯曲——胶囊两端圆帽处可见机甲壳边缘被透镜折射。
-     纯内联零依赖；仅 Chromium/Edge 支持在 backdrop-filter 中引用 SVG 滤镜，
-     其余浏览器走 CSS 里的磨砂玻璃落级声明。贴图 rgb() 取值避开 #hex（同步测试约束） -->
+<!-- 液态玻璃滤镜组（施加在顶栏/仓库卡的 hero.jpg 背景副本上，SVG 元素滤镜全浏览器支持）：
+     lg-frost = 中间毛玻璃（blur6+提饱和）；lg-rimsharp = 边缘折射层的轻滤镜（blur1.5+提饱和，
+     保持弯曲内容清晰）。
+     边缘折射本体不靠滤镜：JS 把折射层副本按比例向栏/卡中心压缩绘制（顶栏垂直 0.45、
+     卡片 0.9/0.5），压缩让平滑背景在边缘被挤成可见的厚度带、直线在玻璃内真实弯曲；
+     lg-rim 遮罩只露边缘带，中间让位毛玻璃。
+     已证伪并弃用：backdrop-filter:url()（真机+无头落级纯模糊）、feImage 贴图（整链失效）、
+     feTurbulence 位移（噪声=雾感，读不出折射）。取值不含 #hex（规避 svg-hex 扫描） -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
-  <filter id="lg-capsule" x="-5%" y="-40%" width="110%" height="180%" color-interpolation-filters="sRGB">
-    <feImage href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='80'><rect width='320' height='80' fill='rgb(127,127,127)'/><rect width='320' height='12' fill='url(%23gt)'/><rect y='68' width='320' height='12' fill='url(%23gb)'/><circle cx='40' cy='40' r='40' fill='url(%23gl)'/><circle cx='280' cy='40' r='40' fill='url(%23gr)'/><defs><radialGradient id='gl'><stop offset='0' stop-color='rgb(127,127,127)'/><stop offset='.7' stop-color='rgb(150,127,127)'/><stop offset='1' stop-color='rgb(214,127,127)'/></radialGradient><radialGradient id='gr'><stop offset='0' stop-color='rgb(127,127,127)'/><stop offset='.7' stop-color='rgb(104,127,127)'/><stop offset='1' stop-color='rgb(40,127,127)'/></radialGradient><linearGradient id='gt' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='rgb(127,170,127)'/><stop offset='1' stop-color='rgb(127,127,127)'/></linearGradient><linearGradient id='gb' x1='0' y1='1' x2='0' y2='0'><stop offset='0' stop-color='rgb(127,84,127)'/><stop offset='1' stop-color='rgb(127,127,127)'/></linearGradient></defs></svg>" result="map" preserveAspectRatio="none" x="0" y="0" width="100%" height="100%"/>
-    <feDisplacementMap in="SourceGraphic" in2="map" scale="26" xChannelSelector="R" yChannelSelector="G"/>
+  <filter id="lg-frost" x="-6%" y="-25%" width="112%" height="150%" color-interpolation-filters="sRGB">
+    <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="b"/>
+    <feColorMatrix in="b" type="saturate" values="1.4"/>
   </filter>
+  <filter id="lg-rimsharp" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+    <feGaussianBlur in="SourceGraphic" stdDeviation="1" result="b"/>
+    <feColorMatrix in="b" type="saturate" values="1.5" result="s"/>
+    <feColorMatrix in="s" type="matrix" values="0.62 0 0 0 0.02  0 0.62 0 0 0.02  0 0 0.62 0 0.03  0 0 0 1 0"/>
+  </filter>
+  <mask id="lg-rim" maskUnits="userSpaceOnUse" x="0" y="0" width="100%" height="100%">
+    <rect width="100%" height="100%" fill="url(#lg-rimfade)"/>
+  </mask>
+  <linearGradient id="lg-rimfade" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="white"/>
+    <stop offset="0.42" stop-color="white"/>
+    <stop offset="0.55" stop-color="black"/>
+    <stop offset="0.65" stop-color="black"/>
+    <stop offset="0.78" stop-color="white"/>
+    <stop offset="1" stop-color="white"/>
+  </linearGradient>
 </svg>
 
 <header class="ds-top">
+  <!-- hero.jpg 背景副本：与 .ds-hero 同一 cover 几何（JS 随滚动/缩放同步 x/y）。
+       第一份 = 毛玻璃底层；第二份 = 边缘折射层（遮罩裁成上下边缘带，滤镜区域
+       userSpaceOnUse 钉在栏坐标系——过扫描不需要，图像本身高出栏 500px+ 供采样） -->
+  <svg class="lg-replica" aria-hidden="true" focusable="false">
+    <image href="assets/hero.jpg" x="0" y="0" width="100%" height="100%" filter="url(#lg-frost)" preserveAspectRatio="none"/>
+    <image href="assets/hero.jpg" x="0" y="0" width="100%" height="100%" filter="url(#lg-rimsharp)" mask="url(#lg-rim)" preserveAspectRatio="none"/>
+  </svg>
+  <div class="lg-tint" aria-hidden="true"></div>
   <a class="ds-brand" href="#top"><img class="ds-logo" src="brand/houtools-wordmark.png" alt="HouTools" width="1851" height="480"></a>
   <div class="ds-nav">
     <a href="#automation">工具</a>
@@ -749,6 +809,12 @@ body.ds{ font-size:15px; }
       </div>
       
   <div class="hero-glass repo-glass">
+    <!-- hero.jpg 背景副本：与 hero 背景同几何（JS 随滚动/缩放按盒子实际位置换算），
+         毛玻璃底层 + 边缘液体折射层（lg-rim 遮罩裁边）= 液态玻璃卡 -->
+    <svg class="lg-replica-box" aria-hidden="true" focusable="false">
+      <image href="assets/hero.jpg" x="0" y="0" width="100%" height="100%" filter="url(#lg-frost)" preserveAspectRatio="none"/>
+      <image href="assets/hero.jpg" x="0" y="0" width="100%" height="100%" filter="url(#lg-rimsharp)" mask="url(#lg-rim)" preserveAspectRatio="none"/>
+    </svg>
     <div class="repo-row">
       <span class="repo-label">仓库地址</span>
       <a class="repo-link" href="https://gitcode.com/mahx-vfx/HouTools" target="_blank" rel="noopener">
@@ -1552,6 +1618,62 @@ body.ds{ font-size:15px; }
     /* 弹窗内只有关闭按钮可聚焦,把 Tab 锁在它上面 */
     if (e.key === 'Tab') { e.preventDefault(); closeBtn.focus(); }
   });
+})();
+
+/* 液态玻璃背景副本几何同步：顶栏悬浮于 Hero 之上时，用与 .ds-hero 完全相同的
+   cover 几何绘制 hero.jpg 副本（毛玻璃层 + 边缘折射层）；滚过 Hero 隐藏副本 =
+   顶栏回落磨砂玻璃。图像本身高出栏 500px+，边缘折射的玻璃外采样天然有内容 */
+(function () {
+  var bar = document.querySelector('.ds-top');
+  var rep = document.querySelector('.lg-replica');
+  var imgs = rep ? rep.querySelectorAll('image') : null;
+  var hero = document.querySelector('.hero');
+  var box = document.querySelector('.repo-glass');
+  var boxImgs = document.querySelectorAll('.lg-replica-box image');
+  if (!bar || !rep || !imgs || !imgs.length || !hero) return;
+  var IW = 2208, IH = 960;                     /* hero.jpg 原始像素 */
+  function sync() {
+    var vw = window.innerWidth;
+    var s = window.scrollY || window.pageYOffset || 0;
+    var hh = hero.offsetHeight;
+    var on = hh > 0 && s < hh;
+    bar.classList.toggle('lg-on', on);
+    if (!on) return;
+    /* cover + center 45%：与 .ds-hero 的 background-size/position 严格同几何 */
+    var scale = Math.max(vw / IW, hh / IH);
+    var dw = IW * scale, dh = IH * scale;
+    var ix = (vw - dw) / 2, iy = (hh - dh) * 0.45 - s;
+    /* 压缩几何：折射层向栏/卡中心按比例压缩绘制——平滑背景在边缘被挤成厚度带，
+       直线在玻璃内平滑弯曲（折射可读的关键：位移场必须平滑几何，噪声=雾感） */
+    var cy = 29;                                 /* 顶栏垂直中心 */
+    var rimY = (cy + (iy - cy) * 0.3).toFixed(1), rimH = (dh * 0.3).toFixed(1);
+    imgs[0].setAttribute('x', ix.toFixed(1));
+    imgs[0].setAttribute('y', iy.toFixed(1));
+    imgs[0].setAttribute('width', dw.toFixed(1));
+    imgs[0].setAttribute('height', dh.toFixed(1));
+    imgs[1].setAttribute('x', ix.toFixed(1));
+    imgs[1].setAttribute('y', rimY);
+    imgs[1].setAttribute('width', dw.toFixed(1));
+    imgs[1].setAttribute('height', rimH);
+    /* 仓库玻璃卡副本：hero 背景图映射到卡片自身坐标系（卡片悬浮于 hero 之上，
+       副本与卡片后的真实背景逐像素对齐，折射才连续）；折射层双向压缩（0.9/0.5） */
+    if (boxImgs.length) {
+      var r = box.getBoundingClientRect();
+      var bx0 = ix - r.left, by0 = iy - r.top;
+      var bcx = r.width / 2, bcy = r.height / 2;
+      boxImgs[0].setAttribute('x', bx0.toFixed(1));
+      boxImgs[0].setAttribute('y', by0.toFixed(1));
+      boxImgs[0].setAttribute('width', dw.toFixed(1));
+      boxImgs[0].setAttribute('height', dh.toFixed(1));
+      boxImgs[1].setAttribute('x', (bcx + (bx0 - bcx) * 0.85).toFixed(1));
+      boxImgs[1].setAttribute('y', (bcy + (by0 - bcy) * 0.4).toFixed(1));
+      boxImgs[1].setAttribute('width', (dw * 0.85).toFixed(1));
+      boxImgs[1].setAttribute('height', (dh * 0.4).toFixed(1));
+    }
+  }
+  window.addEventListener('scroll', sync, { passive: true });
+  window.addEventListener('resize', sync);
+  sync();
 })();
 </script>
 </body>
