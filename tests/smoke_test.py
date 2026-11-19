@@ -5391,6 +5391,86 @@ def main():
         raise AssertionError("缺失路径应抛 OSError")
     print("reveal guard OK")
 
+    # ------------------------------------------------------------------
+    # 代码审查修复回归（2026-11-19）
+    # ------------------------------------------------------------------
+
+    # P1-01：不同源目录展平后重名 → 目标必须唯一，复制与改写用同一份映射
+    _ref_a = pkg_collect.Ref(
+        kind="input", node_path="/obj/a", parm_name="file",
+        raw="D:/proj/foo/bar/albedo.exr",
+        abs_path="D:/proj/foo/bar/albedo.exr",
+        files=["D:/proj/foo/bar/albedo.exr"])
+    _ref_b = pkg_collect.Ref(
+        kind="input", node_path="/obj/b", parm_name="file",
+        raw="D:/proj_foo/bar/albedo.exr",
+        abs_path="D:/proj_foo/bar/albedo.exr",
+        files=["D:/proj_foo/bar/albedo.exr"])
+    _targets, _plan, _notes = pkg_collect.build_layout(
+        [_ref_a, _ref_b], "$HIP", "C:/hip", "ht_package", "C:/hip")
+    assert _targets[0] != _targets[1], _targets
+    assert _plan["D:/proj/foo/bar/albedo.exr"] != \
+        _plan["D:/proj_foo/bar/albedo.exr"], _plan
+    assert _notes, "重名应写一条 note"
+    # 同一源目录的文件共享一个 assets 子目录
+    _ref_c = pkg_collect.Ref(
+        kind="input", node_path="/obj/c", parm_name="file",
+        raw="D:/proj/foo/bar/normal.exr",
+        abs_path="D:/proj/foo/bar/normal.exr",
+        files=["D:/proj/foo/bar/normal.exr"])
+    _t2, _p2, _ = pkg_collect.build_layout(
+        [_ref_a, _ref_c], "$HIP", "C:/hip", "ht_package", "C:/hip")
+    assert os.path.dirname(_t2[0]) == os.path.dirname(_t2[1]), _t2
+    print("package target uniqueness OK")
+
+    # P2-01：UDIM 模板枚举 4 位 Tile（不把 backup 当 Tile）
+    _udim_dir = tempfile.mkdtemp(prefix="pkg_udim_")
+    try:
+        for name in ("tex.1001.exr", "tex.1002.exr", "tex.backup.exr",
+                     "tex.1003.exr.bak"):
+            (Path(_udim_dir) / name).write_bytes(b"x")
+        _udim_files = pkg_collect._udim_files(
+            os.path.join(_udim_dir, "tex.<UDIM>.exr"))
+        assert [os.path.basename(p) for p in _udim_files] == \
+            ["tex.1001.exr", "tex.1002.exr"], _udim_files
+    finally:
+        shutil.rmtree(_udim_dir, ignore_errors=True)
+    print("UDIM scan OK")
+
+    # P3-01：filecache 序列只收纯数字帧，不收 sim.backup / sim.final
+    _frame_dir = tempfile.mkdtemp(prefix="pkg_frames_")
+    try:
+        for name in ("sim.1001.bgeo.sc", "sim.1002.bgeo.sc",
+                     "sim.backup.bgeo.sc", "sim.final.bgeo.sc"):
+            (Path(_frame_dir) / name).write_bytes(b"x")
+        _frames = pkg_collect._frames_from_path(
+            os.path.join(_frame_dir, "sim.1001.bgeo.sc"))
+        assert [os.path.basename(p) for p in _frames] == \
+            ["sim.1001.bgeo.sc", "sim.1002.bgeo.sc"], _frames
+    finally:
+        shutil.rmtree(_frame_dir, ignore_errors=True)
+    print("strict frame glob OK")
+
+    # P3-02：Windows 保留设备名不能直接当包名
+    assert pkg_paths.sanitize_pkg_name("CON") == "pkg_CON"
+    assert pkg_paths.sanitize_pkg_name("NUL.txt") == "pkg_NUL.txt"
+    assert pkg_paths.sanitize_pkg_name("com1") == "pkg_com1"
+    assert pkg_paths.sanitize_pkg_name("normal") == "normal"
+    print("reserved pkg name OK")
+
+    # P2-03：非法 UTF-8 配置必须留底 .bak 并回退默认，不能抛异常
+    from houtools.core import settings as pkg_settings
+    _bad_name = "pkg_bad_utf8_{}.json".format(os.getpid())
+    _bad_path = pkg_settings.SETTINGS_DIR / _bad_name
+    _bad_path.parent.mkdir(parents=True, exist_ok=True)
+    _bad_path.write_bytes(b'{"a": "\xff\xfe"}')
+    _store = pkg_settings.JsonStore(_bad_name, defaults={"a": 1})
+    assert _store.get("a") == 1, dict(_store)
+    assert (pkg_settings.SETTINGS_DIR / (_bad_name + ".bak")).exists(), \
+        "非法 UTF-8 应留底 .bak"
+    assert not _bad_path.exists(), "损坏文件应改名留底"
+    print("settings invalid utf8 recovery OK")
+
     print("SMOKE TEST OK")
 
 

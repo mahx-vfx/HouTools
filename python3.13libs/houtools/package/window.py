@@ -164,14 +164,46 @@ class _CopyWorker(QThread):
         self.done.emit(copied, failures)
 
 
+class _ScanWorker(QThread):
+    """后台线程：对 gather() 的候选做文件系统检查（不碰 hou）。
+
+    扫描拆两段：主线程 gather（HOM），本线程 resolve（isfile/glob/isdir），
+    大工程或网络盘扫描不再卡住 GUI。
+    """
+
+    done = Signal(object, object)     # refs, skip_stats（error 时 stats 带 error）
+
+    def __init__(self, candidates, hip_dir, include_output):
+        super().__init__()
+        self._candidates = candidates
+        self._hip_dir = hip_dir
+        self._include_output = include_output
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+
+    def run(self):
+        try:
+            refs, stats = collect.resolve(
+                self._candidates, self._hip_dir, self._include_output,
+                should_cancel=lambda: self.cancelled)
+        except Exception as exc:                  # 错误文本回结果面板展示
+            self.done.emit([], {"error": str(exc)})
+            return
+        self.done.emit(refs, stats)
+
+
 class _ZipWorker(QThread):
     """后台线程：包目录整体压成 zip。
 
     先写 ``<zip>.part``、成功后 ``os.replace`` 原子替换——取消/失败不会
     在正式路径留半截 zip 被下次误当成品（os.replace 同盘原子）。
+    归档前用 realpath 检查边界：包内指向包外的符号链接/junction 跳过，
+    不把本机私有文件卷进提交农场的 zip（报告 P2-02）。
     """
 
-    done = Signal(int, str)           # 文件数, 错误文本（空串 = 成功）
+    done = Signal(int, int, str)      # 文件数, 跳过的链接数, 错误文本
 
     def __init__(self, zip_path, base, package_dir, hip_path):
         super().__init__()
@@ -187,6 +219,8 @@ class _ZipWorker(QThread):
     def run(self):
         tmp_path = self.zip_path + ".part"
         count = 0
+        skipped = 0
+        real_pkg = os.path.realpath(self._package_dir)
         try:
             with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as archive:
                 for root, _dirs, files in os.walk(self._package_dir):
@@ -194,6 +228,9 @@ class _ZipWorker(QThread):
                         if self.cancelled:
                             raise _Cancelled()
                         full = os.path.join(root, name)
+                        if not paths.is_within(os.path.realpath(full), real_pkg):
+                            skipped += 1       # 指向包外的链接：跳过，不泄漏
+                            continue
                         arc = os.path.relpath(full, self._base).replace("\\", "/")
                         archive.write(full, arc)
                         count += 1
@@ -207,19 +244,19 @@ class _ZipWorker(QThread):
                     count += 1
         except _Cancelled:
             self._discard(tmp_path)
-            self.done.emit(0, "")
+            self.done.emit(0, 0, "")
             return
         except Exception as exc:                  # 错误文本回结果面板展示
             self._discard(tmp_path)
-            self.done.emit(0, str(exc))
+            self.done.emit(0, 0, str(exc))
             return
         try:
             os.replace(tmp_path, self.zip_path)
         except OSError as exc:
             self._discard(tmp_path)
-            self.done.emit(0, str(exc))
+            self.done.emit(0, 0, str(exc))
             return
-        self.done.emit(count, "")
+        self.done.emit(count, skipped, "")
 
     @staticmethod
     def _discard(path):
@@ -242,16 +279,17 @@ class PackageProjectWindow(QDialog):
 
         self._refs = []
         self._targets = []
+        self._plan = {}
+        self._layout_notes = []
         self._checked = set()
         self._filling = False
         self._hip_dir = ""
-        # 打包时算定的目录：另存会使 $HIP 变成包目录，之后再按 $HIP 推算
-        # 会得到 <包>/<包> 这种嵌套错路径，所以 zip 用这里的快照
-        self._last_base = ""
-        self._last_pkg = ""
-        self._last_package_dir = ""
-        # 复制/压缩 worker（QThread）：None = 空闲；_apply_ctx 是复制
+        # 打包会话记录：只有"复制+改写+保存"全部成功才登记，zip 只认它
+        # （防止换 hip 后沿用上一个工程的快照，报告 P1-02）
+        self._pack_session = None
+        # 扫描/复制/压缩 worker（QThread）：None = 空闲；_apply_ctx 是复制
         # 完成后主线程继续改写/保存所需的上下文
+        self._scan_worker = None
         self._copy_worker = None
         self._zip_worker = None
         self._apply_ctx = None
@@ -469,6 +507,8 @@ class PackageProjectWindow(QDialog):
     def _on_scan(self):
         import hou
 
+        if self._active_worker() is not None:
+            return
         if hou.hipFile.isNewFile():
             self._set_hint("工程还没保存：先保存 hip，$HIP 才有确定的目录。",
                            error=True)
@@ -476,12 +516,67 @@ class PackageProjectWindow(QDialog):
             return
         self._check_job()
         self._hip_dir = os.path.normpath(hou.text.expandString("$HIP"))
-        self._refs, skip_stats = collect.collect(
-            self._hip_dir, self._include_output_check.isChecked())
+        self._drop_stale_session(self._hip_dir)
+        include_output = self._include_output_check.isChecked()
+        try:
+            candidates, skip_stats = collect.gather(self._hip_dir, include_output)
+        except Exception as exc:                  # HOM 读取失败直接报
+            self._set_status("失败", ok=False)
+            self._log("[失败] 扫描（读取场景）：{}".format(exc))
+            return
+        self._pending_skip_stats = skip_stats
+        self._set_busy(True)
+        self._set_status("扫描中…")
+        worker = _ScanWorker(candidates, self._hip_dir, include_output)
+        worker.done.connect(self._on_scan_done)
+        self._retire_worker(worker)
+        self._scan_worker = worker
+        worker.start()
+
+    def _on_scan_done(self, refs, skip_stats):
+        worker = self._scan_worker
+        self._scan_worker = None
+        self._set_busy(False)
+        pending = getattr(self, "_pending_skip_stats", {}) or {}
+        self._pending_skip_stats = {}
+        if worker is not None and worker.cancelled:
+            self._set_status("已取消", ok=False)
+            self._log("[失败] 已取消：扫描未完成")
+            return
+        if isinstance(skip_stats, dict) and skip_stats.get("error"):
+            self._set_status("失败", ok=False)
+            self._log("[失败] 扫描（检查文件）：{}".format(skip_stats["error"]))
+            return
+        stats = dict(pending)
+        for key, count in (skip_stats or {}).items():
+            stats[key] = stats.get(key, 0) + count
+        self._refs = list(refs or [])
         self._checked = set(range(len(self._refs)))
         self._refresh_targets()
         self._update_status()
-        self._report_scan(skip_stats)
+        self._report_scan(stats)
+
+    def _session_matches(self, session):
+        """打包会话是否仍属于当前 hip（P1-02：换工程后旧快照必须失效）。"""
+        import hou
+
+        if not session or hou.hipFile.isNewFile():
+            return False
+        current = os.path.normcase(os.path.normpath(hou.hipFile.path()))
+        source = session.get("source_hip") or ""
+        saved = session.get("saved_hip") or ""
+        if source and current == os.path.normcase(os.path.normpath(source)):
+            return True
+        if saved and current == os.path.normcase(os.path.normpath(saved)):
+            return True
+        # 另存后当前 hip 就在包目录内（例如再次另存到同一包目录）：仍算同一次
+        return bool(saved) and paths.is_within(current, session.get("package_dir", ""))
+
+    def _drop_stale_session(self, hip_dir):
+        if self._pack_session is None:
+            return
+        if not self._session_matches(self._pack_session):
+            self._pack_session = None
 
     def _report_scan(self, skip_stats):
         if not self._refs:
@@ -521,8 +616,9 @@ class PackageProjectWindow(QDialog):
 
     def _refresh_targets(self):
         prefix = self._target_prefix()
-        self._targets = [collect.target_for(ref, prefix, self._hip_dir)
-                         for ref in self._refs]
+        base = self._base_dir()
+        self._targets, self._plan, self._layout_notes = collect.build_layout(
+            self._refs, prefix, base, self._pkg_name(), self._hip_dir)
         self._fill_table()
 
     def _fill_table(self):
@@ -594,11 +690,14 @@ class PackageProjectWindow(QDialog):
 
     def _update_status(self):
         refs = self._selected_refs()
-        base = self._last_base or self._base_dir() or os.path.expanduser("~")
-        plan = (collect.copy_plan(refs, base,
-                                  self._last_pkg or self._pkg_name(),
-                                  self._hip_dir)
-                if refs else {})
+        plan = {}
+        for index, ref in enumerate(self._refs):
+            if index not in self._checked:
+                continue
+            for source in ref.files:
+                target = self._plan.get(source)
+                if target:
+                    plan[source] = target
         total_size = 0
         for path in plan:
             try:
@@ -609,9 +708,16 @@ class PackageProjectWindow(QDialog):
                  "选中 {}".format(len(refs)),
                  "待复制 {} 个文件（{}）".format(len(plan),
                                                 paths.human_size(total_size))]
+        if self._layout_notes:
+            parts.append("重名已改名 {} 处".format(len(self._layout_notes)))
         self._set_hint(" · ".join(parts))
         self._apply_btn.setEnabled(bool(refs))
-        self._zip_btn.setEnabled(bool(self._refs))
+        # zip 只对"本次成功打包"的会话开放（换 hip / 没打包过都不行）
+        self._zip_btn.setEnabled(self._pack_session is not None)
+        self._zip_btn.setToolTip(
+            "把包目录整体压成 <包根>/<包名>.zip"
+            if self._pack_session is not None
+            else "先完成一次打包，才能生成 zip")
 
     # ------------------------------------------------------------------
     # 行操作
@@ -687,12 +793,20 @@ class PackageProjectWindow(QDialog):
         pkg = self._pkg_name()
         root = self._root_var()
         package_dir = paths.package_dir_abs(base, pkg)
-        self._last_base, self._last_pkg = base, pkg
-        self._last_package_dir = package_dir
-        plan = collect.copy_plan(refs, base, pkg, self._hip_dir)
         prefix = self._target_prefix()
-        targets = [collect.target_for(ref, prefix, self._hip_dir)
-                   for ref in refs]
+        # 复用扫描时算定的"目标唯一"布局；包根/包名变化后按当前值重算，
+        # 保证复制目标与参数改写目标来自同一份映射（报告 P1-01）
+        all_targets, all_plan, _notes = collect.build_layout(
+            self._refs, prefix, base, pkg, self._hip_dir)
+        refs = self._selected_refs()
+        selected = [(i, ref) for i, ref in enumerate(self._refs)
+                    if i in self._checked]
+        targets = [all_targets[i] for i, _ref in selected]
+        plan = {}
+        for _i, ref in selected:
+            for source in ref.files:
+                if source in all_plan:
+                    plan[source] = all_plan[source]
         if not dialogs.question(
                 self, "打包工程",
                 "将把 {} 个文件复制到\n{}\n\n并把 {} 个参数改写成 ${} 相对路径。\n"
@@ -712,8 +826,14 @@ class PackageProjectWindow(QDialog):
 
         self._set_busy(True)
         self._set_status("打包中…")
+        # 开始新的打包：旧的会话记录立即作废（失败/取消后 zip 不可用）
+        self._pack_session = None
+        source_hip = "" if hou.hipFile.isNewFile() else hou.hipFile.path()
         self._apply_ctx = {"refs": refs, "targets": targets,
-                           "missing": missing, "total": len(plan)}
+                           "missing": missing, "total": len(plan),
+                           "base": base, "pkg": pkg,
+                           "package_dir": package_dir,
+                           "source_hip": source_hip}
         worker = _CopyWorker(plan)
         worker.progress.connect(self._on_copy_progress)
         worker.done.connect(self._on_copy_done)
@@ -751,7 +871,8 @@ class PackageProjectWindow(QDialog):
         for text in rewrite_failures:
             self._log("[失败] 改写 {}".format(text))
 
-        saved_path, save_error = self._save_scene()
+        saved_path, save_error = self._save_scene(
+            ctx.get("base", ""), ctx.get("pkg", ""))
         if save_error:
             self._log("[失败] 保存工程：{}".format(save_error))
         elif saved_path:
@@ -766,13 +887,23 @@ class PackageProjectWindow(QDialog):
         if skipped:
             summary += "，跳过 {} 个（其文件复制失败）".format(skipped)
         if ok:
+            # 只有整条链路成功才登记会话；zip 只认这份记录（P1-02）
+            self._pack_session = {
+                "base": ctx.get("base", ""),
+                "pkg": ctx.get("pkg", ""),
+                "package_dir": ctx.get("package_dir", ""),
+                "source_hip": ctx.get("source_hip", ""),
+                "saved_hip": saved_path or ctx.get("source_hip", ""),
+            }
             self._set_status("完成", ok=True)
             self._log("[完成] " + summary)
             notify.success("打包完成：" + summary)
         else:
+            self._pack_session = None
             self._set_status("失败", ok=False)
             self._log("[失败] " + summary + "（原因见上）")
             notify.error("打包有失败项：" + summary)
+        self._update_status()
         self._set_hint(summary + " · 详见下方执行结果")
 
     def _rewrite_parms(self, refs, targets, failed_sources):
@@ -800,7 +931,7 @@ class PackageProjectWindow(QDialog):
                         ref.node_path, ref.parm_name, exc))
         return rewritten, failures, skipped
 
-    def _save_scene(self):
+    def _save_scene(self, base, pkg):
         """按所选方式保存；返回 (保存后的路径, 错误文本)。"""
         import hou
 
@@ -808,8 +939,7 @@ class PackageProjectWindow(QDialog):
             if self._save_copy_radio.isChecked():
                 hip_path = hou.hipFile.path()
                 stem = os.path.splitext(os.path.basename(hip_path))[0] or "untitled"
-                target = os.path.join(self._last_base, self._last_pkg,
-                                      stem + "_packed.hip")
+                target = os.path.join(base, pkg, stem + "_packed.hip")
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 hou.hipFile.save(file_name=target, save_to_recent_files=False)
                 return target, None
@@ -826,16 +956,21 @@ class PackageProjectWindow(QDialog):
 
         if self._active_worker() is not None:
             return
-        base = self._last_base or self._base_dir()
-        if not base:
-            name, value = self._root_var_value()
-            reason = "未设置" if not value else "不是绝对路径"
-            self._set_hint("包根目录不可用：{} = {!r}（{}）。".format(
-                name, value, reason), error=True)
+        session = self._pack_session
+        if session is None:
+            self._set_hint("还没有成功打包过（或已换工程），先点「打包」。",
+                           error=True)
             return
-        pkg = self._last_pkg or self._pkg_name()
-        package_dir = self._last_package_dir or paths.package_dir_abs(base, pkg)
-        if not os.path.isdir(package_dir):
+        if not self._session_matches(session):
+            self._pack_session = None
+            self._set_hint("当前工程已切换，旧打包结果作废：请重新打包。",
+                           error=True)
+            self._update_status()
+            return
+        base = session.get("base", "")
+        pkg = session.get("pkg", "")
+        package_dir = session.get("package_dir", "")
+        if not base or not os.path.isdir(package_dir):
             self._set_hint("包目录还不存在，先点「打包」。", error=True)
             return
         zip_path = os.path.join(base, pkg + ".zip")
@@ -848,7 +983,7 @@ class PackageProjectWindow(QDialog):
         self._zip_worker = worker
         worker.start()
 
-    def _on_zip_done(self, count, error):
+    def _on_zip_done(self, count, skipped, error):
         worker = self._zip_worker
         self._zip_worker = None
         self._set_busy(False)
@@ -868,8 +1003,10 @@ class PackageProjectWindow(QDialog):
         except OSError:
             size = "?"
         self._set_status("完成", ok=True)
-        self._log("[完成] 已生成 {}（{}，{} 个文件）".format(
-            zip_path, size, count))
+        text = "[完成] 已生成 {}（{}，{} 个文件）".format(zip_path, size, count)
+        if skipped:
+            text += "，跳过 {} 个指向包外的链接".format(skipped)
+        self._log(text)
         notify.success("已生成 {}".format(os.path.basename(zip_path)))
         self._set_hint("已生成：{}（{}）".format(zip_path, size))
 
@@ -887,7 +1024,7 @@ class PackageProjectWindow(QDialog):
             widget.setEnabled(not busy)
 
     def _active_worker(self):
-        for worker in (self._copy_worker, self._zip_worker):
+        for worker in (self._scan_worker, self._copy_worker, self._zip_worker):
             if worker is not None and worker.isRunning():
                 return worker
         return None

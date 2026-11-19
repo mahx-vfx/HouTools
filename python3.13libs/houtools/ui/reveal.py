@@ -43,32 +43,43 @@ def reveal(path):
 
 
 def _shell_select(path):
-    """Shell API 选择文件；ctypes 里所有指针参数都声明成 c_void_p 防截断。"""
+    """Shell API 选择文件；ctypes 里所有指针参数都声明成 c_void_p 防截断。
+
+    COM 初始化/释放必须配对（成功返回 S_OK(0) 或 S_FALSE(1) 都要
+    CoUninitialize，报告 P3-03），用 try/finally 保证异常路径也释放。
+    """
     import ctypes
     from ctypes import wintypes
 
     shell32 = ctypes.windll.shell32
     ole32 = ctypes.windll.ole32
-    ole32.CoInitialize(None)
-
-    shell32.SHParseDisplayName.argtypes = [
-        wintypes.LPCWSTR, ctypes.c_void_p,
-        ctypes.POINTER(ctypes.c_void_p), wintypes.DWORD, ctypes.c_void_p]
-    shell32.SHParseDisplayName.restype = ctypes.c_long
-    shell32.SHOpenFolderAndSelectItems.argtypes = [
-        ctypes.c_void_p, wintypes.UINT, ctypes.c_void_p, wintypes.DWORD]
-    shell32.SHOpenFolderAndSelectItems.restype = ctypes.c_long
-    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
-
-    pidl = ctypes.c_void_p()
-    result = shell32.SHParseDisplayName(path, None, ctypes.byref(pidl), 0, None)
-    if result != 0 or not pidl:
-        raise OSError("SHParseDisplayName 失败：0x{:08X}".format(
-            result & 0xFFFFFFFF))
+    ole32.CoInitialize.argtypes = [ctypes.c_void_p]
+    ole32.CoInitialize.restype = ctypes.c_long
+    ole32.CoUninitialize.argtypes = []
+    hr = ole32.CoInitialize(None)
+    initialized = hr in (0, 1)          # S_OK / S_FALSE
     try:
-        result = shell32.SHOpenFolderAndSelectItems(pidl, 0, None, 0)
-        if result != 0:
-            raise OSError("SHOpenFolderAndSelectItems 失败：0x{:08X}".format(
+        shell32.SHParseDisplayName.argtypes = [
+            wintypes.LPCWSTR, ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p), wintypes.DWORD, ctypes.c_void_p]
+        shell32.SHParseDisplayName.restype = ctypes.c_long
+        shell32.SHOpenFolderAndSelectItems.argtypes = [
+            ctypes.c_void_p, wintypes.UINT, ctypes.c_void_p, wintypes.DWORD]
+        shell32.SHOpenFolderAndSelectItems.restype = ctypes.c_long
+        ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+
+        pidl = ctypes.c_void_p()
+        result = shell32.SHParseDisplayName(path, None, ctypes.byref(pidl), 0, None)
+        if result != 0 or not pidl:
+            raise OSError("SHParseDisplayName 失败：0x{:08X}".format(
                 result & 0xFFFFFFFF))
+        try:
+            result = shell32.SHOpenFolderAndSelectItems(pidl, 0, None, 0)
+            if result != 0:
+                raise OSError("SHOpenFolderAndSelectItems 失败：0x{:08X}".format(
+                    result & 0xFFFFFFFF))
+        finally:
+            ole32.CoTaskMemFree(pidl)
     finally:
-        ole32.CoTaskMemFree(pidl)
+        if initialized:
+            ole32.CoUninitialize()

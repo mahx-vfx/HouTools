@@ -7,21 +7,20 @@
 - **节点缓存**：输出参数（`sopoutput` / `vm_picture` / `picture` / `outputimage`）
   默认只收**磁盘上已有文件**的（filecache 的 geo 缓存就靠这条）；
   勾「含空输出路径」才把还没落盘的输出也列出来。
-- **filecache 特例**：它的真实路径由 `basedir` + `basename` + 版本子目录拼成，
-  `file` 参数里的 `$HIP/geo/$HIPNAME.$OS.$F.bgeo.sc` 不是实际文件。所以按
-  `sopoutput` 求值拿到真实首帧路径、glob 出整段帧，并把要改写的参数定为
-  `basedir`（改目录，而不是改那个没用的 `file`）。
+- **filecache 特例**：真实路径由 `basedir` + `basename` + 版本子目录拼成，
+  `file` 参数里的 `$HIP/geo/$HIPNAME.$OS.$F.bgeo.sc` 不是实际文件。按
+  `sopoutput` 求值拿真实路径、严格 glob 整段帧，改写的参数定为 `basedir`。
+- **UDIM**：`texture.<UDIM>.exr` 这类贴图模板按 4 位 Tile 号（1001–1999）
+  枚举复制，参数里保留 `<UDIM>` 模板（不同语义，不与 `$F` 混用）。
 - 过滤非素材：节点路径、目录值、`$HIP/galleries`、`$HIP/backup`、反引号
-  表达式；**表达式驱动（keyframes 非空）的参数也跳过**——对它写静态值
-  等于破坏表达式（同 filecache_abs_path 的语义）。POSIX 形态绝对路径
-  （`/proj/...`：Windows 上 os.path.isabs 返 False、Houdini 视为绝对）
-  靠"末段带扩展名"与节点路径区分，不再误杀。
-- **跳过统计**：`collect()` 返回 (refs, skip_stats)，只统计"像文件路径但
-  被排除"的参数并按原因分桶（noise=目录/记账路径、not_written=未落盘
-  输出、expr=表达式驱动）——不再把 label/comment 这类无关注算进去。
-
-本模块的 ``import hou`` 全放在函数里：模块本身能在 Houdini 外导入，
-窗口才能在无头环境实例化（冒烟测试只测 paths + 菜单接线）。
+  表达式；表达式驱动（keyframes 非空）的参数也跳过。
+- **两阶段扫描**：``gather()`` 只在主线程读 HOM（节点/参数/展开），
+  ``resolve()`` 只做文件系统检查（isfile/glob/isdir）——后者可以放
+  QThread，扫描大型工程/网络盘时不阻塞 GUI。``collect()`` 是两者串联，
+  保留给无窗口调用。
+- **目标唯一性**：``build_layout()`` 统一生成「每条引用的改写目标 + 复制
+  计划」，同一个源目录只分配一个 assets 子目录；不同源目录展平后重名时
+  自动加 ``_2/_3``，复制与改写共用这一份映射（不再各算各的）。
 """
 
 from __future__ import annotations
@@ -67,7 +66,7 @@ class Ref:
     parm_name: str             # 要改写的参数（filecache 是 basedir）
     raw: str                   # 展示用原始值（filecache 用真实输出路径）
     abs_path: str = ""         # 具体文件；序列则为模板路径（含帧 token）
-    token: str = ""            # 序列模板的帧 token
+    token: str = ""            # 序列模板的帧 token（$F4 / <UDIM> / ...）
     files: list = field(default_factory=list)   # 实际存在的文件（绝对路径）
     in_hip: bool = False       # 位于当前 $HIP 内（展示/统计用）
     absolute_raw: bool = False  # 参数本身是绝对路径或 $VAR 写法
@@ -87,8 +86,27 @@ class Ref:
         base = "缓存" if self.kind == "output" else "引用"
         if not self.files:
             return base + "（缺失）"
-        return base + ("（序列 {} 帧）".format(len(self.files))
-                       if self.is_sequence else "")
+        if self.token == paths.UDIM_TOKEN:
+            return "{}（UDIM {} 块）".format(base, len(self.files))
+        if self.is_sequence:
+            return "{}（序列 {} 帧）".format(base, len(self.files))
+        return base
+
+
+@dataclass
+class Candidate:
+    """gather 阶段产物：只含 HOM 读到的内容，文件系统检查留给 resolve。"""
+
+    kind: str
+    node_path: str
+    parm_name: str
+    raw: str
+    expanded: str
+    abs_path: str
+    token: str = ""
+    absolute_raw: bool = False
+    rewrite_dir: bool = False
+    basedir: str = ""
 
 
 def _hou():
@@ -159,7 +177,7 @@ def _is_noise(expanded, hip_dir):
 def _looks_like_file_path(raw):
     """值像不像"人手动填的文件路径"——挡住菜单值、USD 路径、token 文本。
 
-    要求：没有空白/百分号通配；带帧模板，或者"有扩展名且带路径分隔符/变量"。
+    要求：没有空白/百分号通配；带帧模板/UDIM，或者"有扩展名且带路径分隔符/变量"。
     """
     value = (raw or "").strip()
     if not value or any(ch in value for ch in "\n\r\t"):
@@ -172,7 +190,7 @@ def _looks_like_file_path(raw):
     if re.match(r"^[A-Za-z][A-Za-z0-9+.-]+:", value) and \
             not re.match(r"^[A-Za-z]:[\\/]", value):
         return False
-    if paths.has_frame_token(value):
+    if paths.has_frame_token(value) or paths.has_udim_token(value):
         return True
     base = os.path.basename(value.replace("\\", "/"))
     _stem, dot, ext = base.rpartition(".")
@@ -181,24 +199,55 @@ def _looks_like_file_path(raw):
     return ("/" in value) or ("\\" in value) or value.startswith("$")
 
 
+def _digit_files(prefix, suffix):
+    """严格数字序列：glob 之后再用 ``^prefix\\d+suffix$`` 二次过滤。
+
+    只用 ``prefix*suffix`` 会把 ``sim.backup.bgeo.sc`` 这类文件一起收进来
+    （报告 P3-01）。
+    """
+    pattern = prefix + "*" + suffix
+    rx = re.compile("^" + re.escape(prefix) + r"\d+" + re.escape(suffix) + "$",
+                    re.IGNORECASE)
+    return sorted(f for f in glob.glob(pattern)
+                  if os.path.isfile(f) and rx.match(f))
+
+
 def _frames_from_path(path):
-    """一个具体帧文件名 → glob 出同目录整段序列（filecache 缓存用）。"""
+    """一个具体帧文件名 → 严格 glob 出同目录整段数字帧（filecache 用）。"""
     directory, name = os.path.split(path)
     match = _FRAME_NAME_RE.match(name)
     if match is None:
         return [path] if os.path.isfile(path) else []
-    pattern = os.path.join(directory,
-                           "{}*{}".format(match.group("stem"),
-                                          match.group("ext")))
-    files = sorted(f for f in glob.glob(pattern) if os.path.isfile(f))
+    files = _digit_files(os.path.join(directory, match.group("stem")),
+                         match.group("ext"))
     return files or ([path] if os.path.isfile(path) else [])
 
 
-def _build_filecache_ref(node, parm, hip_dir, include_output):
-    """filecache：真实路径由 basedir/basename/version 拼，改 basedir 最稳。
+def _udim_files(expanded):
+    """``texture.<UDIM>.exr`` → 枚举同目录 1001–1999 的 4 位 Tile。"""
+    lowered = expanded.lower()
+    index = lowered.find(paths.UDIM_TOKEN.lower())
+    if index < 0:
+        return []
+    prefix = expanded[:index]
+    suffix = expanded[index + len(paths.UDIM_TOKEN):]
+    pattern = prefix + "*" + suffix
+    rx = re.compile("^" + re.escape(prefix) + r"\d{4}" + re.escape(suffix) + "$",
+                    re.IGNORECASE)
+    return sorted(f for f in glob.glob(pattern)
+                  if os.path.isfile(f) and rx.match(f))
 
-    返回 (Ref|None, 排除原因|None)；原因只给"疑似路径被排除"的情况。
-    """
+
+def _masked_files(expanded):
+    """``foo.__HTFRAME__.exr`` → 只接受帧号位是纯数字的文件。"""
+    prefix, sep, suffix = expanded.partition(paths.MARKER)
+    if not sep:
+        return []
+    return _digit_files(prefix, suffix)
+
+
+def _gather_filecache(node, parm, include_output):
+    """filecache：只取 basedir 一条引用（真实路径在 sopoutput）。"""
     import hou
 
     out_parm = node.parm("sopoutput")
@@ -211,9 +260,6 @@ def _build_filecache_ref(node, parm, hip_dir, include_output):
     if not produced:
         return None, None
     produced = os.path.normpath(hou.text.expandString(produced))
-    files = _frames_from_path(produced)
-    if not files and not include_output:
-        return None, "not_written"
     try:
         if parm.keyframes():
             # basedir 表达式驱动：改写静态值破坏表达式（同 filecache_abs_path）
@@ -234,26 +280,22 @@ def _build_filecache_ref(node, parm, hip_dir, include_output):
         basedir_raw = parm.unexpandedString()
     except Exception:
         basedir_raw = parm.evalAsString()
-    return Ref(
+    return Candidate(
         kind="output",
         node_path=node.path(),
         parm_name=parm.name(),
         raw=produced,
+        expanded=produced,
         abs_path=produced,
         token=token,
-        files=files,
-        in_hip=paths.is_within(produced, os.path.normpath(hip_dir)),
         absolute_raw=paths.needs_packaging(basedir_raw),
         rewrite_dir=True,
         basedir=basedir,
     ), None
 
 
-def _resolve(parm, raw):
-    """展开 + 帧模板保护；返回 (expanded_with_marker, token, files, abs_path)。
-
-    文件不存在时 files 为空（调用方决定是否列出）。
-    """
+def _expand(parm, raw):
+    """展开变量并保护帧模板；返回 (expanded, token, abs_path) 或 None。"""
     hou = _hou()
     masked = paths.mask_frame_tokens(raw)
     try:
@@ -265,24 +307,16 @@ def _resolve(parm, raw):
     if not paths.is_absolute_like(expanded):
         expanded = os.path.normpath(os.path.join(
             hou.text.expandString("$HIP"), expanded))
-    token = paths.first_frame_token(raw) if paths.MARKER in expanded else ""
-    if token:
-        pattern = expanded.replace(paths.MARKER, "*")
-        files = sorted(f for f in glob.glob(pattern) if os.path.isfile(f))
-        abs_path = paths.unmask(expanded, token)
-    else:
-        files = [expanded] if os.path.isfile(expanded) else []
-        abs_path = expanded
-    return expanded, token, files, abs_path
+    if paths.has_udim_token(raw):
+        return expanded, paths.UDIM_TOKEN, expanded
+    if paths.MARKER in expanded:
+        token = paths.first_frame_token(raw)
+        return expanded, token, paths.unmask(expanded, token)
+    return expanded, "", expanded
 
 
-def _build_ref(node, parm, hip_dir, include_output=False):
-    """单个参数 → (Ref|None, 排除原因|None)。
-
-    原因只对"像文件路径却被排除"的参数给值（noise / not_written / expr），
-    供 collect 的跳过统计；普通非文件参数一律 (None, None)，不计数。
-    """
-    hou = _hou()
+def _gather_ref(node, parm, include_output=False):
+    """单个参数 → (Candidate|None, 排除原因|None)。"""
     name = parm.name()
     if name in _SKIP_PARM_NAMES:
         return None, None
@@ -293,13 +327,12 @@ def _build_ref(node, parm, hip_dir, include_output=False):
         # filecache 的 file/basename 只是拼路径的片段，真实路径在 sopoutput；
         # 只按 basedir 建一条引用（改写 basedir 最稳，下游 file 节点跟着走）
         if name == "basedir":
-            return _build_filecache_ref(node, parm, hip_dir, include_output)
+            return _gather_filecache(node, parm, include_output)
         return None, None
 
     try:
         if parm.keyframes():
-            # 表达式驱动（关键帧/chs 链接）：改写静态值等于破坏表达式，
-            # 跳过（同 filecache_abs_path 的拒绝语义）
+            # 表达式驱动（关键帧/chs 链接）：改写静态值等于破坏表达式
             return None, "expr"
     except Exception:
         pass
@@ -323,59 +356,102 @@ def _build_ref(node, parm, hip_dir, include_output=False):
     if not _looks_like_file_path(raw):
         return None, None
 
-    resolved = _resolve(parm, raw)
+    resolved = _expand(parm, raw)
     if resolved is None:
         return None, None
-    expanded, token, files, abs_path = resolved
-    if _is_noise(expanded, hip_dir):
+    expanded, token, abs_path = resolved
+    if _looks_like_node_path(expanded) and expanded.startswith("/"):
         return None, "noise"
-    if not files and kind == "output" and not include_output:
-        return None, "not_written"      # 输出路径还没落盘 → 不是缓存
-    hip = os.path.normpath(hip_dir)
-    return Ref(
+    return Candidate(
         kind=kind,
         node_path=node.path(),
         parm_name=name,
         raw=raw,
+        expanded=expanded,
         abs_path=abs_path,
         token=token,
-        files=files,
-        in_hip=paths.is_within(os.path.dirname(expanded), hip),
         absolute_raw=paths.needs_packaging(raw),
     ), None
 
 
-def collect(hip_dir="", include_output=False):
-    """扫描整个场景，返回 (refs, skip_stats)。
-
-    skip_stats 只统计"像文件路径但被排除"的参数（按原因分桶：noise /
-    not_written / expr）——label/comment 这类无关注不进数字，统计才有意义。
-    """
+def gather(hip_dir="", include_output=False):
+    """主线程阶段：遍历节点/参数并展开，返回 (candidates, skip_stats)。"""
     hou = _hou()
     hip_dir = hip_dir or hou.text.expandString("$HIP")
-    refs = []
+    candidates = []
     skip_stats = {}
     for node in enabled_nodes():
         for parm in _iter_string_parms(node):
             try:
-                ref, reason = _build_ref(node, parm, hip_dir, include_output)
+                cand, reason = _gather_ref(node, parm, include_output)
             except Exception as exc:
-                log.debug("scan %s/%s failed: %s", node.path(), parm.name(), exc)
+                log.debug("gather %s/%s failed: %s", node.path(), parm.name(), exc)
                 continue
-            if ref is not None:
-                refs.append(ref)
+            if cand is not None:
+                candidates.append(cand)
             elif reason:
                 skip_stats[reason] = skip_stats.get(reason, 0) + 1
-    if skip_stats:
-        log.info("扫描完成：%d 个引用，另有 %d 个疑似路径未列出",
-                 len(refs), sum(skip_stats.values()))
-    else:
-        log.info("扫描完成：%d 个引用", len(refs))
+    return candidates, skip_stats
+
+
+def resolve(candidates, hip_dir, include_output=False, should_cancel=None):
+    """文件系统阶段：对候选做 isfile/glob/isdir，返回 (refs, skip_stats)。
+
+    可以在 QThread 里跑（只碰文件系统，不碰 HOM）。
+    """
+    hip = os.path.normpath(hip_dir) if hip_dir else ""
+    refs = []
+    skip_stats = {}
+    for cand in candidates:
+        if should_cancel is not None and should_cancel():
+            break
+        expanded = cand.expanded
+        if _is_noise(expanded, hip):
+            skip_stats["noise"] = skip_stats.get("noise", 0) + 1
+            continue
+        if cand.rewrite_dir:
+            files = _frames_from_path(cand.abs_path)
+        elif cand.token == paths.UDIM_TOKEN:
+            files = _udim_files(expanded)
+        elif cand.token:
+            files = _masked_files(expanded)
+        else:
+            files = [expanded] if os.path.isfile(expanded) else []
+        if not files and cand.kind == "output" and not include_output:
+            skip_stats["not_written"] = skip_stats.get("not_written", 0) + 1
+            continue
+        refs.append(Ref(
+            kind=cand.kind,
+            node_path=cand.node_path,
+            parm_name=cand.parm_name,
+            raw=cand.raw,
+            abs_path=cand.abs_path,
+            token=cand.token,
+            files=files,
+            in_hip=paths.is_within(os.path.dirname(expanded), hip),
+            absolute_raw=cand.absolute_raw,
+            rewrite_dir=cand.rewrite_dir,
+            basedir=cand.basedir if cand.rewrite_dir else "",
+        ))
     return refs, skip_stats
 
 
+def collect(hip_dir="", include_output=False):
+    """扫描整个场景，返回 (refs, skip_stats)（无窗口调用用）。"""
+    candidates, stats = gather(hip_dir, include_output)
+    refs, more = resolve(candidates, hip_dir, include_output)
+    for key, count in more.items():
+        stats[key] = stats.get(key, 0) + count
+    log.info("扫描完成：%d 个引用", len(refs))
+    return refs, stats
+
+
 def copy_plan(refs, base_dir, package_name=paths.PACKAGE_DIR, hip_dir=""):
-    """{源绝对路径: 包内目标绝对路径}；同一文件只复制一次，缺失的不进计划。"""
+    """{源绝对路径: 包内目标绝对路径}；同一文件只复制一次，缺失的不进计划。
+
+    注意：窗口实际用 ``build_layout()``（带目标唯一性）；这个函数保留给
+    无窗口调用/测试，不处理展平碰撞。
+    """
     plan = {}
     for ref in refs:
         for path in ref.files:
@@ -384,17 +460,92 @@ def copy_plan(refs, base_dir, package_name=paths.PACKAGE_DIR, hip_dir=""):
     return plan
 
 
-def target_for(ref, prefix, hip_dir=""):
-    """改写后的参数值。
+def _target(prefix, sub, name):
+    """``<prefix>/assets[/<sub>][/<name>]``（Houdini 写法）。"""
+    base = prefix + "/" + paths.PACKAGE_ASSETS
+    if sub:
+        base += "/" + sub
+    if name:
+        base += "/" + name
+    return base
 
-    - 普通引用：``<prefix>/assets/<子目录>/<文件名>``；
-    - filecache：改 ``basedir`` 目录 → ``<prefix>/assets/<相对 $HIP 的目录>``。
+
+def build_layout(refs, prefix, base_dir="", package_name=paths.PACKAGE_DIR,
+                 hip_dir=""):
+    """统一生成目标路径与复制计划，保证目标唯一。
+
+    返回 ``(targets, plan, notes)``：
+
+    - ``targets`` 与 ``refs`` 一一对应（Houdini 写法，序列/UDIM 保留模板）；
+    - ``plan`` 是 ``{源绝对路径: 包内绝对路径}``；
+    - 不同源目录展平后重名时，后来的目录加 ``_2/_3``，并写一条 note
+      （复制与改写共用这份映射，杜绝"复制覆盖、参数指同一文件"）。
     """
+    assigned = {}
+    used = {}
+
+    def assign(source_dir, base_sub):
+        key = os.path.normcase(os.path.normpath(source_dir))
+        if key in assigned:
+            return assigned[key]
+        candidate = base_sub
+        index = 2
+        while candidate.casefold() in used and used[candidate.casefold()] != key:
+            candidate = "{}_{}".format(base_sub, index) if base_sub \
+                else "dir_{}".format(index)
+            index += 1
+        assigned[key] = candidate
+        used[candidate.casefold()] = key
+        return candidate
+
+    targets = []
+    plan = {}
+    notes = []
+    for ref in refs:
+        if ref.rewrite_dir and ref.basedir:
+            base_sub = paths.subdir_for_dir(ref.basedir, hip_dir)
+            sub = assign(ref.basedir, base_sub)
+            if sub != base_sub:
+                notes.append("{} 的目标目录重名，已改为 {}".format(
+                    ref.basedir, sub or "(assets 根)"))
+            targets.append(_target(prefix, sub, ""))
+            if not base_dir:
+                continue
+            for file_path in ref.files:
+                rel_dir = os.path.relpath(os.path.dirname(file_path),
+                                          ref.basedir)
+                if rel_dir in (".", ""):
+                    file_sub = sub
+                else:
+                    rel = paths.rel_posix(rel_dir)
+                    file_sub = "{}/{}".format(sub, rel) if sub else rel
+                target = paths.package_abs_path(
+                    base_dir, package_name, file_sub,
+                    os.path.basename(file_path))
+                if os.path.normcase(target) != os.path.normcase(file_path):
+                    plan[file_path] = target
+            continue
+
+        src_dir = os.path.dirname(ref.abs_path)
+        base_sub = paths.asset_subdir(ref.abs_path, hip_dir)
+        sub = assign(src_dir, base_sub)
+        if sub != base_sub:
+            notes.append("{} 的目标目录重名，已改为 {}".format(
+                src_dir, sub or "(assets 根)"))
+        targets.append(_target(prefix, sub, os.path.basename(ref.abs_path)))
+        if not base_dir:
+            continue
+        for file_path in ref.files:
+            target = paths.package_abs_path(
+                base_dir, package_name, sub, os.path.basename(file_path))
+            if os.path.normcase(target) != os.path.normcase(file_path):
+                plan[file_path] = target
+    return targets, plan, notes
+
+
+def target_for(ref, prefix, hip_dir=""):
+    """单条引用的改写目标（兼容旧调用；窗口用 build_layout 统一算）。"""
     if ref.rewrite_dir and ref.basedir:
-        hip = os.path.normpath(hip_dir) if hip_dir else ""
-        if hip and paths.is_within(ref.basedir, hip):
-            sub = paths.rel_posix(os.path.relpath(ref.basedir, hip))
-        else:
-            sub = paths.flatten_dir(ref.basedir)
-        return "{}/{}/{}".format(prefix, paths.PACKAGE_ASSETS, sub)
+        sub = paths.subdir_for_dir(ref.basedir, hip_dir)
+        return _target(prefix, sub, "")
     return paths.package_target(ref.abs_path, prefix, hip_dir)

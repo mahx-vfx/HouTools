@@ -27,6 +27,12 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
   文件，真实路径由 `basedir`+`basename`+版本子目录拼出。用 `sopoutput` 求值拿
   首帧 → `_frames_from_path()` glob 整段帧 → 把**改写目标定为 `basedir`**。
   下游 `chs("…/sopoutput")` 引用会跟着新 basedir 自动走。
+- **UDIM 贴图**（2026-11-19 修复）：`texture.<UDIM>.exr` 与 `$F` 分开处理——
+  按 4 位 Tile 号（1001–1999）严格枚举同目录文件、复制全部 Tile，参数里
+  保留 `<UDIM>` 模板（改写只换目录）。
+- **两段式扫描**（2026-11-19 修复）：`gather()` 主线程只读 HOM（节点/参数/
+  展开），`resolve()` 只做 isfile/glob/isdir 并跑在 `_ScanWorker` QThread——
+  大工程/网络盘扫描不再阻塞界面；`collect()` 是两者串联（无窗口调用）。
 - **其它输出参数**（`sopoutput` / `vm_picture` / `picture` / `outputimage`，以及
   `dcmfilename` / `productName` / `savepath` / `soho_diskfile` 这类语义输出）
   默认**只收已落盘**的；勾「含空输出路径」才列未生成的。
@@ -62,6 +68,10 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
   `assets/geo/shot.bgeo.sc`（不再把整条绝对路径拍平成
   `C_Users_..._hip_geo/`）。
 - 包外素材用展平目录（`D:\proj\tex` → `D_proj_tex`），避免同名互相覆盖。
+- **目标唯一性**（2026-11-19 修复）：`collect.build_layout()` 统一生成
+  「每条引用的改写目标 + 复制计划」。不同源目录展平后重名（如
+  `D:\proj\foo\bar` 与 `D:\proj_foo\bar` 都得到 `D_proj_foo_bar`）时，后来
+  的自动加 `_2/_3`，复制目标和参数改写目标共用这份映射——不会再静默覆盖。
 
 - **包根**：`$HIP`（默认）或 `$JOB`（未设置/非绝对时 UI 禁用该选项）。
 - **包名**：默认 `ht_package`，可改；**用户输入必须过 `paths.sanitize_pkg_name`**
@@ -192,13 +202,22 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
 **先写 `.part` 再原子替换**：zip 在 `_ZipWorker` 后台线程写 `<zip>.part`，
 成功后 `os.replace` 到正式名——中断（取消/失败）不留半截 zip（见线程模型）。
 
+**边界检查**（2026-11-19 修复）：归档前对每个文件做 realpath 判断，落在
+包目录之外（包内符号链接/junction 指向外面）的直接跳过并计数，结果面板写
+「跳过 N 个指向包外的链接」——不会把本机私有文件卷进提交农场的 zip。
+
+**会话校验**（2026-11-19 修复）：zip 只认「上一次完整成功打包」的会话
+（base/pkg/package_dir/源 hip/保存后 hip）；换 hip 后 `_on_scan` 清掉旧会话，
+`_on_zip` 再校验当前 hip 是否属于该会话，不属于就拒绝并提示重新打包。
+
 ## 已知边界
 
 - 只收被场景**引用**的文件；`$HIP` 里没被引用的散落缓存不会自动带上。
 - 不解析表达式依赖（`chs()` / Python 表达式）——表达式驱动参数直接跳过
   （见扫描规则）；不处理 `op:` 协议路径。
 - 不做贴图转码/降分辨率；不处理 unlocked HDA 内部参数的导出问题。
-- `$F` 之外的帧写法（`%04d`）不识别。
+- `$F` 之外的帧写法（`%04d`）不识别；UDIM 只识别 `<UDIM>`（4 位 Tile），
+  `<UVTILE>`（u1_v1）暂不支持。
 - `$JOB` 必须在会话环境里存在（`houdini.env` 或系统环境变量），否则包根选项禁用。
 
 ## 测试
@@ -208,6 +227,10 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
   `copy_plan` 去重、`_is_noise` 节点路径 vs POSIX 文件、菜单接线、窗口可
   实例化（htWindow / is_close_deferred / worker 可构造）、`reveal` 缺失路径
   必须抛 OSError；另跑 `test_theme_tokens.py`（窗口不得写裸 hex）。
+- 2026-11-19 审查修复新增回归：目标唯一性（build_layout 碰撞加 `_2`）、
+  UDIM 枚举（只收 1001/1002，不收 backup）、严格帧 glob（不收
+  `sim.backup.bgeo.sc`）、Windows 保留包名（CON → pkg_CON）、非法 UTF-8
+  配置留底 `.bak` 并回退默认。
 - hython 探针（开发时用）：
   - 真实工程（`D:\VFX\HoutoolsTest\packagrTerst\untitled.hip`）：扫描出 6 个引用
     （3 张贴图含 1 张 `$HFS` 内置 hdri、filecache 缓存 50 帧、2 个缺失路径），
@@ -216,3 +239,19 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
     `sopoutput` 保存后能解析到包内文件、zip 含缓存）、覆盖模式
     （basedir → `$HIP/ht_package/assets/geo`、hip 不另存）、失败路径
     （模拟复制抛错 → 状态"失败"、日志含源路径与原因）。
+
+## 2026-11-19 代码审查修复记录
+
+针对第三方审查报告（9 项）的处理，全部有代码 + 冒烟/hython 验证：
+
+| 编号 | 问题 | 处理 |
+|---|---|---|
+| P1-01 | 包外目录展平碰撞、静默覆盖 | `collect.build_layout()` 统一目标/复制映射，重名目录自动 `_2/_3`；窗口表格、预览、打包共用 |
+| P1-02 | 换 hip 后沿用旧打包快照 | 改为“打包会话”记录（base/pkg/package_dir/源 hip/保存 hip），只有复制+改写+保存全成功才登记；`_on_scan` 清理不匹配会话，`_on_zip` 二次校验并拒绝 |
+| P2-01 | 不支持 UDIM | `paths.has_udim_token` + `collect._udim_files`（严格 4 位 Tile），目标保留 `<UDIM>` 模板 |
+| P2-02 | ZIP 未过滤符号链接/junction | `_ZipWorker` 用 realpath 判边界，包外链接跳过并计数 |
+| P2-03 | 非法 UTF-8 绕过 `.bak` 恢复 | `JsonStore.load()` / `_read_disk_locked()` 捕获 `UnicodeError`：留底 `.bak` 后回退默认；留底失败拒绝写入 |
+| P2-04 | 扫描阻塞 GUI | 拆 `gather()`（主线程 HOM）+ `resolve()`（`_ScanWorker` QThread 文件系统）；关闭窗口沿用协作式取消 |
+| P3-01 | filecache glob 过宽 | `_digit_files()` 严格 `^前缀\d+后缀$` 二次过滤 |
+| P3-02 | 保留设备名未处理 | `sanitize_pkg_name()` 检测 CON/PRN/AUX/NUL/COM1-9/LPT1-9，加 `pkg_` 前缀 |
+| P3-03 | COM 初始化未释放 | `reveal._shell_select()` 用 try/finally 配对 `CoUninitialize`（S_OK/S_FALSE 都算成功） |
