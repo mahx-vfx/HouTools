@@ -35,3 +35,14 @@ try:
         _rl_store.ensure_libraries_installed(_rl_dirs)
 except Exception as e:
     _log_failure("安装 recipe 库失败", e)
+
+# Automation 任务节点路径跟随改名（path_tracker）：会话启动挂 hipFile
+# 订阅并对当前工程注册监听，此后节点改名时配置 JSON 里的任务路径实时
+# 跟随（像原生参数引用一样）。bootstrap 内部挂 isUIAvailable 闸门——
+# uiready 本身仅交互会话执行（Houdini 机制），闸门是第二道防线，农场
+# 的 hython/hbatch 会话零足迹；hip 文件零写入。失败只记录不阻塞启动。
+try:
+    from houtools.automation import path_tracker as _pt
+    _pt.bootstrap()
+except Exception as e:
+    _log_failure("安装 Automation 路径跟随失败", e)

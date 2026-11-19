@@ -26,6 +26,9 @@ QWidget#taskSlot[dragging="true"] {{
     background-color: {ACCENT_SOFT};
     border: 1px solid {ACCENT};
 }}
+QWidget#taskSlot[missing="true"] {{
+    border: 1px solid {ERROR};
+}}
 QWidget#taskSlot[selected="true"] QLabel#taskSlotHandle {{
     color: {ACCENT};
 }}

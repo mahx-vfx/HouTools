@@ -1495,6 +1495,141 @@ def main():
                 pass  # C++ 对象已销毁（deleteLater 已处理的极端情形）
     print("automation last-config/log-default/cancel-count OK")
 
+    # ── Automation 路径跟随（path_tracker，2026-11）：纯逻辑 + JSON
+    #    改写链 + 观察者协议。事件桥/监听簿记的 HOM 交互部分（事件触发
+    #    时机/存档不残留）无头不可测——已由 hython 探针实测，此处锁纯
+    #    逻辑与盘面链路 ──
+    import houtools.automation.path_tracker as _pt
+
+    # ① 旧路径反推：正常/根下/子树/非法形态
+    assert _pt.compute_old_path("/obj/geo2", "geo1") == "/obj/geo1"
+    assert _pt.compute_old_path("/geo2", "geo1") == "/geo1"
+    assert _pt.compute_old_path("/obj/sub2/inner2", "inner1") == \
+        "/obj/sub2/inner1"
+    assert _pt.compute_old_path("", "x") is None
+    assert _pt.compute_old_path("/obj/geo2", "") is None
+    assert _pt.compute_old_path("relative", "x") is None
+
+    # ② 整段前缀替换：/obj/geo1 不得误命中 /obj/geo10
+    _rch = ("/obj/geo1", "/obj/geo1_new")
+    assert _pt.apply_rename_to_path("/obj/geo1", (_rch,)) == "/obj/geo1_new"
+    assert _pt.apply_rename_to_path("/obj/geo1/inner/node", (_rch,)) == \
+        "/obj/geo1_new/inner/node"
+    assert _pt.apply_rename_to_path("/obj/geo10", (_rch,)) == "/obj/geo10", \
+        "整段匹配：/obj/geo1 不得误命中 /obj/geo10"
+    assert _pt.apply_rename_to_path("/obj/geo10/x", (_rch,)) == "/obj/geo10/x"
+    assert _pt.apply_rename_to_path("/obj/other", (_rch,)) == "/obj/other"
+    assert _pt.apply_rename_to_path("/obj/geo1", ()) == "/obj/geo1"
+    assert _pt.apply_rename_to_path("/obj/geo1", (("", "/x"),)) == \
+        "/obj/geo1", "空对跳过"
+
+    # ③ tasks 改写：只碰 BUTTON_CLICK；FLIPBOOK 输出路径是文件路径、
+    #    未知类型透传条目一律不动
+    _rtasks = [
+        {"type": "BUTTON_CLICK", "enabled": True,
+         "params": {"node_path": "/obj/geo1", "parm_name": "execute"}},
+        {"type": "BUTTON_CLICK", "enabled": True,
+         "params": {"node_path": "/obj/geo1/deep/n", "parm_name": "x"}},
+        {"type": "FLIPBOOK", "enabled": True,
+         "params": {"start_frame": "1", "end_frame": "2",
+                    "output_path": "/obj/geo1/out.jpg", "save_to_disk": True}},
+        {"type": "MYSTERY", "params": {"node_path": "/obj/geo1"}},
+    ]
+    assert _pt.rewrite_task_paths(_rtasks, (_rch,)) == 2
+    assert _rtasks[0]["params"]["node_path"] == "/obj/geo1_new"
+    assert _rtasks[1]["params"]["node_path"] == "/obj/geo1_new/deep/n"
+    assert _rtasks[2]["params"]["output_path"] == "/obj/geo1/out.jpg", \
+        "文件路径不是节点路径，不得改写"
+    assert _rtasks[3]["params"]["node_path"] == "/obj/geo1", \
+        "未知类型透传不动"
+
+    # ④ 配置改写链（盘面端到端 + 观察者协议）：_handle_rename/_handle_delete
+    #    不依赖 hou，FakeNode 直喂整链；监听注册的 HOM 交互在对账里，
+    #    无头 reconcile 直返（只验不抛）
+    _pt_base = tempfile.mkdtemp(prefix="houtools_ptrack.")
+    atexit.register(lambda: shutil.rmtree(_pt_base, ignore_errors=True))
+    with patch.object(_adm_cls, "_hip_base", lambda *a: _pt_base):
+        assert _adm_cls.save([{"type": "BUTTON_CLICK", "enabled": True,
+                               "params": {"node_path": "/obj/geo1",
+                                          "parm_name": "execute"}}],
+                             filename="CfgA")
+        assert _adm_cls.save([{"type": "BUTTON_CLICK", "enabled": False,
+                               "params": {"node_path": "/obj/geo1/cam",
+                                          "parm_name": "execute"}}],
+                             filename="CfgB")
+        _seen = []
+        _pt.add_observer(_seen.append)
+        try:
+            class _FakeNode:
+                def __init__(self, p):
+                    self._p = p
+
+                def path(self):
+                    return self._p
+
+            # 改名：多配置同时跟随 + 观察者单事件带 rev
+            _pt._handle_rename(_FakeNode("/obj/geo2"), "geo1")
+            assert _adm_cls.load("CfgA")[0]["params"]["node_path"] == \
+                "/obj/geo2"
+            assert _adm_cls.load("CfgB")[0]["params"]["node_path"] == \
+                "/obj/geo2/cam"
+            assert len(_seen) == 1, _seen
+            _ev = _seen[0]
+            assert _ev["kind"] == "renamed"
+            assert _ev["changes"] == (("/obj/geo1", "/obj/geo2"),)
+            assert set(_ev["revs"]) == {"CfgA", "CfgB"}
+            assert all(v is not None for v in _ev["revs"].values()), \
+                "写盘成功 rev 必须带回"
+            assert _adm_cls.read_config_rev("CfgA") >= 2, "rev 推进"
+            # 登记键随改名改写（簿记；无 hou 不做真实注册）
+            _pt._REGISTERED["/obj/geo2"] = object()
+            _pt._REGISTERED["/obj/geo2/deep"] = object()
+            _pt._handle_rename(_FakeNode("/obj/geo9"), "geo2")
+            assert "/obj/geo9" in _pt._REGISTERED
+            assert "/obj/geo9/deep" in _pt._REGISTERED
+            assert "/obj/geo2" not in _pt._REGISTERED
+            # 删除：摘登记含后代前缀条目；JSON 路径保留（undo/同名复现）
+            _pt._handle_delete(_FakeNode("/obj/geo9"))
+            assert "/obj/geo9" not in _pt._REGISTERED
+            assert "/obj/geo9/deep" not in _pt._REGISTERED
+            assert _adm_cls.load("CfgA")[0]["params"]["node_path"] == \
+                "/obj/geo9", "删除不改 JSON（路径保留待复现）"
+            assert _seen[-1]["kind"] == "deleted"
+            assert _seen[-1]["paths"] == ("/obj/geo9",)
+        finally:
+            _pt.remove_observer(_seen.append)
+            _pt.reset_all()
+        _pt.reconcile()  # 无头（无 hou）必须静默直返
+        # 注意：本段之前实例化的窗口仍挂着自己的观察者（destroyed 未触发，
+        # 合法存活）——只断言本段自己的观察者已摘除
+        assert _seen.append not in _pt._OBSERVERS, "观察者应摘除"
+        assert _pt._REGISTERED == {}, "登记表应收尾清空"
+
+        # ⑤ 丢失视觉态：红边框动态属性 + 「丢失」标签替换启用勾选框
+        #    （headless 无 hou，_refresh_missing_states 静默跳过——视觉
+        #    机制用 _set_slot_missing 直驱验证；评估逻辑的 hou.node 部分
+        #    已由 e2e 探针在真会话验证）
+        from houtools.automation import styles as _ma_styles
+        assert 'missing="true"' in _ma_styles.STYLE_SHEET, \
+            "styles.py 必须带 missing 选择器（ERROR token 红边框）"
+        from PySide6.QtWidgets import QCheckBox as _ACB, QLabel as _ALB
+        _mwin = aw.create_panel_widget()
+        _mslot = _mwin._slot_widgets[0]
+        _mcb = _mslot.findChild(_ACB, "slotEnabled")
+        _mlb = _mslot.findChild(_ALB, "slotMissing")
+        assert _mcb is not None and _mlb is not None
+        assert not _mcb.isHidden() and _mlb.isHidden(), "初始为启用态"
+        _mwin._set_slot_missing(_mslot, True)
+        assert _mslot.property("missing") is True
+        assert _mcb.isHidden() and not _mlb.isHidden(), "丢失态互换显示"
+        _mwin._set_slot_missing(_mslot, True)  # 幂等：重复置位不炸
+        assert _mcb.isHidden() and not _mlb.isHidden()
+        _mwin._set_slot_missing(_mslot, False)
+        assert not _mcb.isHidden() and _mlb.isHidden(), "恢复启用态"
+        _mwin.deleteLater()
+        aw._PANEL_REFS.clear()
+    print("automation path_tracker OK")
+
     # 真实实例化 videoseq 窗口（捕获 __init__ 结构损伤；无视频、无线程）
     from houtools.videoseq.window import _VideoToSequenceWindow, parse_dimension
     assert parse_dimension("1920") == 1920

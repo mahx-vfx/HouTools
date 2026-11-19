@@ -34,6 +34,7 @@ from houtools.automation.data_manager import (
     AutomationDataManager,
     ConfigConflictError,
 )
+from houtools.automation import path_tracker
 from houtools.automation.task_types import (
     TaskItem,
     TaskType,
@@ -973,6 +974,13 @@ class AutomationWindow(QWidget):
         self.destroyed.connect(self._close_log_file)
         self.destroyed.connect(_cancel_engine_on_destroy)
 
+        # 节点路径跟随（path_tracker）：面板作为观察者接收改名/删除通知，
+        # 同步槽位文本与 rev 基线。盘上改写由 tracker 直接完成（单写者，
+        # 见 path_tracker 模块头），面板防抖写盘通道不因改名事件触发；
+        # 观察者摘除挂 destroyed（pane 子部件大概率收不到 closeEvent）
+        path_tracker.add_observer(self._on_paths_changed)
+        self.destroyed.connect(self._detach_path_tracker)
+
         # Delete 用 QShortcut 认领（WidgetWithChildren 上下文优先于
         # Houdini 的全局快捷键）；焦点在输入框内时 QLineEdit 自己会
         # 接受 ShortcutOverride，快捷键自动让路给文本编辑
@@ -1083,6 +1091,119 @@ class AutomationWindow(QWidget):
             flushed = False
         if not flushed:
             self._warn_flush_failed()
+
+    # ── 节点路径跟随（path_tracker 观察者） ──────────────────
+
+    def _on_paths_changed(self, event: dict) -> None:
+        """path_tracker 通知（主线程同步）：同步槽位文本与 rev 基线。
+
+        renamed：命中槽的 parmPath 程序化更新——blockSignals 抑制
+        textChanged，否则程序化 setText 会被当用户编辑汇入防抖写盘，
+        产生与 tracker 刚落盘内容相同的冗余写盘；装载期同样安全（盘上
+        已是 tracker 写的新值，槽文本对齐即可，信号被屏蔽零写盘）。
+        当前配置被 tracker 改写时重读 rev 基线——tracker 写盘推进了盘
+        上 rev，不重读的话面板下次 flush 会撞 ConfigConflictError 弹窗。
+        deleted：路径保留（undo/同名重建可复现），v1 仅 debug 留痕
+        （丢失状态可视化属二期）。
+        """
+        kind = event.get("kind")
+        if kind == "renamed":
+            changes = event.get("changes") or ()
+            for slot in self._slot_widgets:
+                if getattr(slot, "_raw_data", None) is not None:
+                    continue  # 未知类型槽原样透传，不参与路径跟随
+                pp_le = slot.findChild(QLineEdit, "parmPath")
+                if pp_le is None:
+                    continue
+                node_path, parm_name = _split_parm_path(pp_le.text())
+                new_path = path_tracker.apply_rename_to_path(
+                    node_path, changes)
+                if new_path == node_path:
+                    continue
+                pp_le.blockSignals(True)
+                try:
+                    pp_le.setText(_combine_parm_path(new_path, parm_name))
+                finally:
+                    pp_le.blockSignals(False)
+            if self._current_config_name in (event.get("revs") or {}):
+                self._config_rev = AutomationDataManager.read_config_rev(
+                    self._current_config_name)
+            # 文本已对齐新路径 → 重评估丢失态（新路径有效则摘红）；
+            # 当前配置没被改写时 rev 基线不动
+            self._refresh_missing_states()
+        elif kind == "deleted":
+            logger.debug("Automation: 引用节点已删除（配置路径保留）: %s",
+                         ", ".join(event.get("paths") or ()))
+            # 引用节点被删：相关槽立即转红（重开工程后由装载期评估兜底）
+            self._refresh_missing_states()
+
+    def _detach_path_tracker(self) -> None:
+        """destroyed 兜底：面板销毁时摘除 path_tracker 观察者。
+
+        pane 子部件收不到 closeEvent（dev-notes/automation.md），观察者
+        摘除与 stdout 恢复/日志句柄/引擎取消同属 destroyed 兜底模式。"""
+        try:
+            path_tracker.remove_observer(self._on_paths_changed)
+        except Exception as exc:
+            logger.debug("Automation: 摘除路径观察者失败: %s", exc)
+
+    # ── 丢失视觉态（红边框 + 「丢失」标签，2026-11 用户拍板） ──
+
+    def _set_slot_missing(self, slot: QWidget, missing: bool) -> None:
+        """切换单槽的丢失视觉态（红边框 + 「丢失」标签替换启用勾选框）。
+
+        幂等：状态未变化时零操作（unpolish/polish 不白做）。丢失只是
+        视觉态——enabled 勾选框隐藏不销毁，``_collect_data`` 照常读取，
+        用户的启用勾选不丢；路径恢复（重新创建/改回有效路径）时勾选框
+        原样回来。配合 styles.py 的 ``QWidget#taskSlot[missing="true"]``
+        选择器（红边框 ERROR token），动态属性需 unpolish/polish 重评估
+        （与 selected 同一机制）。"""
+        if getattr(slot, "_ht_missing", False) == missing:
+            return
+        slot._ht_missing = missing
+        cb = slot.findChild(QCheckBox, "slotEnabled")
+        if cb is not None:
+            cb.setVisible(not missing)
+        lb = slot.findChild(QLabel, "slotMissing")
+        if lb is not None:
+            lb.setVisible(missing)
+        slot.setProperty("missing", missing)
+        slot.style().unpolish(slot)
+        slot.style().polish(slot)
+
+    def _refresh_missing_states(self) -> None:
+        """逐槽解析 BUTTON_CLICK 的 node_path，同步丢失视觉态。
+
+        解析是 ``hou.node`` O(任务数) 哈希查找（无扫描）；无头（smoke）
+        静默跳过。空路径不算丢失（空槽是待填状态，不是断链）；非按钮
+        类型不评估（Flipbook 输出路径是文件路径、Webhook 是 URL）。
+        时机：装载后/落盘后（与 reconcile 同点）+ tracker 改名/删除
+        通知后——用户输入无效路径时红色在停手 600ms（防抖）后出现，
+        输入过程不闪红。
+        """
+        try:
+            import hou
+        except ImportError:
+            return
+        for slot in self._slot_widgets:
+            if getattr(slot, "_raw_data", None) is not None:
+                self._set_slot_missing(slot, False)  # 未知类型槽不评估
+                continue
+            combo = slot.findChild(QComboBox, "taskType")
+            if combo is None or combo.currentIndex() != 0:  # 0=BUTTON_CLICK
+                self._set_slot_missing(slot, False)
+                continue
+            node_path = ""
+            pp_le = slot.findChild(QLineEdit, "parmPath")
+            if pp_le is not None:
+                node_path = _split_parm_path(pp_le.text())[0]
+            missing = False
+            if node_path:
+                try:
+                    missing = hou.node(node_path) is None
+                except Exception:
+                    missing = False
+            self._set_slot_missing(slot, missing)
 
     def _is_own_native_window(self, obj) -> bool:
         """判断事件源 ``obj``(QWindow) 是否为本面板专属的原生窗口。
@@ -1496,10 +1617,21 @@ class AutomationWindow(QWidget):
         )
         jump_btn.clicked.connect(lambda: _on_jump())
 
-        # ── 启用勾选框 ──
+        # ── 启用勾选框 / 丢失标签 ──
+        # 引用节点丢失时勾选框换成红色「丢失」二字（2026-11 用户拍板）：
+        # 丢失只是视觉态，不动数据——勾选框隐藏不销毁，_collect_data 照常
+        # 读取，用户的启用勾选不丢；路径恢复后勾选框原样回来
         enabled_cb = QCheckBox("启用")
         enabled_cb.setObjectName("slotEnabled")
         enabled_cb.setChecked(True)
+        missing_label = QLabel("丢失")
+        missing_label.setObjectName("slotMissing")
+        missing_label.setStyleSheet(
+            "QLabel#slotMissing {{ color: {error}; background: transparent;"
+            " font-weight: 600; }}".format(error=theme.color("ERROR")))
+        missing_label.setToolTip(
+            "引用的节点不存在（可能已被删除，或改名后工程未保存）")
+        missing_label.hide()
 
         # ── 组装 ──
         hbox.addWidget(idx_label)
@@ -1510,6 +1642,7 @@ class AutomationWindow(QWidget):
         hbox.addWidget(flipbook_widget, 1)
         hbox.addWidget(jump_btn)
         hbox.addWidget(enabled_cb)
+        hbox.addWidget(missing_label)
 
         # ── 信号：切换类型时 show/hide ──
         def _on_type_changed(idx):
@@ -2468,6 +2601,16 @@ class AutomationWindow(QWidget):
                 self._add_slot()
         finally:
             self._dirty_loading -= 1
+        # 装载完成后对账路径监听：堵「打开面板立即改名」的空窗（读全部
+        # 配置 → 增量注册/摘除）。tracker 内部全兜底（无头/异常静默
+        # 返回），绝不阻塞装载
+        try:
+            path_tracker.reconcile()
+        except Exception as exc:
+            logger.debug("Automation: 装载后路径对账失败: %s", exc)
+        # 装载后评估丢失态：重开工程时「改名未保存」的断裂在这里现形
+        # （JSON 领先于盘上 hip → hou.node 解析失败 → 红边框+丢失标签）
+        self._refresh_missing_states()
 
     # ── 配置下拉 helper ────────────────────────────────────
 
@@ -2813,6 +2956,12 @@ class AutomationWindow(QWidget):
             self._persist_last_config()  # 上次使用配置随工程持久化
         # 刷新下拉让新文件出现在列表中 + 恢复选中
         self._refresh_config_dropdown()
+        # 落盘内容=界面内容，对账路径监听（同 _flush_dirty_tasks 尾部）
+        try:
+            path_tracker.reconcile()
+        except Exception as exc:
+            logger.debug("Automation: 保存后路径对账失败: %s", exc)
+        self._refresh_missing_states()
         return tasks_data
 
     # ── 自动保存（改动即存，2026-11 用户拍板） ───────────────
@@ -2860,6 +3009,15 @@ class AutomationWindow(QWidget):
             self._dirty_pending = False
             self._config_rev = AutomationDataManager.read_config_rev(
                 self._current_config_name)
+            # 落盘内容=界面内容，对账监听登记（新填/改过的路径在岗、
+            # 删掉的任务路径摘除）。tracker 内部全兜底不阻塞自动保存
+            try:
+                path_tracker.reconcile()
+            except Exception as exc:
+                logger.debug("Automation: 保存后路径对账失败: %s", exc)
+            # 落盘后重评估丢失态：手输无效路径停手 600ms 后现红，
+            # 改成有效路径自动摘红
+            self._refresh_missing_states()
             return True
         self._dirty_pending = True
         logger.warning("Automation: 自动保存失败 filename=%s",

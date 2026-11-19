@@ -1,6 +1,6 @@
 # Automation 执行引擎与面板接入
 
-适用：`houtools/automation/execution_engine.py`、`houtools/automation/window.py`（AGENTS.md「自动化执行引擎」「界面接入（Python Panel）」两行的细节展开）。
+适用：`houtools/automation/execution_engine.py`、`houtools/automation/window.py`、`houtools/automation/path_tracker.py`（AGENTS.md「自动化执行引擎」「界面接入（Python Panel）」「节点路径跟随」三行的细节展开）。
 
 ## 执行引擎（execution_engine.py）
 
@@ -61,3 +61,51 @@
 - smoke 新增：按机器标记断言/旧标记兼容/rev 递增与冲突不写盘/损坏放行/窗口级三选（patch `dialogs.choice`/`prompt_text`，**注意 `_flush_dirty_tasks` 前必须 `_mark_dirty`**——无脏标记 flush 空跑返回 True 根本不进冲突路径，曾漏）/删除三态/关闭 toast 去重（`call_count == 1`）。gen_about_shots 的 `shot_automation` 补 patch `config_hostname → "Automation"`（默认配置名才能对上演示数据文件）。
 - **日志默认保存**：`log_to_disk` 缺省翻为 True（`__init__` 初值 + `_load_settings` 双处），配置文件显式 false 才关闭——用户既有配置里已写 false 的保持关闭（持久化语义优先于默认值）。设置对话框复选框、tooltip 不变。
 - **完成摘要固定四段**（2026-11 用户拍板）：`... — 总共 N，成功 X，失败 Y，取消 Z`，总共 = 成功+失败+取消（本次运行的启用任务数，禁用任务不计），取消 0 也显示。引擎协作式取消生效点（循环顶部 `_cancelled` 分支）统计 `sum(enabled for tasks[idx:])` 记入 `_cancelled_count`（在途任务已完成收尾、计入各自结果，不计入取消数）；`_on_all_completed` 在 `finally` 复位 `_engine` **之前**读取——print 经 tee 同落日志与控制台（两条通道同一条输出，无需单独 logger 行）。
+
+## 节点路径跟随改名（path_tracker.py，2026-11）
+
+BUTTON_CLICK 任务的 `params.node_path` 存工程外部 JSON，节点改名后按旧路径解析失败（引擎报「节点不存在」）。path_tracker 用 `hou.Node.addEventCallback` 让路径像原生参数引用一样实时跟随。**方案对比结论（用户拍板）**：锚点表达式方案（借 `chs()` 原生重写）虽零簿记，但实测祖先改名不触发 `ParmTupleChanged`（实时 UI 通道在父级改名上失灵）+ 锚点进 hip 污染 + task↔parm 双真值协调，弃用。
+
+### 机制（全部经 H22.0.429 / H21.0.440 hython 无头探针实测）
+
+- **事件事实**：`NameChanged` 在 `setName` **同一同步调用栈内**触发（无事件循环依赖、无头可用）；kwargs 只给 `node`（新路径）+ `old_name`，旧绝对路径由 `compute_old_path` 反推。**父级改名只在父节点上发事件，子节点零事件**——祖先链（`parent()` 上溯到根）必须一并注册。
+- **注册元组必须全是 EnumValue**：SWIG 对象 `dir()` 带 `thisown` 等非枚举属性，动态拼 `nodeEventType` 元组会 TypeError（实测）——`_node_event_types()` 写死两个成员。
+- **hipFile 订阅签名与 Node 版不同**：`hou.hipFile.addEventCallback(callback)` 只收**一个**参数（Node 版是 `(types, callback)`），事件类型在回调参数里过滤；`AfterLoad` 每次开工程触发。`AfterLoad`/`AfterMerge` → `reset_all()` + `reconcile()`；`AfterClear` → 只清登记。
+- **回调不进 hip**：实测保存前改名触发、重载后改名零触发、hip 二进制无任何回调/插件痕迹——工程可移植性零污染（无插件机器打开完全干净，行为与从未装过一致）。
+- **复制节点不带回调**（实测）——回调是节点对象上的会话状态。语义正确：任务引用原节点，复制件不该接管引用；`copyTo` 会在父网络发 `ChildCreated`（二期重绑可用）。
+- **sessionId 无资格当持久身份**：跨改名稳定（10→新路径）但**删除后重建复用**（10→10，`nodeBySessionId(旧)` 解析到新节点=冒名顶替）、**跨存档失效**（10→None）——登记键用路径字符串 + 事件簿记维护。
+- **农场零足迹三层防线**：① uiready 本身仅交互会话执行（Houdini 机制，实测无头会话 HOUDINI_PATH 上的 uiready 不跑）；② `bootstrap()` 挂 `hou.isUIAvailable()` 闸门；③ 事件处理器全程 try 兜底，Houdini 自身对回调异常也是打日志不崩会话。**456.py 不可用作引导**：H22 实测它在无头会话也跑（带不带 hip 启动都执行）、且**同一会话每次 load 都重跑**——用它等于农场每个渲染任务都执行一遍引导。
+- **启动双保险**：uiready 引导时 `AfterLoad` 订阅 + 立即 `reconcile()`——GUI 启动 hip 可能先于 uiready 加载完成，兜住这个时序缝隙。
+
+### 单写者写盘协议（最关键设计点）
+
+- **改名引发的配置写盘只由 tracker 完成**：读盘上最新内容 → 只改命中 `node_path`（**整段匹配**：相等或 `old + "/"` 前缀，`/obj/geo1` 不得误命中 `/obj/geo10`）→ `save(expect_rev)` 原子写，`ConfigConflictError` 重读重试（有限次，重试必须重新 load——盘上已被他人改过）。
+- **写盘成功后通知面板刷新 `_config_rev`**：tracker 写盘推进盘上 rev，面板不重读基线的话下次 flush 撞 `ConfigConflictError` 弹窗（用户面前凭空弹冲突=体验灾难）。
+- **面板观察者 `_on_paths_changed` 只做展示层**：命中槽 `parmPath` 程序化 setText **必须 `blockSignals`**——否则程序化 setText 触发 textChanged → `_mark_dirty` → 防抖全量写盘（内容与 tracker 刚写相同，冗余且在装载期会与基线错配）。装载期（`_dirty_loading > 0`）setText 照常执行（槽文本对齐盘上新值，信号被屏蔽零写盘）。
+- **面板编辑挂起的 600ms 窗口内发生改名**：tracker surgical 写盘（只动 node_path）+ 面板槽文本同步 + rev 刷新——面板 flush 全量写时槽文本已含新路径，无冲突无丢失。多机器真并发（A 机改名 B 机编辑）仍走既有 rev 三选弹窗，属既定行为。
+- **观察者协议**：`{"kind": "renamed", "changes": ((old,new),), "configs": (受影响配置名), "revs": {配置名: rev 或 None}}` / `{"kind": "deleted", "paths": (...)}`。多面板共存各自注册，destroyed 摘除（pane 收不到 closeEvent，观察者摘除挂 destroyed，与 stdout/日志/引擎取消同一兜底模式）。
+
+### 簿记与 reload
+
+- **登记表 `_REGISTERED`（路径 → 注册时的壳函数）NameError 守卫活过 reload**（项目惯例）。**向 hou 注册的回调是"桥接壳"**：壳体只 `from houtools.automation import path_tracker as _current; _current._impl(...)`——reload 重跑模块体后旧壳依旧按属性转发到最新实现，功能恒新；reconcile 对账时统一摘旧壳挂当前壳（removeEventCallback 需要注册时的同一对象，登记表存引用）。
+- **reconcile 是唯一对账点**（bootstrap/AfterLoad/AfterMerge/面板装载/flush 成功/`_save_data` 成功后调用）：期望集=**全部**配置文件（不只面板当前配置）的 BUTTON_CLICK node_path；摘除=不在期望集且非祖先条目（祖先条目 `key + "/"` 前缀保护）、死条目（`hou.node(path)` None）；新增=注册节点+祖先链。**死条目必须清**：节点删除时 `BeingDeleted` 摘条目，但条目残留会让同名重建的新节点被误判已注册而漏挂。
+- **删除不改 JSON**：`BeingDeleted`（先于销毁、路径仍可读）只摘登记——路径保留，undo 恢复/同名重建后 `reconcile` 按路径复现重绑（对齐原生引用行为）。
+- **控制台零 tracker 提示，反馈走左下角 toast（2026-11 用户拍板）**：改名命中=info「任务路径已跟随改名：旧 → 新」、删除=warning「引用节点已删除，任务路径丢失：路径」、**启动零提示**；`_toast` 带 `isUIAvailable` 闸门仅 GUI 会话发（无头静默——notify 的无头降级 logger 也进控制台，不能裸调，否则 smoke/e2e 输出重新出现 tracker 行）；通知失败静默吞（显式用户指令覆盖「异常至少 log.warning」反模式——toast 渲染失败无后果）；失败路径（订阅/注册/落盘失败等）保留 logger.warning（罕见且是真实故障）；删除 toast 以 purge 实摘为条件——祖先级联删除时祖先事件先清子树（提示一次），后代随后到达的事件零摘除零重复提示。
+- `_handle_rename`/`_handle_delete`/纯函数**无 hou 依赖**，smoke 用 FakeNode 直喂整链；`reconcile`/注册无头 `import hou` ImportError 直返（smoke 实例化窗口安全）。
+- **`compute_old_path` 的 `rpartition` 头段坑**：`"/geo2".rpartition("/")` 头段是**空串**不是 `"/"`——根直挂节点旧路径拼回要按空串分支（smoke 抓过）。以 `/` 开头校验放最前。
+
+### 丢失视觉态（2026-11 用户拍板：断链不自动修，只做可视化）
+
+- 用户场景：改名跟随让 JSON 实时领先于场景，「不保存」关闭后 hip 回滚旧名、JSON 留在新名 → 重开断裂（盘上节点还是旧名）。用户拍板**「断掉就断掉，不自动修」**——丢失态只做可视化（本节）。
+- 视觉态：丢失槽 = **红边框**（styles.py `QWidget#taskSlot[missing="true"]`，ERROR token；规则必须放在 selected/dragging **之后**——同特异性级联后者胜，红边框才压得住选中橙边，背景仍随选中）+ 「启用」勾选框换成红色**「丢失」二字**（`QLabel#slotMissing`）。
+- **勾选框隐藏不销毁**：`_collect_data` 照常读取（findChild 不受可见性影响），用户的启用勾选不丢；路径恢复（重新创建/改回有效路径）自动换回勾选框。
+- 机制：`_set_slot_missing`（幂等：状态未变零操作；unpolish/polish 与 selected 同款动态属性机制）+ `_refresh_missing_states`（逐槽 `hou.node` O(任务数) 解析，无扫描；无头静默跳过）。
+- 评估口径：仅 BUTTON_CLICK（`combo.currentIndex() == 0`——防 Flipbook 槽 stacked 里隐藏的 parmPath 旧文本误评）；**空路径不算丢失**（空槽是待填状态不是断链）；未知类型槽不评估。
+- 时机：装载后（**重开工程时「改名未保存」的断裂在这里现形**——JSON 领先于盘上 hip，`hou.node` 解析失败即红）/ flush 与 `_save_data` 成功后（手输无效路径停手 600ms 防抖后现红、改成有效路径自动摘红，输入过程不闪红）/ tracker renamed+deleted 通知后（删除即刻转红）。
+- smoke：headless 无 hou，评估层走不到——视觉机制用 `_set_slot_missing` 直驱验证（互换显示/幂等/恢复）+ styles 断言带 `missing="true"` 选择器。
+
+### 已知边界（如实声明）
+
+- 引擎持 Start 时内存快照（既定设计）：运行中改名只影响 JSON/面板，不影响本次 run。
+- 打开时**已**断的路径（上个会话遗留）没有节点可注册——非本次改名造成，执行时按既有「节点不存在」暴露；丢失状态可视化属二期。
+- GUI 会话待验证（hython 无 undo 栈 API 探不了）：交互式改名（网络编辑器回车提交）的事件时序、undo 改名/删除的事件流（预期 NameChanged/ChildCreated 对称）。
