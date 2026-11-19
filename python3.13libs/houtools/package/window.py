@@ -40,8 +40,8 @@ from PySide6.QtWidgets import (
 
 from houtools.package import collect, paths
 from houtools.ui import (
-    components, dialogs, fonts as tool_fonts, notify, qss, reveal, taskbar,
-    theme,
+    components, dialogs, fonts as tool_fonts, notify, qss, qtcompat, reveal,
+    taskbar, theme,
 )
 
 # 失败反馈一律走结果面板 + notify，不打控制台日志（houtools 日志器 DEBUG
@@ -387,13 +387,18 @@ class PackageProjectWindow(QDialog):
         self._table.customContextMenuRequested.connect(self._on_context_menu)
         self._table.doubleClicked.connect(self._on_row_activated)
         self._table.setToolTip("双击跳转到节点；右键可打开原路径 / 复制路径")
-        header = self._table.horizontalHeader()
-        header.setSectionResizeMode(_COL_CHECK, QHeaderView.Fixed)
+        # H21 / PySide6 6.5 会把表头指针粘连成 QAbstractScrollArea 包装，
+        # 取派生 API 前按 C++ 指针重包（见 ui/qtcompat）。重包失败也要
+        # 保住窗口可用：只是少几列自适应策略，不能让整个工具打不开。
+        header = qtcompat.rewrap(self._table.horizontalHeader(), QHeaderView)
         self._table.setColumnWidth(_COL_CHECK, 34)
-        for column in (_COL_KIND, _COL_NODE, _COL_PARM, _COL_STATE):
-            header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(_COL_SRC, QHeaderView.Stretch)
-        header.setSectionResizeMode(_COL_DST, QHeaderView.Stretch)
+        if hasattr(header, "setSectionResizeMode"):
+            header.setSectionResizeMode(_COL_CHECK, QHeaderView.Fixed)
+            for column in (_COL_KIND, _COL_NODE, _COL_PARM, _COL_STATE):
+                header.setSectionResizeMode(column,
+                                            QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(_COL_SRC, QHeaderView.Stretch)
+            header.setSectionResizeMode(_COL_DST, QHeaderView.Stretch)
         layout.addWidget(self._table, 1)
 
         self._hint_label = QLabel("")

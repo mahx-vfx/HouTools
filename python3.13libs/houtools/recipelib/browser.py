@@ -32,7 +32,7 @@ from houtools.recipelib.capture import HIDE_DELAY_MS, SnipOverlay
 from houtools.recipelib.docs import (
     DocEditorDialog, DocInfoPopup, MarkdownMediaView, MediaDialog)
 from houtools.ui import fonts as tool_fonts
-from houtools.ui import qss, theme
+from houtools.ui import qss, qtcompat, theme
 from houtools.ui.components import EmptyState, apply_window_surface
 from houtools.ui.sidebar import (SIDEBAR_COLOR_ROLE, SIDEBAR_COUNT_ROLE,
                                  SIDEBAR_HEADER_ROLE, SIDEBAR_ICON_ROLE,
@@ -1284,8 +1284,11 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         # 处开始），那条竖带由 Houdini 全局样式上色、与面板底色不一致——
         # 归零后每行 rect 占满全宽，子项缩进由 delegate 在行内自画
         self.sidebar.setIndentation(0)
-        self.sidebar.header().setSectionResizeMode(
-            QtWidgets.QHeaderView.Stretch)
+        # H21 / PySide6 6.5 表头包装粘连：取派生 API 前重包（ui/qtcompat）
+        header = qtcompat.rewrap(self.sidebar.header(),
+                                 QtWidgets.QHeaderView)
+        if hasattr(header, "setSectionResizeMode"):
+            header.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self.sidebar.setMinimumWidth(150)
         self.sidebar.setMaximumWidth(280)
         self.sidebar.setItemDelegate(SidebarDelegate())

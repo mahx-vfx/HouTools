@@ -19,7 +19,7 @@ root/
 ├── python3.13libs/houtools/           # 核心 Python 包（python3.13libs 由 Houdini 自动加入 sys.path）
 │   ├── dev/                       # ★ 热加载框架：reloader / dispatcher（永不参与重载）
 │   ├── core/                      # constants（路径自算 + SETTINGS_DIR 解析链）/ log / settings(JsonStore)
-│   ├── ui/                        # theme（唯一 token 源，无 Qt）/ qss（按 token 生成样式表）/ components（BrandHeader standby/SectionHeader/按钮/空状态/Pill/StatusDot）/ window_manager（工具窗口单例登记）/ taskbar / networknav / icons / fonts（角色化：品牌字/UI/等宽/文档）
+│   ├── ui/                        # theme（唯一 token 源，无 Qt）/ qss（按 token 生成样式表）/ components（BrandHeader standby/SectionHeader/按钮/空状态/Pill/StatusDot）/ window_manager（工具窗口单例登记）/ taskbar / networknav / icons / fonts（角色化：品牌字/UI/等宽/文档）/ qtcompat（H21 PySide6 6.5 包装类型粘连，按 C++ 指针重包）
 │   ├── automation/                # Automation：task_types / data_manager / execution_engine / styles / window
 │   ├── videoseq/                  # 视频转序列图：ffmpeg 查找 + 窗口（拖放 + 可编辑路径框）
 │   ├── hdrlight/                  # HDR Library：HDR 库浏览 + 缩略图 + 双击赋给灯光

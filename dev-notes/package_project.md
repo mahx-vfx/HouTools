@@ -279,3 +279,32 @@ package 模块与其冒烟测试：
 **回归**：`tests/smoke_test.py` 新增 `collect()` hip_dir 串联、会话精确匹配、
 UDIM 范围/混合模板、布局越界与重复目标冲突、zip 归档边界纯函数等断言；
 非法 UTF-8 用例补 `try/finally` 清理，不再在配置目录累积 `.bak`。
+
+## 2026-11-19 H21 窗口构造崩溃（PySide6 6.5 包装类型粘连）
+
+**现象**：H21 上打开 Package Project 直接崩，`_build_ui()` 里
+`header.setSectionResizeMode(...)` 报
+`AttributeError: 'PySide6.QtWidgets.QAbstractScrollArea' object has no
+attribute 'setSectionResizeMode'`。traceback 显示 `python3.13libs/...`
+是假象——`python3.11libs` 只是入口壳，`__path__` 指向真身，H21 加载的
+业务模块 `__file__` 同样落在 `python3.13libs`，不能据此判断 H22。
+
+**根因**：H21 自带 PySide6 **6.5.3** 的 shiboken 按「首次包装时请求的
+类型」缓存 C++ 指针的 Python 包装；`QHeaderView*` 若先被包成祖先类
+`QAbstractScrollArea`，之后 `horizontalHeader()` 一直返回该旧包装，
+派生 API 全不可见。H22 的 **6.8.3** 按 C++ 真实类型解析（连显式
+`wrapInstance(ptr, QAbstractScrollArea)` 都返回 QHeaderView），故不复现。
+本机双版本无头探针已验证：6.5.3 降级后报的正是上面那条
+AttributeError，重包后 `setSectionResizeMode` 恢复可用。
+
+**处理**：新增 `houtools/ui/qtcompat.py` 提供 `rewrap(obj, py_type)`
+（按 `shiboken6.getCppPointer` 重包，已是目标类型则短路；失败告警后
+返回原对象）。`package/window.py` 与 `recipelib/browser.py` 取表头后
+统一重包成 `QHeaderView`，并用 `hasattr` 能力探测守卫——最坏情况只是
+少几列自适应策略，窗口仍可打开。`ui/dialogs._rewrap` 改为委托共享层
+（对话框标准按钮的同款坑），名字保留。
+
+**回归**：`tests/smoke_test.py` 固化降级包装→重包恢复派生 API、
+H22 短路零开销、重包分支指针传递，以及窗口实例化后列 0 Fixed/34px、
+列 4 Stretch 确实生效。H21 6.5.3 端到端实测窗口构造通过
+（`col0=Fixed / col4=Stretch / width0=34`）。

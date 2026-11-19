@@ -5364,6 +5364,45 @@ def main():
     assert not pkg_collect._is_noise("C:/hip/geo/a.bgeo.sc", "C:/hip")
 
     from houtools.package import window as pkg_window
+    from houtools.ui import qtcompat
+
+    # PySide6 6.5 (H21) 包装类型粘连回归：表头指针一旦被降级包装成
+    # QAbstractScrollArea，setSectionResizeMode 即不可见（打包工程窗口
+    # 在 H21 实崩、报 AttributeError）。rewrap 必须按 C++ 指针恢复
+    # QHeaderView 派生 API；6.8 (H22) 精确解析派生类型，此时应短路
+    # 返回同一对象、零开销。
+    import shiboken6
+    from PySide6 import QtWidgets as _QtW
+
+    _probe_table = _QtW.QTableWidget(0, 3)
+    _probe_header = _probe_table.horizontalHeader()
+    _degraded = shiboken6.wrapInstance(
+        shiboken6.getCppPointer(_probe_header)[0],
+        _QtW.QAbstractScrollArea)
+    if isinstance(_degraded, _QtW.QHeaderView):
+        assert qtcompat.rewrap(_probe_header, _QtW.QHeaderView) is _probe_header
+    else:
+        assert not hasattr(_degraded, "setSectionResizeMode")
+        _restored = qtcompat.rewrap(_degraded, _QtW.QHeaderView)
+        assert isinstance(_restored, _QtW.QHeaderView)
+        _restored.setSectionResizeMode(0, _QtW.QHeaderView.Fixed)
+        assert _restored.sectionResizeMode(0) == _QtW.QHeaderView.Fixed
+
+    # 重包分支的指针传递：不依赖 6.5 行为，H22 上也能覆盖该分支
+    class _FakeType:
+        pass
+
+    _sentinel = object()
+    _wrap_orig = shiboken6.wrapInstance
+    _ptr_orig = shiboken6.getCppPointer
+    shiboken6.wrapInstance = lambda ptr, cls: _sentinel
+    shiboken6.getCppPointer = lambda obj: [0x1234]
+    try:
+        assert qtcompat.rewrap(object(), _FakeType) is _sentinel
+    finally:
+        shiboken6.wrapInstance = _wrap_orig
+        shiboken6.getCppPointer = _ptr_orig
+    _probe_table.deleteLater()
 
     _pkg_win = pkg_window.PackageProjectWindow(None)
     app.processEvents()
@@ -5372,6 +5411,12 @@ def main():
     assert _pkg_win._status_label.text() == "—"
     assert _pkg_win.objectName() == "htWindow"
     assert _pkg_win.is_close_deferred() is False
+    # 修复后列宽策略必须真的生效：0=勾选列 Fixed/34px、4/5=路径列 Stretch
+    _pkg_hdr = qtcompat.rewrap(_pkg_win._table.horizontalHeader(),
+                               _QtW.QHeaderView)
+    assert _pkg_hdr.sectionResizeMode(0) == _QtW.QHeaderView.Fixed
+    assert _pkg_hdr.sectionResizeMode(4) == _QtW.QHeaderView.Stretch
+    assert _pkg_win._table.columnWidth(0) == 34
     # worker 类可无头构造（不 start）：协作式取消标志就位
     _pkg_copier = pkg_window._CopyWorker({})
     assert _pkg_copier.cancelled is False

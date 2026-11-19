@@ -19,20 +19,18 @@ QApplication 级 ChildAdded 过滤器）会在对话框构造期触碰新控件�
 QAbstractButton（_rewrap）再改文字。
 """
 
-import shiboken6
 from PySide6 import QtCore, QtWidgets
 
-from houtools.ui import fonts, qss
+from houtools.ui import fonts, qss, qtcompat
 
 _LABELS = None
 
 
 def _rewrap(obj, py_type):
     """obj 的 Python 包装被粘连成别的类型（如 QWidget）时按 C++ 指针
-    重包成 py_type；已是目标类型则原样返回。"""
-    if isinstance(obj, py_type):
-        return obj
-    return shiboken6.wrapInstance(shiboken6.getCppPointer(obj)[0], py_type)
+    重包成 py_type；已是目标类型则原样返回。实现在 ``ui/qtcompat``，
+    表头等其它控件的同类粘连共用同一份。"""
+    return qtcompat.rewrap(obj, py_type)
 
 
 def _apply_theme(box, primary_roles=()):
