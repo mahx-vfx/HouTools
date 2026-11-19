@@ -210,6 +210,7 @@ H1–H6 全部有独立配色（8 色内容板），正文固定 `TEXT_2`：
 
 ```text
 python tests/test_theme_tokens.py
+python tests/test_about_sync.py
 python tests/test_fonts.py
 python tests/smoke_test.py
 python tests/gen_about_shots.py

@@ -145,8 +145,6 @@
     border-radius: 8px;
     background: rgba(21, 21, 28, .72);
     border: 1px solid var(--line-strong);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
   }
 
   /* 主按钮：暗橙底白字；悬停底色与文字不变，靠亮橙描边 + 外发光表达点亮 */
@@ -521,6 +519,43 @@
     html { scroll-behavior: auto; }
     .car-track { transition: none; }
   }
+
+  /* ---- 可访问性 / 窄屏（追加规则，放最后以覆盖基础样式） ---- */
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .table-wrap { overflow-x: auto; margin: 12px 0; }
+  .table-wrap table { margin: 0; min-width: 520px; }
+  .car-toggle {
+    position: absolute;
+    left: 14px; bottom: 12px;
+    z-index: 2;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: rgba(10, 10, 15, .78);
+    color: var(--text-2);
+    font-family: var(--sans);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .car-toggle:hover { color: var(--accent); border-color: var(--accent); }
+  .car-toggle:focus-visible { outline-offset: 3px; }
+
+  @media (max-width: 640px) {
+    .wrap { padding: 0 16px 48px; }
+    .hero-inner { padding: 32px 18px 36px; gap: 22px; }
+    .hero-glass { width: 100%; }
+    .repo-url { overflow-wrap: anywhere; }
+    section { padding: 18px 16px; }
+    h2 { font-size: 19px; }
+    .slide-cap { padding: 40px 14px 12px; gap: 6px; flex-wrap: wrap; }
+    .slide-cap strong { font-size: 16px; }
+    .car-btn { width: 30px; height: 30px; font-size: 17px; }
+    .car-dots { right: 10px; bottom: 10px; gap: 6px; }
+    .car-toggle { left: 10px; bottom: 10px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .donate-modal:not([hidden]) .donate-card { animation: none; }
+  }
 </style>
 </head>
 <body>
@@ -822,23 +857,24 @@
     </a>
 
     <a class="slide" href="#video-to-sequence">
-      <img src="about_shots/videoseq.png" alt="视频转序列图界面截图:参数与输出设置">
+      <img src="about_shots/videoseq.png" alt="视频转序列图界面截图:参数与输出设置" loading="lazy">
       <div class="slide-cap"><strong>Video to Sequence</strong><span>ffmpeg 提取视频为帧序列,可直连相机背景</span></div>
     </a>
 
     <a class="slide" href="#hdr-library">
-      <img src="about_shots/hdr.png" alt="HDR Library 界面截图:HDR 缩略图网格与分类侧栏">
+      <img src="about_shots/hdr.png" alt="HDR Library 界面截图:HDR 缩略图网格与分类侧栏" loading="lazy">
       <div class="slide-cap"><strong>HDR Library</strong><span>缩略图网格浏览,双击赋给选中灯光</span></div>
     </a>
 
     <a class="slide" href="#recipe-library">
-      <img src="about_shots/recipe.png" alt="Recipe Library 界面截图:recipe 卡片网格与预览面板">
+      <img src="about_shots/recipe.png" alt="Recipe Library 界面截图:recipe 卡片网格与预览面板" loading="lazy">
       <div class="slide-cap"><strong>Recipe Library</strong><span>recipes 卡片与 VEX/Python 代码块,双击/拖拽入网</span></div>
     </a>
 
   </div>
   <button class="car-btn car-prev" type="button" aria-label="上一张">‹</button>
   <button class="car-btn car-next" type="button" aria-label="下一张">›</button>
+  <button class="car-toggle" type="button" aria-pressed="false">暂停轮播</button>
   <div class="car-dots"></div>
 </div>
 
@@ -891,6 +927,7 @@
   <h2>Paste as Object Merge<span class="zh">粘贴为 Object Merge</span></h2>
   <p class="entry">入口:网络编辑器 <code>HouTools</code> 菜单 / 快捷键 <code>Ctrl+Shift+V</code></p>
   <p>在网络编辑器里 <code>Ctrl+C</code> 复制节点后,切到目标网络按 <code>Ctrl+Shift+V</code>,在鼠标位置创建<strong>引用节点</strong>(而非副本),颜色随源节点。按「目标上下文 × 源类别」自动选择引用方式:</p>
+  <div class="table-wrap">
   <table>
     <tr><th>复制的源 → 粘贴目标</th><th>创建的节点(XXX = 源节点名)</th></tr>
     <tr><td>SOP → SOP</td><td>object_merge <code>Merge_XXX</code></td></tr>
@@ -905,6 +942,7 @@
     <tr><td>LOP → LOP</td><td>fetch <code>LOP_XXX</code></td></tr>
     <tr><td>LOP → ROP</td><td>usdrender <code>XXX</code></td></tr>
   </table>
+  </div>
   <ul>
     <li>未列出的组合一律跳过(状态栏提示)。</li>
     <li>整次操作占用单个 undo 槽,<code>Ctrl+Z</code> 一步撤回。</li>
@@ -945,12 +983,14 @@
   <h2>Drag &amp; Drop Import<span class="zh">拖放导入 .abc / .fbx / .usd</span></h2>
   <p class="entry">入口:从资源管理器把 <code>.abc</code> / <code>.fbx</code> / <code>.usd</code> 等文件拖到网络编辑器</p>
   <p>松手即在鼠标位置创建导入节点,免去 File → Import 的多步操作(基于 Houdini 官方 externaldragdrop 钩子):</p>
+  <div class="table-wrap">
   <table>
     <tr><th>拖放落点</th><th>.abc 创建的节点</th><th>.fbx 创建的节点</th><th>.usd/.usda/.usdc/.usdz 创建的节点</th></tr>
     <tr><td>Object 层级(<code>/obj</code>)</td><td>Alembic Archive,自动构建层级(等价 File &gt; Import &gt; Alembic Scene...)</td><td>FBX 子网,官方导入器自动命名(等价 File &gt; Import &gt; Filmbox FBX...)</td><td>—</td></tr>
     <tr><td>SOP 层级(geo 内部)</td><td>alembic SOP 节点</td><td>file SOP 节点</td><td>—</td></tr>
     <tr><td>LOP 层级(<code>/stage</code>)</td><td>—</td><td>—</td><td>sublayer 节点,路径填入 <code>filepath1</code></td></tr>
   </table>
+  </div>
   <ul>
     <li>支持一次拖入<strong>多个文件</strong>(<code>.abc</code>/<code>.fbx</code>/<code>.usd*</code> 可混拖),纵向排开;各类整批各占一个 undo 槽。</li>
     <li>节点名自动清洗:取文件名主干,中文等非法字符替换为 <code>_</code>,同名自动加数字后缀(FBX 子网由官方导入器命名)。</li>
@@ -1155,7 +1195,7 @@
 
 <!-- ============ 安装 ============ -->
 <section id="install">
-  <h2>安装<span class="zh"></span></h2>
+  <h2>安装</h2>
   <ol>
     <li>下载 HouTools.zip,整个解压到 <code>Documents/houdini21.0/packages/</code>(H21)或 <code>Documents/houdini22.0/packages/</code>(H22),解压后该目录下即有 <code>HouTools</code> 文件夹与 <code>HouTools.json</code>;</li>
     <li>启动 Houdini,顶部菜单即出现 <strong>HouTools</strong>。</li>
@@ -1175,12 +1215,12 @@
 
 <a class="top-link" href="#" title="回到顶部">↑</a>
 
-<div class="donate-modal" id="donateModal" hidden>
+<div class="donate-modal" id="donateModal" role="dialog" aria-modal="true" aria-labelledby="donateCaption" hidden>
   <div class="donate-backdrop"></div>
   <figure class="donate-card">
-    <button class="donate-close" type="button" aria-label="关闭">×</button>
+    <button class="donate-close" type="button" aria-label="关闭打赏弹窗">×</button>
     <img src="assets/donate.png" alt="MAHX_VFX 的微信赞赏码">
-    <figcaption>微信扫码 · 感谢每一份支持</figcaption>
+    <figcaption id="donateCaption">微信扫码 · 感谢每一份支持</figcaption>
   </figure>
 </div>
 
@@ -1191,10 +1231,14 @@
   var track = car.querySelector('.car-track');
   var slides = car.querySelectorAll('.slide');
   var dotsBox = car.querySelector('.car-dots');
+  var toggle = car.querySelector('.car-toggle');
+  var mq = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
   var INTERVAL = 5000;
   var n = slides.length;
   var idx = 0;
   var timer = null;
+  /* 系统要求减少动效时默认不自动播放（WCAG 2.2.2），并提供显式暂停控件 */
+  var paused = !!(mq && mq.matches);
 
   for (var i = 0; i < n; i++) {
     var d = document.createElement('button');
@@ -1202,7 +1246,7 @@
     d.className = 'car-dot';
     d.setAttribute('aria-label', '第' + (i + 1) + '张');
     (function (i) {
-      d.addEventListener('click', function () { go(i); restart(); });
+      d.addEventListener('click', function () { go(i); start(); });
     })(i);
     dotsBox.appendChild(d);
   }
@@ -1213,18 +1257,36 @@
     track.style.transform = 'translateX(' + (-idx * 100) + '%)';
     for (var k = 0; k < n; k++) {
       dots[k].className = (k === idx) ? 'car-dot on' : 'car-dot';
+      if (k === idx) dots[k].setAttribute('aria-current', 'true');
+      else dots[k].removeAttribute('aria-current');
     }
   }
 
-  function restart() {
-    if (timer) clearInterval(timer);
-    timer = setInterval(function () { go(idx + 1); }, INTERVAL);
+  function stop() {
+    if (timer) { clearInterval(timer); timer = null; }
+  }
+  function start() {
+    stop();
+    if (!paused) timer = setInterval(function () { go(idx + 1); }, INTERVAL);
+  }
+  function setPaused(value) {
+    paused = !!value;
+    toggle.textContent = paused ? '播放轮播' : '暂停轮播';
+    toggle.setAttribute('aria-pressed', paused ? 'true' : 'false');
+    toggle.setAttribute('aria-label', paused ? '继续自动播放轮播' : '暂停自动轮播');
+    if (paused) stop(); else start();
   }
 
-  car.querySelector('.car-prev').addEventListener('click', function () { go(idx - 1); restart(); });
-  car.querySelector('.car-next').addEventListener('click', function () { go(idx + 1); restart(); });
-  car.addEventListener('mouseenter', function () { if (timer) clearInterval(timer); });
-  car.addEventListener('mouseleave', restart);
+  car.querySelector('.car-prev').addEventListener('click', function () { go(idx - 1); start(); });
+  car.querySelector('.car-next').addEventListener('click', function () { go(idx + 1); start(); });
+  car.addEventListener('mouseenter', stop);
+  car.addEventListener('mouseleave', start);
+  toggle.addEventListener('click', function () { setPaused(!paused); });
+  if (mq) {
+    var onChange = function (e) { setPaused(e.matches); };
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+  }
 
   var touchX = null;
   car.addEventListener('touchstart', function (e) {
@@ -1233,25 +1295,38 @@
   car.addEventListener('touchend', function (e) {
     if (touchX === null) return;
     var dx = e.changedTouches[0].clientX - touchX;
-    if (Math.abs(dx) > 40) { go(idx + (dx < 0 ? 1 : -1)); restart(); }
+    if (Math.abs(dx) > 40) { go(idx + (dx < 0 ? 1 : -1)); start(); }
     touchX = null;
   });
 
   go(0);
-  restart();
+  setPaused(paused);
 })();
 
-/* 打赏弹窗:按钮弹出,遮罩 / × / Esc 关闭 */
+/* 打赏弹窗:按钮弹出,遮罩 / × / Esc 关闭;焦点进入弹窗、关闭后归还 */
 (function () {
   var modal = document.getElementById('donateModal');
   if (!modal) return;
-  function open() { modal.hidden = false; }
-  function close() { modal.hidden = true; }
+  var opener = null;
+  var closeBtn = modal.querySelector('.donate-close');
+  function open() {
+    opener = document.activeElement;
+    modal.hidden = false;
+    closeBtn.focus();
+  }
+  function close() {
+    modal.hidden = true;
+    if (opener && opener.focus) opener.focus();
+    opener = null;
+  }
   document.getElementById('donateBtn').addEventListener('click', open);
-  modal.querySelector('.donate-close').addEventListener('click', close);
+  closeBtn.addEventListener('click', close);
   modal.querySelector('.donate-backdrop').addEventListener('click', close);
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && !modal.hidden) close();
+    if (modal.hidden) return;
+    if (e.key === 'Escape') close();
+    /* 弹窗内只有关闭按钮可聚焦,把 Tab 锁在它上面 */
+    if (e.key === 'Tab') { e.preventDefault(); closeBtn.focus(); }
   });
 })();
 </script>

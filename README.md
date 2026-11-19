@@ -77,7 +77,7 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings.
 | 粘贴边界框 | 节点右键 `Paste Bounding Box [HT]` | Ctrl+C 复制源节点后，右键带三分量 `size`/`t` 参数的目标节点（如 box），把源节点包围盒尺寸/中心粘贴到其 `size`/`t`——绝对值或 `bbox()`/`centroid()` 表达式（同网络相对路径、跨层级绝对路径）两种模式 |
 | 粘贴中心 | 节点右键 `Paste Center [HT]` | Ctrl+C 复制源节点后右键任意目标节点，在其下方创建 transform 并启用（接管显示/渲染）：枢轴=目标中心、平移=源中心−目标中心（目标内容对齐到源中心）——绝对值或 `centroid()` 表达式两种模式 |
 | 视频转序列图 | `HouTools → Video to Sequence` | ffmpeg 提取视频为 JPG 序列（帧级进度，质量/起始帧/位数/前缀可调），EXR/PNG/TIF 静帧序列同样支持（浏览时同一序列折叠为一个选项，EXR 自动转 sRGB），相机支持在 Houdini 节点选择器中直接选取 + 一键跳转定位，相机行「匹配素材分辨率」一键把相机分辨率对齐素材（防背景拉伸），分辨率可读取/编辑（宽/高双框 + 预设），「编码器」行 ⓘ 按钮悬停/点击查看实际生效的 ffmpeg/ffprobe，可选自动设置相机 Background Image |
-| Package Project | `HouTools → Package Project`（主菜单与网络编辑器菜单） | 打包工程：只收**已启用节点**上的外部引用与节点缓存，把绝对路径的文件复制进 `$HIP/ht_package/` 并改写成 `$HIP/...`（帧模板 `$F4` 原样保留，表达式驱动参数跳过不改写），可勾选范围；另存 `<包名>/<hip>_packed.hip`（原工程不动），包目录整体压成 `<包根>/<包名>.zip`，可直接上传渲染农场 |
+| Package Project | `HouTools → Package Project`（主菜单与网络编辑器菜单） | 打包工程：只扫**启用节点**上用户填过的路径（默认值不收），filecache 按 `sopoutput` 求值整段收帧、改写目标为 `basedir`；素材复制进 `<包根>/<包名>/assets/…`，参数按生成方式写成 `$HIP/assets/…`（另存到包目录）或 `$HIP/<包名>/assets/…` / `$JOB/<包名>/assets/…`（覆盖当前工程），帧模板 `$F4` 原样保留、表达式驱动参数跳过不改写；默认「另存到包目录」生成 `<包名>/<hip>_packed.hip`（原工程不动），也可「覆盖当前工程」，包目录整体压成 `<包根>/<包名>.zip` 上传渲染农场 |
 | HDR Library | `HouTools → HDR Library` | HDR 环境贴图库浏览器：缩略图网格（后台生成）、子文件夹分类 + 收藏，选中灯光后双击即贴图 |
 | Recipe Library | `HouTools → Recipe Library` | recipes 资产库浏览器：官方 recipes 卡片网格浏览（缩略图/标签/主题色），树形侧栏过滤，双击/拖拽应用到网络，VEX/Python 代码块卡片（双击追加到选中节点），Markdown 文档，数据导入/导出 |
 | HouTools Settings | `HouTools → HouTools Settings...` | 设置窗口：配置目录展示（含修改方法）+ 快捷键设置（Paste as Object Merge / Copy Output Path，捕获式改键，会话即时生效） |
@@ -364,6 +364,7 @@ _houtools_dispatcher.run("<tool_id>")
 
 ```text
 python tests/test_theme_tokens.py   # 禁止 theme.py 之外裸 hex（允许 SVG 内容色）
+python tests/test_about_sync.py     # About 页与版本号 / token / 菜单 / 资源的同步断言
 python tests/test_fonts.py          # 品牌字/UI/等宽/文档字角色与回退
 python tests/gen_about_shots.py     # 重生成 docs/about_shots/*.png
 python tests/gen_brand_assets.py    # 重生成 README 品牌头图与徽章
