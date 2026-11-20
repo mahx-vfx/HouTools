@@ -5628,7 +5628,7 @@ def main():
 
     # 2026-11-21 用户拍板：包根只剩 $HIP / $JOB；生成方式固定「另存到
     # 包目录」，覆盖当前工程、自定义路径选项、以及整套环境变量检测 / 诊断 /
-    # 持久化提示 / 确认弹窗全部删除。
+    # 持久化提示 / 确认弹窗全部删除。两个包根共用「输出目录」输入框。
     assert _pkg_win._root_combo.count() == 2, _pkg_win._root_combo.count()
     assert [_pkg_win._root_combo.itemData(_i) for _i in range(2)] == \
         ["HIP", "JOB"]
@@ -5655,20 +5655,44 @@ def main():
     _job_saved = sys.modules.get("hou")
     sys.modules["hou"] = _JobHou
     try:
-        # $HIP：路径输入框禁用，包根取 $HIP，前缀不带包名，且不动会话 $JOB
+        # $HIP：输出目录输入框也可用；留空 = 当前工程目录，前缀不带包名，
+        # 且不动会话 $JOB
         _pkg_win._root_combo.setCurrentIndex(0)
-        assert not _pkg_win._job_path_edit.isEnabled()
+        assert _pkg_win._root_path_edit.isEnabled()
+        assert _pkg_win._root_path_btn.isEnabled()
+        assert _pkg_win._root_dir() == os.path.normpath("D:/proj/shot")
         assert _pkg_win._base_dir() == os.path.normpath("D:/proj/shot")
         assert _pkg_win._target_prefix() == "$HIP"
         _JobHou._env.clear()
         assert _pkg_win._set_session_job() is True
         assert not _JobHou._env
 
+        # 2026-11-21 二次反馈：$HIP 也能自定义输出目录——只改产物落点，
+        # 参数仍写 $HIP/…（另存 hip 后 $HIP 自动指向包目录），不 putenv
+        _pkg_win._root_path_edit.setText("D:/renderfarm/hipA")
+        assert _pkg_win._root_dir() == os.path.normpath(
+            "D:/renderfarm/hipA")
+        assert _pkg_win._base_dir() == os.path.normpath(
+            "D:/renderfarm/hipA")
+        assert _pkg_win._package_dir() == os.path.normpath(
+            "D:/renderfarm/hipA/" + _pkg_win._pkg_name())
+        assert _pkg_win._root_var_value() == (
+            "$HIP", os.path.normpath("D:/renderfarm/hipA"))
+        assert _pkg_win._target_prefix() == "$HIP"
+        _JobHou._env.clear()
+        assert _pkg_win._set_session_job() is True
+        assert not _JobHou._env
+
+        # 相对路径：$HIP 下 _base_dir 直接判不可用，$JOB 下拒绝 putenv
+        _pkg_win._root_path_edit.setText("relative/hip")
+        assert _pkg_win._base_dir() == ""
+        _pkg_win._root_path_edit.clear()
+
         # $JOB 留空 = 当前工程目录（用户要的「默认以当前工程路径指定」）
         _pkg_win._root_combo.setCurrentIndex(1)
-        assert _pkg_win._job_path_edit.isEnabled()
-        assert _pkg_win._job_path_btn.isEnabled()
-        assert _pkg_win._job_root() == os.path.normpath("D:/proj/shot")
+        assert _pkg_win._root_path_edit.isEnabled()
+        assert _pkg_win._root_path_btn.isEnabled()
+        assert _pkg_win._root_dir() == os.path.normpath("D:/proj/shot")
         assert _pkg_win._base_dir() == os.path.normpath("D:/proj/shot")
         assert _pkg_win._target_prefix() == "$JOB/{}".format(
             _pkg_win._pkg_name())
@@ -5676,9 +5700,9 @@ def main():
         assert _pkg_win._set_session_job() is True
         assert _JobHou._env.get("JOB") == "D:/proj/shot"
 
-        # 用户自定义 $JOB 路径：包根、putenv、参数前缀同源
-        _pkg_win._job_path_edit.setText("D:/renderfarm/jobA")
-        assert _pkg_win._job_root() == os.path.normpath("D:/renderfarm/jobA")
+        # 用户自定义 $JOB 输出目录：包根、putenv、参数前缀同源
+        _pkg_win._root_path_edit.setText("D:/renderfarm/jobA")
+        assert _pkg_win._root_dir() == os.path.normpath("D:/renderfarm/jobA")
         assert _pkg_win._base_dir() == os.path.normpath("D:/renderfarm/jobA")
         assert _pkg_win._target_prefix() == "$JOB/{}".format(
             _pkg_win._pkg_name())
@@ -5687,11 +5711,11 @@ def main():
         assert _JobHou._env.get("JOB") == "D:/renderfarm/jobA"
 
         # 相对路径拒绝设置，且不留副作用
-        _pkg_win._job_path_edit.setText("relative/job")
+        _pkg_win._root_path_edit.setText("relative/job")
         _JobHou._env.clear()
         assert _pkg_win._set_session_job() is False
         assert not _JobHou._env
-        _pkg_win._job_path_edit.setText("D:/renderfarm/jobA")
+        _pkg_win._root_path_edit.setText("D:/renderfarm/jobA")
 
         # 确认弹窗：按用户图示去掉「生成方式」「$JOB 当前」「环境变量」
         # 等文字，只保留落点与参数改写说明。mock question 返回 False
@@ -5720,17 +5744,31 @@ def main():
             assert "houdini.env" not in _dlg_text, _dlg_text
             assert "改写 1 个参数为 $JOB 下的相对路径" in _dlg_text, \
                 _dlg_text
+
+            # $HIP 自定义输出目录：确认弹窗仍按 $HIP 打包，落点已改，
+            # 并注明另存后 $HIP 会指向包目录（参数写法不变）
+            _pkg_win._root_combo.setCurrentIndex(0)
+            _pkg_win._root_path_edit.setText("D:/renderfarm/hipA")
+            _pkg_win._on_apply()
+            _hip_dlg_text = _captured[-1][1]
+            assert "改写 1 个参数为 $HIP 下的相对路径" in _hip_dlg_text, \
+                _hip_dlg_text
+            assert "另存 hip 后 $HIP 会指向该包目录" in _hip_dlg_text, \
+                _hip_dlg_text
+            assert os.path.normpath("D:/renderfarm/hipA") in _hip_dlg_text, \
+                _hip_dlg_text
+            _pkg_win._root_path_edit.clear()
         finally:
             _pkg_dlg.question = _saved_question
 
-        _pkg_win._job_path_edit.clear()
+        _pkg_win._root_path_edit.clear()
         _pkg_win._root_combo.setCurrentIndex(0)      # 还原 $HIP
     finally:
         if _job_saved is None:
             sys.modules.pop("hou", None)
         else:
             sys.modules["hou"] = _job_saved
-    print("package JOB setup OK")
+    print("package root output dir OK")
 
     # 恢复成 2 条 fixture，供下面多选/切场景断言使用
     _pkg_win._refs = [pkg_collect.Ref(

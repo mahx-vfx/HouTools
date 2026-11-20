@@ -7,8 +7,10 @@
 2. **预览**：逐行「节点 / 参数 / 参数现值 / 打包后参数值 / 状态」，可勾选；
 3. **打包**：后台线程把勾选的文件复制到 `<包根>/<包名>/<类型>/…`，
    完成后主线程按**所选包根**改写参数（$HIP / $JOB，见 `_target_prefix`；
-   帧模板 `$F4` 原样保留）。选 $JOB 时工具用 `hou.putenv` 把会话 $JOB
-   指向界面上指定的目录（留空 = 当前工程目录），不读取任何环境变量配置；
+   帧模板 `$F4` 原样保留）。两个包根共用「输出目录」输入框（留空 =
+   当前工程目录，可填任意绝对目录改变产物落点）：选 $HIP 时参数仍写
+   `$HIP/…`（另存 hip 后会话 $HIP 自动指向包目录），选 $JOB 时额外用
+   `hou.putenv` 把会话 $JOB 指向该目录；都不读取任何环境变量配置；
 4. **生成方式**：固定「另存到包目录（原工程不动）」——改写后另存为
    `<包名>/<hip>_packed.hip`，磁盘上的原工程不动（2026-11-21 用户拍板
    删除「覆盖当前工程」）；
@@ -20,7 +22,7 @@
 与 hipFile.save 必须主线程（HOM 非线程安全），由 worker 的 done 信号
 （队列连接自动回主线程）触发。改写/保存不进 worker。
 
-样式：品牌 token 体系——`qss.window_qss(_EXTRA_QSS)`（表格/单选钮等基础
+样式：品牌 token 体系——`qss.window_qss(_EXTRA_QSS)`（表格/表头等基础
 表没有的控件在 _EXTRA_QSS 里按 token 补），根 objectName=`htWindow`，
 主按钮走 components.PrimaryButton（htRole=primary）。
 """
@@ -497,34 +499,37 @@ class PackageProjectWindow(QDialog):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
 
-        # 包根 + 包名
+        # 包根 + 输出目录 + 包名
         top = QHBoxLayout()
         top.addWidget(QLabel("包根目录"))
         self._root_combo = QComboBox()
         self._root_combo.addItem("$HIP", "HIP")
         self._root_combo.addItem("$JOB", "JOB")
         self._root_combo.setToolTip(
-            "$HIP = 当前工程目录；$JOB = 项目根（默认同当前工程目录，"
-            "可在右侧自定义）")
+            "$HIP = 当前工程目录；$JOB = 项目根。两者默认都输出到当前工程目录，"
+            "都可在右侧改成任意绝对目录")
         self._root_combo.currentIndexChanged.connect(self._on_root_changed)
         top.addWidget(self._root_combo)
-        # $JOB 路径：选 $JOB 时启用。默认留空 = 当前工程目录；填入任意绝对
-        # 目录即为自定义 $JOB（工具打包时用 hou.putenv 指向它，不读环境变量）
-        self._job_path_edit = QLineEdit()
-        self._job_path_edit.setPlaceholderText(
-            "$JOB 路径（留空 = 当前工程目录）")
-        self._job_path_edit.setToolTip(
-            "留空：把 $JOB 设为当前工程目录；也可手输/浏览任意绝对目录。"
-            "工具只在打包时设置本次 Houdini 会话的 $JOB，不修改任何配置文件。")
-        self._job_path_edit.setMinimumWidth(240)
-        self._job_path_edit.setEnabled(False)
-        self._job_path_edit.textChanged.connect(self._on_targets_changed)
-        top.addWidget(self._job_path_edit)
-        self._job_path_btn = QPushButton("浏览…")
-        self._job_path_btn.setEnabled(False)
-        self._job_path_btn.setToolTip("选择一个已存在的绝对目录作为 $JOB 路径")
-        self._job_path_btn.clicked.connect(self._on_browse_job)
-        top.addWidget(self._job_path_btn)
+        # 输出目录：两个包根共用（2026-11-21 二次反馈）。留空 = 当前工程
+        # 目录；填任意绝对目录 = 只改变打包产物的落点，参数写法不变：
+        # $HIP 仍写 $HIP/…（另存 hip 后 $HIP 自动指向包目录），$JOB 额外
+        # 用 hou.putenv 把会话 $JOB 指向该目录。
+        self._root_path_edit = QLineEdit()
+        self._root_path_edit.setPlaceholderText(
+            "输出目录（留空 = 当前工程目录）")
+        self._root_path_edit.setToolTip(
+            "留空：包目录输出到当前工程目录；也可手输/浏览任意绝对目录改变产物落点。"
+            "选 $HIP 时参数仍写 $HIP/…（另存 hip 后 $HIP 就是包目录）；"
+            "选 $JOB 时额外设置本次会话 $JOB 指向该目录。不修改任何配置文件。")
+        self._root_path_edit.setMinimumWidth(240)
+        self._root_path_edit.setEnabled(True)
+        self._root_path_edit.textChanged.connect(self._on_targets_changed)
+        top.addWidget(self._root_path_edit)
+        self._root_path_btn = QPushButton("浏览…")
+        self._root_path_btn.setEnabled(True)
+        self._root_path_btn.setToolTip("选择一个已存在的绝对目录作为包根输出目录")
+        self._root_path_btn.clicked.connect(self._on_browse_root)
+        top.addWidget(self._root_path_btn)
         top.addSpacing(12)
         top.addWidget(QLabel("包名"))
         self._pkg_edit = QLineEdit(paths.PACKAGE_DIR)
@@ -549,7 +554,8 @@ class PackageProjectWindow(QDialog):
         mode_note.setToolTip(
             "包内生成 <hip>_packed.hip；磁盘上的原 hip 不会被改。"
             "打包后参数按所选包根开头：$HIP → $HIP/…（不带包名，另存后 "
-            "$HIP 就是包目录）；$JOB → $JOB/<包名>/…")
+            "$HIP 就是包目录）；$JOB → $JOB/<包名>/…。"
+            "两个包根都可在上方自定义输出目录，只改产物落点、不改参数写法")
         mode_row.addWidget(mode_note)
         mode_row.addStretch()
         layout.addLayout(mode_row)
@@ -661,22 +667,21 @@ class PackageProjectWindow(QDialog):
         return paths.sanitize_pkg_name(self._pkg_edit.text())
 
     def _on_root_changed(self, *_args):
-        """切换包根：仅 $JOB 时启用路径输入框/浏览按钮。"""
-        job = self._root_var() == "JOB"
-        self._job_path_edit.setEnabled(job)
-        self._job_path_btn.setEnabled(job)
+        """切换包根：$HIP / $JOB 都可自定义输出目录，输入框恒可用。"""
+        self._root_path_edit.setEnabled(True)
+        self._root_path_btn.setEnabled(True)
         self._on_targets_changed()
 
-    def _on_browse_job(self):
-        start = self._job_path_value() or self._hip_dir or os.path.expanduser("~")
+    def _on_browse_root(self):
+        start = self._root_path_value() or self._hip_dir or os.path.expanduser("~")
         folder = QFileDialog.getExistingDirectory(
-            self, "选择 $JOB 目录", start, QFileDialog.Option.ShowDirsOnly)
+            self, "选择包根输出目录", start, QFileDialog.Option.ShowDirsOnly)
         if folder:
-            self._job_path_edit.setText(os.path.normpath(folder))
+            self._root_path_edit.setText(os.path.normpath(folder))
 
-    def _job_path_value(self):
+    def _root_path_value(self):
         # 右键复制路径常带首尾引号；strip('"') 已覆盖任意多对引号
-        return self._job_path_edit.text().strip().strip('"')
+        return self._root_path_edit.text().strip().strip('"')
 
     def _hip_value(self):
         """当前工程目录（$HIP 展开值）；失败返回空串。"""
@@ -687,20 +692,22 @@ class PackageProjectWindow(QDialog):
             return ""
         return os.path.normpath(value) if value else ""
 
-    def _job_root(self):
-        """$JOB 实际目录：输入框留空 = 当前工程目录；填了就用填的。
+    def _root_dir(self):
+        """包根输出目录：输入框留空 = 当前工程目录；填了就用填的。
 
-        2026-11-21 用户拍板：不再靠环境变量配置指定 JOB，默认 $JOB 就是
-        当前工程路径，也可在界面上自定义任意绝对目录。
+        2026-11-21 二次反馈：$HIP / $JOB 共用这一输入框，语义相同——
+        只是改变打包产物的落点，不靠任何环境变量配置。
         """
-        custom = self._job_path_value()
+        custom = self._root_path_value()
         return os.path.normpath(custom) if custom else self._hip_value()
 
     def _root_var_value(self):
-        """（变量名, 实际目录）——给界面与错误提示用，不做可用性判断。"""
-        if self._root_var() == "JOB":
-            return "$JOB", self._job_root()
-        return "$HIP", self._hip_value()
+        """（变量名, 实际输出目录）——给界面与错误提示用，不做可用性判断。
+
+        两个包根共用同一个输出目录输入框；$HIP 自定义目录时参数仍写
+        `$HIP/…`（另存 hip 后会话 $HIP 自动指向包目录）。
+        """
+        return "$" + self._root_var(), self._root_dir()
 
     def _base_dir(self):
         """包根目录的绝对路径；不是绝对路径时返回空串。"""
@@ -713,17 +720,17 @@ class PackageProjectWindow(QDialog):
         return paths.package_dir_abs(self._base_dir(), self._pkg_name())
 
     def _set_session_job(self):
-        """选 $JOB 时把会话 $JOB 指向实际目录；返回是否成功。
+        """选 $JOB 时把会话 $JOB 指向实际输出目录；返回是否成功。
 
-        2026-11-21 用户拍板：$JOB 不再由外部配置指定。工具在打包时用
-        ``hou.putenv`` 把**本次 Houdini 会话**的 $JOB 指向界面指定的目录
-        （留空 = 当前工程目录，也可手输/浏览任意绝对目录），参数前缀
+        2026-11-21：$JOB 不再由外部配置指定。$HIP / $JOB 共用输出目录输入框；
+        选 $HIP 时不需要 putenv（另存 hip 后 $HIP 自动指向包目录），选 $JOB 时
+        用 ``hou.putenv`` 把**本次 Houdini 会话**的 $JOB 指向该目录，参数前缀
         ``$JOB/<包名>/…`` 与实际包根因此永远同源。工具不修改任何配置文件。
         """
         if self._root_var() != "JOB":
             return True
         import hou
-        root = self._job_root()
+        root = self._root_dir()
         if not root or not os.path.isabs(root):
             self._set_hint("$JOB 路径必须是绝对目录：{!r}".format(root),
                            error=True)
@@ -865,8 +872,9 @@ class PackageProjectWindow(QDialog):
           会话 $JOB 由 ``_set_session_job()`` 在打包时指向实际目录，带包名
           才指向包内；
         - 包根 ``$HIP`` → ``$HIP``（**不带包名**）：hip 另存进
-          ``<$HIP>/<包名>/`` 后会话的 $HIP 就变成包目录，再带一层包名
-          会得到 ``<包目录>/<包名>/…``（多一级、读取不到）。
+          ``<输出目录>/<包名>/`` 后会话的 $HIP 就变成包目录，再带一层包名
+          会得到 ``<包目录>/<包名>/…``（多一级、读取不到）。输出目录可自定义，
+          但只改产物落点，参数仍写 ``$HIP/…``。
         """
         return paths.target_prefix(self._root_var(), self._pkg_name())
 
@@ -1232,6 +1240,10 @@ class PackageProjectWindow(QDialog):
         # 包根只有 $HIP / $JOB 两种，都是变量写法（随包可移植）。
         path_text = "改写 {} 个参数为 {} 下的相对路径".format(
             len(refs), root_label)
+        if root == "HIP" and self._root_path_value():
+            # $HIP 自定义输出目录：只改产物落点，参数写法不变（另存 hip 后
+            # 会话 $HIP 自动指向包目录）。写进弹窗，避免用户误以为前缀会变。
+            path_text += "（另存 hip 后 $HIP 会指向该包目录）"
         if not dialogs.question(
                 self, "打包工程",
                 "将把 {} 个文件复制到\n{}\n\n并按文件类型归入官方工程目录"
@@ -1243,6 +1255,9 @@ class PackageProjectWindow(QDialog):
         # 之后，成功/失败的 [信息] 日志才会留在结果面板里。
         if not self._set_session_job():
             return
+        if root == "HIP" and self._root_path_value():
+            self._log("[信息] $HIP 输出目录 = {}（另存后会话 $HIP 指向包目录，"
+                      "参数仍写 $HIP/…）".format(base))
         self._log("[开始] 包目录：{}".format(package_dir))
         missing = [ref for ref in refs if ref.missing]
         for ref in missing:
@@ -1485,16 +1500,16 @@ class PackageProjectWindow(QDialog):
     # 忙态与生命周期（worker 运行中锁界面 + 延迟关闭协议）
     # ------------------------------------------------------------------
     def _set_busy(self, busy):
-        """复制/压缩进行中锁界面：计划已固定，中途改勾选/包根/$JOB 路径会
+        """复制/压缩进行中锁界面：计划已固定，中途改勾选/包根/输出目录会
         与在跑的复制错位。解锁后由调用方 _update_status 恢复按钮态。"""
         for widget in (self._scan_btn, self._apply_btn, self._zip_btn,
                        self._select_all_btn, self._clear_btn, self._table,
                        self._root_combo, self._pkg_edit):
             widget.setEnabled(not busy)
-        # $JOB 路径控件只在选 $JOB 时可用；busy 时一律禁用
-        job_enabled = (not busy) and self._root_var() == "JOB"
-        self._job_path_edit.setEnabled(job_enabled)
-        self._job_path_btn.setEnabled(job_enabled)
+        # 包根输出目录控件对 $HIP / $JOB 都可用；busy 时一律禁用
+        root_path_enabled = not busy
+        self._root_path_edit.setEnabled(root_path_enabled)
+        self._root_path_btn.setEnabled(root_path_enabled)
 
     def _active_worker(self):
         for worker in (self._scan_worker, self._copy_worker, self._zip_worker):

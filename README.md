@@ -70,7 +70,7 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings.
 | 粘贴边界框 | 节点右键 `Paste Bounding Box [HT]` | Ctrl+C 复制源节点后，右键带三分量 `size`/`t` 参数的目标节点（如 box），把源节点包围盒尺寸/中心粘贴到其 `size`/`t`——绝对值或 `bbox()`/`centroid()` 表达式（同网络相对路径、跨层级绝对路径）两种模式 |
 | 粘贴中心 | 节点右键 `Paste Center [HT]` | Ctrl+C 复制源节点后右键任意目标节点，在其下方创建 transform 并启用（接管显示/渲染）：枢轴=目标中心、平移=源中心−目标中心（目标内容对齐到源中心）——绝对值或 `centroid()` 表达式两种模式 |
 | 视频转序列图 | `HouTools → Video to Sequence` | ffmpeg 提取视频为 JPG 序列（帧级进度，质量/起始帧/位数/前缀可调），EXR/PNG/TIF 静帧序列同样支持（浏览时同一序列折叠为一个选项，EXR 自动转 sRGB），相机支持在 Houdini 节点选择器中直接选取 + 一键跳转定位，相机行「匹配素材分辨率」一键把相机分辨率对齐素材（防背景拉伸），分辨率可读取/编辑（宽/高双框 + 预设），「编码器」行 ⓘ 按钮悬停/点击查看实际生效的 ffmpeg/ffprobe，可选自动设置相机 Background Image；同前缀旧序列转换前询问后改名 `.bak` 让位（成功才清理、取消/失败还原） |
-| Package Project | `HouTools → Package Project`（主菜单与网络编辑器菜单） | 打包工程：只扫**启用节点**上用户填过的路径（默认值不收），filecache 按 `sopoutput` 求值整段收帧、改写目标为 `basedir`；素材按文件类型归入 Houdini 官方 New Project 目录 `geo/hda/sim/abc/tex/render/flip/scripts/other`（不再有统一 `assets/` 层），参数按包根写成 `$HIP/<类型>/…` 或 `$JOB/<包名>/<类型>/…`；**包根只 `$HIP` / `$JOB` 两项**，选 `$JOB` 时可在输入框指定任意绝对目录（留空 = 当前工程目录），打包时用 `hou.putenv` 把本次会话 `$JOB` 指向它，不读也不改任何环境变量配置；帧模板 `$F4` 原样保留、表达式驱动参数跳过不改写；**生成方式固定「另存到包目录」**：生成 `<包名>/<hip>_packed.hip`（原工程不动，包名默认「工程名 + `-pack`」），包目录整体压成 `<包根>/<包名>.zip`（包内附 `package_log.txt` 明细）上传渲染农场 |
+| Package Project | `HouTools → Package Project`（主菜单与网络编辑器菜单） | 打包工程：只扫**启用节点**上用户填过的路径（默认值不收），filecache 按 `sopoutput` 求值整段收帧、改写目标为 `basedir`；素材按文件类型归入 Houdini 官方 New Project 目录 `geo/hda/sim/abc/tex/render/flip/scripts/other`（不再有统一 `assets/` 层），参数按包根写成 `$HIP/<类型>/…` 或 `$JOB/<包名>/<类型>/…`；**包根只 `$HIP` / `$JOB` 两项**，两者都可在共用的「输出目录」输入框指定任意绝对目录（留空 = 当前工程目录），只改变打包产物落点、不改参数写法；选 `$JOB` 时额外用 `hou.putenv` 把本次会话 `$JOB` 指向该目录，不读也不改任何环境变量配置；帧模板 `$F4` 原样保留、表达式驱动参数跳过不改写；**生成方式固定「另存到包目录」**：生成 `<包名>/<hip>_packed.hip`（原工程不动，包名默认「工程名 + `-pack`」），包目录整体压成 `<包根>/<包名>.zip`（包内附 `package_log.txt` 明细）上传渲染农场 |
 | HDR Library | `HouTools → HDR Library` | HDR 环境贴图库浏览器：缩略图网格（后台生成）、子文件夹分类 + 收藏，选中灯光后双击即贴图 |
 | Recipe Library | `HouTools → Recipe Library` | recipes 资产库浏览器：官方 recipes 卡片网格浏览（缩略图/标签/主题色），树形侧栏过滤，双击/拖拽应用到网络，VEX/Python 代码块卡片（双击追加到选中节点），Markdown 文档，数据导入/导出 |
 | HouTools Settings | `HouTools → HouTools Settings...` | 设置窗口：配置目录展示（含修改方法）+ 快捷键设置（Paste as Object Merge / Copy Output Path，捕获式改键，会话即时生效） |
@@ -240,11 +240,15 @@ File > Import > Alembic Scene... / File > Import > Filmbox FBX...）：
 - **参数写法按包根区分**：
   - 包根 `$HIP`（默认）→ **`$HIP/<类型>/…`**（hip 就住在包目录里，`$HIP` = 包目录）；
   - 包根 `$JOB` → **`$JOB/<包名>/<类型>/…`**。
-- **包根只两项：`$HIP` / `$JOB`**（2026-11-21 定稿，旧「自定义绝对路径」已并入 `$JOB`）：
-  选 `$JOB` 时旁边出现路径输入框，**留空 = 默认以当前工程路径作为 `$JOB`**，
-  也可手输或「浏览…」指定任意绝对目录 = 自定义 `$JOB` 路径。
-  用户确认打包后，工具用 `hou.putenv("JOB", 目录)` 把**本次 Houdini 会话**的 `$JOB`
-  指向该目录（仅本次会话有效，取消打包不留副作用），参数前缀与实际包根同源。
+- **包根只两项：`$HIP` / `$JOB`，共用「输出目录」输入框**（2026-11-21 定稿）：
+  两者都启用输入框，**留空 = 默认输出到当前工程目录**，也可手输或「浏览…」
+  指定任意绝对目录 = 只改变打包产物的落点，参数写法不变。
+  - `$HIP`：参数仍写 `$HIP/<类型>/…`（不带包名）；hip 另存进
+    `<输出目录>/<包名>/` 后会话 `$HIP` 自动变成包目录，所以前缀无需改动，
+    也不需要设置任何会话变量。确认弹窗会注明这一点。
+  - `$JOB`：用户确认打包后，工具用 `hou.putenv("JOB", 目录)` 把
+    **本次 Houdini 会话**的 `$JOB` 指向该目录（仅本次会话有效，取消打包不留副作用），
+    参数 `$JOB/<包名>/<类型>/…` 与包根同源。
   工具**不读取、不诊断、不修改** `houdini.env` / Package `.json` / 项目根 `.env` / 进程环境变量，
   也不再弹「指定 / 确认 $JOB」的会话首次弹窗。
 - **生成方式固定「另存到包目录（原工程不动）」**：另存 `<包名>/<hip>_packed.hip`；
