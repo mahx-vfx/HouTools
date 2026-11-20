@@ -269,6 +269,38 @@ def check_a11y(src):
     print("a11y guards OK")
 
 
+def check_toc_derivation(src):
+    """右栏只列当前章节的小节，链接必须由正文 h3[id] 运行时派生。
+
+    防止改回第三份手工清单（曾与左栏目录重复 16 个章节链接并漂移）。
+    """
+    toc = re.search(r'<nav class="ds-toc-nav"[^>]*>(.*?)</nav>', src, re.S)
+    assert toc, "right-hand subsection nav missing"
+    assert "href=\"#" not in toc.group(1), (
+        "subsection links must not be hardcoded (derive from h3[id] in JS)")
+    assert 'querySelectorAll("h3[id]")' in src, (
+        "subsection nav must derive from section h3[id]")
+    for anchor in ("tocCur", "tocSub", "tocNone"):
+        assert 'id="%s"' % anchor in src, "missing TOC node: %s" % anchor
+    assert "ds-sec-sub" in src, "narrow-screen in-section subsection bar missing"
+    print("toc derivation OK (right nav is runtime-derived, no duplicate list)")
+
+
+def check_dialog_structure(src):
+    """打赏弹窗必须在 </figure> 后、内联脚本前闭合，且全页 div 配平。
+
+    历史缺陷：donate-modal 漏写 </div>，浏览器容错后把两段 <script> 收进了
+    role="dialog" aria-modal="true" 容器里；功能看似正常，但语义错误且难以发现。
+    """
+    opens = len(re.findall(r"<div\b", src))
+    closes = src.count("</div>")
+    assert opens == closes, (
+        "unbalanced div tags (%d open / %d close)" % (opens, closes))
+    assert re.search(r"</figure>\s*</div>\s*<script>", src), (
+        "donate-modal must close after </figure> and before inline scripts")
+    print("dialog structure OK (%d divs balanced, closed before scripts)" % opens)
+
+
 def main():
     src = _read()
     check_version(src)
@@ -280,6 +312,8 @@ def main():
     check_curated_shots()
     check_offline(src)
     check_a11y(src)
+    check_toc_derivation(src)
+    check_dialog_structure(src)
     print("about sync lint: all OK")
 
 

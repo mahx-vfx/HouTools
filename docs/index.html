@@ -659,7 +659,7 @@ body.ds{ font-size:15px; }
   mask-image:linear-gradient(90deg, rgba(0,0,0,.25) 0%, rgba(0,0,0,.25) 45%, #000 80%, #000 100%)}
 .lg-replica-box{position:absolute;inset:0;z-index:-1;width:100%;height:100%;pointer-events:none}
 
-.ds-layout{display:grid;grid-template-columns:236px minmax(0,1fr) 200px;align-items:start;
+.ds-layout{display:grid;grid-template-columns:236px minmax(0,1fr) 180px;align-items:start;
   max-width:1360px;margin:0 auto}
 .ds-side{position:sticky;top:58px;height:calc(100vh - 58px);overflow-y:auto;
   padding:26px 16px 40px 20px;border-right:1px solid var(--line)}
@@ -681,7 +681,7 @@ body.ds{ font-size:15px; }
 .ds-search input:focus{border-color:var(--accent)}
 .ds-search svg{position:absolute;left:8px;top:7px;width:14px;height:14px;color:var(--text-4)}
 
-.ds-main{padding:34px 44px 70px;max-width:820px;min-width:0}
+.ds-main{padding:34px 44px 70px;max-width:1000px;min-width:0}
 .ds-main h1{font-size:30px;margin:0 0 10px}
 .ds-main .sub{font-size:15.5px;color:var(--text-2);margin:0 0 16px}
 .ds-main .badges{gap:7px;margin-bottom:8px}
@@ -709,16 +709,24 @@ body.ds{ font-size:15px; }
 .ds-sec-body code{font-size:12.5px}
 
 .ds-toc{position:sticky;top:58px;max-height:calc(100vh - 58px);overflow-y:auto;
-  padding:34px 20px 50px 2px;border-left:1px solid var(--line)}
+  padding:34px 14px 50px 2px;border-left:1px solid var(--line)}
 .ds-toc-t{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--text-4);
-  margin-bottom:10px}
+  margin-bottom:12px}
+.ds-toc-cur{font-size:12.5px;color:var(--text-2);margin:0 0 8px 10px;line-height:1.5}
 .ds-toc nav{background:none;border:none;border-radius:0;padding:0;margin:0}
 .ds-toc a{display:block;margin:0;padding:3px 0 3px 10px;font-size:12.5px;color:var(--text-3);
   text-decoration:none;border:0;border-left:2px solid transparent;border-radius:0;line-height:1.5}
 .ds-toc a:hover{color:var(--text-2)}
 .ds-toc a.on{color:var(--accent);border-left-color:var(--accent)}
-.ds-toc a.toc-h3{padding-left:22px;font-size:12px;color:var(--text-4)}
-@media (max-width:1200px){ .ds-layout{grid-template-columns:220px minmax(0,1fr)} .ds-toc{display:none} }
+.ds-toc a.toc-h3{padding-left:10px;font-size:12px;color:var(--text-3)}
+.ds-toc-none{font-size:12px;color:var(--text-4);padding-left:10px;margin:0}
+/* 窄屏右栏隐藏时，把小节条挂到每个章节顶部，导航不丢失（由 JS 从 h3 派生） */
+.ds-sec-sub{display:none;flex-wrap:wrap;gap:6px;margin:0 0 14px}
+.ds-sec-sub a{font-size:12px;color:var(--text-3);text-decoration:none;
+  padding:3px 10px;border:1px solid var(--line);border-radius:999px}
+.ds-sec-sub a:hover{color:var(--text);border-color:var(--line-strong)}
+.ds-sec-sub a.on{color:var(--accent);border-color:var(--accent)}
+@media (max-width:1200px){ .ds-layout{grid-template-columns:220px minmax(0,1fr)} .ds-toc{display:none} .ds-sec-sub{display:flex} }
 @media (max-width:900px){ .ds-layout{grid-template-columns:minmax(0,1fr)} .ds-side{position:static;height:auto;
   border-right:none;border-bottom:1px solid var(--line)} .ds-grid{grid-template-columns:repeat(2,1fr)} }
 @media (max-width:640px){
@@ -1433,34 +1441,11 @@ body.ds{ font-size:15px; }
   </main>
 
   <aside class="ds-toc">
-    <div class="ds-toc-t">本页目录</div>
-    <nav class="ds-toc-nav">
-<a href="#automation" class="toc-h2">Automation</a>
-<a href="#automation-h3-0" class="toc-h3">任务类型</a>
-<a href="#automation-h3-1" class="toc-h3">使用要点</a>
-<a href="#paste-as-object-merge" class="toc-h2">Paste as Object Merge</a>
-<a href="#copy-output-path" class="toc-h2">Copy Output Path</a>
-<a href="#filecache-absolute" class="toc-h2">File Cache Paths to Absolute</a>
-<a href="#dragdrop-import" class="toc-h2">Drag &amp; Drop Import</a>
-<a href="#capture-viewport" class="toc-h2">Capture Viewport to Node</a>
-<a href="#paste-bounding-box" class="toc-h2">Paste Bounding Box</a>
-<a href="#paste-center" class="toc-h2">Paste Center</a>
-<a href="#video-to-sequence" class="toc-h2">Video to Sequence</a>
-<a href="#package-project" class="toc-h2">Package Project</a>
-<a href="#hdr-library" class="toc-h2">HDR Library</a>
-<a href="#hdr-library-h3-0" class="toc-h3">库组织</a>
-<a href="#hdr-library-h3-1" class="toc-h3">缩略图与贴图</a>
-<a href="#recipe-library" class="toc-h2">Recipe Library</a>
-<a href="#recipe-library-h3-0" class="toc-h3">浏览</a>
-<a href="#recipe-library-h3-1" class="toc-h3">应用</a>
-<a href="#recipe-library-h3-2" class="toc-h3">代码块</a>
-<a href="#recipe-library-h3-3" class="toc-h3">元数据与文档</a>
-<a href="#recipe-library-h3-4" class="toc-h3">数据交换</a>
-<a href="#houtools-settings" class="toc-h2">HouTools Settings</a>
-<a href="#open-cache-folder" class="toc-h2">Open Cache Folder</a>
-<a href="#reload-dev" class="toc-h2">Reload Modules (Dev)</a>
-<a href="#install" class="toc-h2">安装</a>
-    </nav>
+    <div class="ds-toc-t">本节小节</div>
+    <div class="ds-toc-cur" id="tocCur"></div>
+    <!-- 链接由下方脚本从正文 section > h3[id] 派生，避免与左栏目录手工同步漂移 -->
+    <nav class="ds-toc-nav" id="tocSub" aria-label="当前章节的小节"></nav>
+    <p class="ds-toc-none" id="tocNone" hidden>本章没有子小节</p>
   </aside>
 
 </div>
@@ -1484,14 +1469,63 @@ body.ds{ font-size:15px; }
     <img src="assets/donate.png" alt="MAHX_VFX 的微信赞赏码">
     <figcaption id="donateCaption">微信扫码 · 感谢每一份支持</figcaption>
   </figure>
+</div>
 
 <script>
 
-/* 目录高亮（滚动定位）+ 工具筛选 */
+/* 左栏＝章节目录，右栏＝当前章节的小节导航；两者不再互相重复。
+   小节清单完全从正文 section > h3[id] 派生，改正文即可，无需维护第三份清单。
+   窄屏（≤1200px）右栏隐藏，小节条由脚本挂到各章节正文顶部承接同一功能。 */
 (function () {
   var secs = [].slice.call(document.querySelectorAll("section[id]"));
   var treeLinks = [].slice.call(document.querySelectorAll(".ds-side a"));
-  var tocLinks = [].slice.call(document.querySelectorAll(".ds-toc a"));
+  var tocSub = document.getElementById("tocSub");
+  var tocCur = document.getElementById("tocCur");
+  var tocNone = document.getElementById("tocNone");
+
+  function titleOf(node) {
+    var fc = node.firstChild;
+    return (fc && fc.nodeType === 3 ? fc.nodeValue : node.textContent).trim();
+  }
+
+  var subBySec = {};
+  secs.forEach(function (sec) {
+    var list = [].slice.call(sec.querySelectorAll("h3[id]")).map(function (h) {
+      return { id: h.id, text: titleOf(h), el: h };
+    });
+    subBySec[sec.id] = list;
+    if (!list.length) return;
+    var bar = document.createElement("nav");
+    bar.className = "ds-sec-sub";
+    bar.setAttribute("aria-label", "本节小节");
+    list.forEach(function (it) {
+      var a = document.createElement("a");
+      a.href = "#" + it.id;
+      a.textContent = it.text;
+      bar.appendChild(a);
+    });
+    var body = sec.querySelector(".ds-sec-body");
+    if (body) body.insertBefore(bar, body.firstChild);
+  });
+
+  var lastSec = "";
+  function renderToc(sec) {
+    if (sec.id === lastSec) return;
+    lastSec = sec.id;
+    var h2 = sec.querySelector("h2");
+    tocCur.textContent = h2 ? titleOf(h2) : "";
+    var list = subBySec[sec.id] || [];
+    while (tocSub.firstChild) tocSub.removeChild(tocSub.firstChild);
+    list.forEach(function (it) {
+      var a = document.createElement("a");
+      a.href = "#" + it.id;
+      a.className = "toc-h3";
+      a.textContent = it.text;
+      tocSub.appendChild(a);
+    });
+    if (tocNone) tocNone.hidden = list.length > 0;
+  }
+
   function tick() {
     if (!secs.length) return;
     var y = window.scrollY + 140, cur = secs[0];
@@ -1500,8 +1534,22 @@ body.ds{ font-size:15px; }
     }
     var id = cur.id;
     treeLinks.forEach(function (a) { a.classList.toggle("on", a.getAttribute("href") === "#" + id); });
-    tocLinks.forEach(function (a) { a.classList.toggle("on", a.getAttribute("href") === "#" + id); });
     secs.forEach(function (x) { x.classList.toggle("on", x === cur); });
+    renderToc(cur);
+
+    var list = subBySec[id] || [], curH3 = null;
+    for (var j = 0; j < list.length; j++) {
+      if (list[j].el.getBoundingClientRect().top + window.scrollY <= y) curH3 = list[j];
+      else break;
+    }
+    var hid = curH3 ? "#" + curH3.id : "";
+    [].slice.call(tocSub.querySelectorAll("a")).forEach(function (a) {
+      a.classList.toggle("on", a.getAttribute("href") === hid);
+    });
+    var bar = cur.querySelector(".ds-sec-sub");
+    if (bar) [].slice.call(bar.querySelectorAll("a")).forEach(function (a) {
+      a.classList.toggle("on", a.getAttribute("href") === hid);
+    });
   }
   window.addEventListener("scroll", tick, { passive: true });
   tick();
