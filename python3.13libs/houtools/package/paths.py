@@ -7,8 +7,8 @@
   ``os.path.isabs`` 返 False、Houdini 视为绝对，同 filecache_abs_path._is_abs）；
 - 生成包内目标路径，并按**文件类型**归入 Houdini 官方 New Project 目录
   （``geo / hda / sim / abc / tex / render / flip / scripts``）；
-- 包名净化（用户输入直接进 os.path.join，必须收敛）、默认包名、$JOB 默认值
-  检测、场景切换检测、可读大小。
+- 包名净化（用户输入直接进 os.path.join，必须收敛）、默认包名、内置引用
+  识别、场景切换检测、打包参数前缀、可读大小。
 
 本模块不 import hou / PySide6，全部纯函数，可直接无头测试。
 """
@@ -191,61 +191,6 @@ def default_package_name(hip_path, suffix="-pack"):
     return sanitize_pkg_name(stem + suffix) if stem else PACKAGE_DIR
 
 
-def _path_key(value):
-    """路径归一化键（Windows 大小写/斜杠不敏感）；空值返回空串。"""
-    text = (value or "").strip().strip('"')
-    return os.path.normcase(os.path.normpath(text)) if text else ""
-
-
-def default_job_roots(hip_value="", home_value="", cwd_value="", extra=()):
-    """Houdini 未显式设置 JOB 时，`$JOB` 可能落到的"默认目录"键集合。
-
-    除了 Houdini 自己的 ``$HOME`` / CWD / ``$HIP``，还纳入 Windows 用户主目录
-    的其他写法（``expanduser("~")`` / ``USERPROFILE`` / ``HOME`` 环境变量 /
-    ``HOMEDRIVE+HOMEPATH``），避免 GUI 与 hython 的展开口径不一致导致漏判。
-    ``extra`` 供调用方补充宿主侧变量（如 ``hou.getenv("HOME")``）。
-    """
-    drive = os.environ.get("HOMEDRIVE", "")
-    hpath = os.environ.get("HOMEPATH", "")
-    roots = [hip_value, home_value, cwd_value,
-             os.path.expanduser("~"),
-             os.environ.get("USERPROFILE", ""),
-             os.environ.get("HOME", ""),
-             (drive + hpath) if drive and hpath else ""]
-    roots.extend(extra or ())
-    out = []
-    for raw in roots:
-        key = _path_key(raw)
-        if key and key not in out:
-            out.append(key)
-    return out
-
-
-def job_is_default(job_value, hip_value, home_value="", cwd_value="",
-                   env_value="", extra_defaults=()):
-    """`$JOB` 是否落在"默认目录"——需要用户指定 JOB 目录的情形。
-
-    Houdini 未显式设置 ``JOB`` 时，``$JOB`` 展开值**随启动方式变**：GUI 里多为
-    ``$HOME``（Windows 上 C 盘用户名目录），hython/部分启动方式下则是当前
-    工作目录或 ``$HIP``（2026-11-20 本机 hython 实测为 CWD）。
-
-    **``env_value`` 不能用来免检**（2026-11-20 三次实测反馈）：旧版只要
-    ``os.environ["JOB"]`` 非空且是绝对路径就判定"用户显式设置过"，但 Houdini
-    GUI 会把默认 JOB（= ``$HOME``）注入进程环境，于是 C 盘用户名目录被当成
-    合法 JOB 根，打包前的指定弹窗被整段跳过，包静默打到用户主目录。参数
-    保留仅为兼容调用点与日志，不参与判定。
-
-    返回 True 表示 $JOB 不可信；窗口会弹窗让用户指定/创建 JOB 目录，并用
-    ``hou.putenv`` 把会话 $JOB 指过去（不再自动回退 $HIP）。
-    """
-    job = (job_value or "").strip().strip('"')
-    if not job or job == "$JOB":
-        return True
-    job_key = _path_key(job)
-    return job_key in default_job_roots(
-        hip_value, home_value, cwd_value, extra_defaults)
-
-
 def is_builtin_ref(raw):
     """参数原始写法是否指向 Houdini 安装目录（``$HH`` / ``$HFS``）。
 
@@ -256,118 +201,6 @@ def is_builtin_ref(raw):
     """
     value = (raw or "").strip().strip('"').lower()
     return value.startswith(("$hh/", "${hh}", "$hfs/", "${hfs}"))
-
-
-def resolve_job_root(job_value, hip_value, home_value="", cwd_value="",
-                     env_value="", extra_defaults=()):
-    """（实际 $JOB 路径, 是否未设置, 原因）——未设置时**返回空串**。
-
-    2026-11-20 用户推翻「自动回退 $HIP」：静默改用 $HIP 既让用户选了 $JOB
-    却拿不到 $JOB 写法，也依赖猜默认值（不可靠）。现在未设置时返回空，
-    由窗口 ``_ensure_job_root()`` 弹窗让用户选择/创建 JOB 目录，再用
-    ``hou.putenv("JOB", path)`` 让会话变量真正指向它；参数继续写
-    ``$JOB/<包名>/…``（见 ``target_prefix``）。
-    """
-    if job_is_default(job_value, hip_value, home_value, cwd_value,
-                      env_value, extra_defaults):
-        reason = "未显式设置 $JOB（当前展开为 {!r}），需先指定 JOB 目录".format(
-            (job_value or "").strip())
-        return "", True, reason
-    return (job_value or "").strip().strip('"'), False, ""
-
-
-def houdini_env_candidates(pref_dir="", home="", userprofile="",
-                           version_dir="houdini22.0"):
-    """本机可能被 Houdini 读取的 ``houdini.env`` 路径（去重、保序）。
-
-    2026-11-21 四次实测：GUI 里 ``$HOUDINI_USER_PREF_DIR`` 指向
-    ``<USERPROFILE>/Documents/houdini22.0``，但未设置时 ``$JOB`` 回退到
-    ``<USERPROFILE>``；用户在前者的 ``houdini.env`` 写了 ``JOB = ...`` 并重启，
-    会话里仍未生效。而 hython 从 Git Bash 启动（外部 ``HOME=<USERPROFILE>``）
-    时读取的是 ``<USERPROFILE>/houdini22.0/houdini.env``。**只按 PREF_DIR 拼
-    路径会指错文件**，所以把全部可能目录列出来，由窗口逐一检测内容。
-
-    纯函数：不 import hou、不读磁盘，只拼接路径并去重。
-    """
-    version_dir = (version_dir or "houdini22.0").strip()
-    roots, seen = [], set()
-
-    def add(directory):
-        if not directory:
-            return
-        value = os.path.normpath(str(directory).strip().strip('"'))
-        if not value:
-            return
-        base = os.path.basename(value).lower()
-        # 已指向版本目录（如 .../houdini22.0）就直接用，否则补一层版本号
-        env_dir = value if (base.startswith("houdini") and
-                            re.search(r"\d", base)) else \
-            os.path.join(value, version_dir)
-        env_dir = env_dir.replace("\\", "/")
-        key = os.path.normcase(env_dir).lower()
-        if key not in seen:
-            seen.add(key)
-            roots.append(env_dir)
-
-    add(pref_dir)
-    add(home)
-    add(userprofile)
-    if userprofile:
-        add(os.path.join(str(userprofile).strip('"'), "Documents"))
-    return [os.path.join(directory, "houdini.env").replace("\\", "/")
-            for directory in roots]
-
-
-def job_entry_in_env_file(path):
-    """读取一份 ``houdini.env`` 里生效的 ``JOB = ...`` 值；没有/不可读返回 ""。
-
-    只读、不修改用户配置文件。兼容 CRLF、UTF-8 BOM、无末尾换行、值的引号；
-    注释行（``#``）与空行跳过。
-    """
-    try:
-        with open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
-            for line in handle:
-                text = line.strip()
-                if not text or text.startswith("#"):
-                    continue
-                match = re.match(r"^JOB\s*=\s*(.*)$", text, re.IGNORECASE)
-                if match:
-                    return match.group(1).strip().strip('"').strip("'").strip()
-    except (OSError, ValueError):
-        pass
-    return ""
-
-
-def job_env_diagnosis(candidates, job_now="", needs=True, context=""):
-    """「文件里写了 JOB，但当前会话没生效」的诊断文字；没问题返回 ""。
-
-    与其继续猜 Houdini 到底读哪份 ``houdini.env``，不如把候选都扫一遍，如实
-    告诉用户「哪份已经写了」「写入后需完全重启」「另一份也补一行」，并给出
-    本次会话立即生效的替代操作（选已有目录）。
-    """
-    if not needs:
-        return ""
-    found = []
-    for path in candidates or ():
-        value = job_entry_in_env_file(path)
-        if value:
-            found.append((path, value))
-    if not found:
-        return ""
-    written = "；".join(
-        "{} 里已写 JOB = {}".format(path, value) for path, value in found)
-    written_paths = [item[0] for item in found]
-    others = [p for p in (candidates or ()) if p not in written_paths]
-    text = "[诊断] 检测到 {}，但当前会话 $JOB 仍是 {}。".format(
-        written, job_now or "默认目录")
-    if context:
-        text += "当前会话环境：{}。".format(context)
-    text += "houdini.env 只在 Houdini 启动时读取：请完全退出并重启 Houdini；"
-    if others:
-        text += "若重启后仍无效，把同一行也写进 {}。".format(" 或 ".join(others))
-    text += "本次会话可直接选「选择已有目录…」指定 {} 立即生效。".format(
-        found[0][1])
-    return text
 
 
 def scene_signature(hip_path, is_new_file):
@@ -428,13 +261,9 @@ def asset_subdir(abs_path, hip_dir=""):
 def package_target(abs_path, prefix, hip_dir=""):
     """包内目标（Houdini 写法）：``<prefix>/assets/<子目录>/<文件名>``。
 
-    ``prefix`` 由调用方按**包根选项 + 生成方式**算（见
-    ``window._target_prefix``，2026-11-20 起前缀跟随包根）：
-
-    - 包根 ``$JOB`` → ``$JOB/<包名>``；自定义路径 → ``<路径>/<包名>``；
-    - 包根 ``$HIP`` + 覆盖当前工程 → ``$HIP/<包名>``；
-    - 包根 ``$HIP`` + 另存到包目录 → **只写 ``$HIP``**：hip 存进包目录后
-      会话的 ``$HIP`` 就是包目录，再带一层包名会多出一级目录、路径失效。
+    ``prefix`` 由调用方按**包根选项**算（见 ``target_prefix``）：
+    ``$JOB`` → ``$JOB/<包名>``、``$HIP`` → ``$HIP``。生成方式固定
+    「另存到包目录」，旧版「覆盖当前工程」分支已删除。
     """
     sub = asset_subdir(abs_path, hip_dir)
     tail = "/" + sub if sub else ""
@@ -529,25 +358,21 @@ def sanitize_pkg_name(text, default=PACKAGE_DIR):
     return value
 
 
-def target_prefix(root, save_copy, package_name, custom_base=""):
+def target_prefix(root, package_name):
     """打包后参数的前缀（Houdini 写法），按**包根选项**生成（纯函数）。
 
-    ``root`` ∈ ``{"HIP", "JOB", "CUSTOM"}``；``save_copy`` = 是否「另存到
-    包目录」。2026-11-20 用户拍板：不能一律写 ``$HIP``，包根选什么，
-    打包后参数就以什么开头。唯一例外是 ``$HIP`` + 另存——hip 存进包目录
-    后会话的 ``$HIP`` 就是包目录，必须**省略包名**，否则多一级目录。
+    2026-11-21 用户拍板：生成方式固定「另存到包目录」（删除覆盖当前工程），
+    包根只保留 ``$HIP`` / ``$JOB``；选 ``$JOB`` 时可在界面指定任意绝对目录，
+    工具用 ``hou.putenv`` 把会话 ``$JOB`` 指向它，不再读取任何环境变量配置。
 
-    - ``JOB`` → ``$JOB/<包名>``；``CUSTOM`` → ``<路径>/<包名>``；
-    - ``HIP`` + 另存 → ``$HIP``；``HIP`` + 覆盖 → ``$HIP/<包名>``。
+    - ``JOB`` → ``$JOB/<包名>``：``$JOB`` 是会话里被固定住的项目根，另存
+      后它不会随 ``$HIP`` 变化，必须带包名才指向包目录；
+    - ``HIP`` → ``$HIP``：hip 另存进 ``<包>/`` 后会话的 ``$HIP`` 就是包目录，
+      **省略包名**，否则多一级目录、路径失效。
     """
-    if root == "CUSTOM":
-        base = (custom_base or "<自定义路径>").rstrip("/\\")
-        return "{}/{}".format(base, package_name)
     if root == "JOB":
         return "$JOB/{}".format(package_name)
-    if save_copy:
-        return "$HIP"
-    return "$HIP/{}".format(package_name)
+    return "$HIP"
 
 
 def zip_path_for(hip_path):

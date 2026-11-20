@@ -6,12 +6,12 @@
    `$HIP` 内相对引用——凡是场景真正用到的、磁盘上存在的文件；
 2. **预览**：逐行「节点 / 参数 / 参数现值 / 打包后参数值 / 状态」，可勾选；
 3. **打包**：后台线程把勾选的文件复制到 `<包根>/<包名>/<类型>/…`，
-   完成后主线程按**所选包根**改写参数（$HIP / $JOB / 自定义路径，
-   见 `_target_prefix`；帧模板 `$F4` 原样保留）；
-4. **生成方式**（二选一）：
-   - **覆盖当前工程**：改写后保存当前 hip（文件仍在原地）；
-   - **另存到包目录**（默认）：改写后另存为 `<包名>/<hip>_packed.hip`，
-     磁盘上的原工程不动；
+   完成后主线程按**所选包根**改写参数（$HIP / $JOB，见 `_target_prefix`；
+   帧模板 `$F4` 原样保留）。选 $JOB 时工具用 `hou.putenv` 把会话 $JOB
+   指向界面上指定的目录（留空 = 当前工程目录），不读取任何环境变量配置；
+4. **生成方式**：固定「另存到包目录（原工程不动）」——改写后另存为
+   `<包名>/<hip>_packed.hip`，磁盘上的原工程不动（2026-11-21 用户拍板
+   删除「覆盖当前工程」）；
 5. **生成 zip**：后台线程把包目录整体压成 `<包根>/<包名>.zip`；
 6. **结果面板**：完成/失败 + 复制、改写、保存的逐条失败原因。
 
@@ -36,8 +36,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMenu, QPlainTextEdit, QProgressBar,
-    QPushButton, QRadioButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
-    QWidget,
+    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from houtools.package import collect, paths
@@ -50,85 +49,6 @@ from houtools.ui import (
 # 级、任何 log 都会刷控制台——同 copy_output_path 的用户拍板）。
 
 TOOL_ID = "package_project"
-
-# 本次会话指定的 JOB 目录（模块级，NameError 守卫活过 Reload——同
-# _LIVE_WORKERS）：窗口实例重建后仍记得用户已经指定过，避免把"恰好等于
-# $HIP 的 JOB 目录"重新误判成未设置而重复弹窗。
-try:
-    _JOB_OVERRIDE
-except NameError:
-    _JOB_OVERRIDE = ""
-
-# 本会话是否已就 $JOB 的实际落点向用户确认过（模块级，活过 Reload）。
-# 判定"JOB 是否设置"本质上是在猜 Houdini 的默认值，已经连错两次
-# （2026-11-20 三次实测：GUI 把默认 JOB 注入进程环境）。这里加一道不依赖
-# 猜测的硬兜底：选 $JOB 打包时，每个会话首次都弹窗确认实际目录，确认后
-# 本会话不再打扰。
-try:
-    _JOB_CONFIRMED
-except NameError:
-    _JOB_CONFIRMED = False
-
-
-def _job_env_candidates():
-    """当前 Houdini **可能读取**的 ``houdini.env`` 路径（去重后的绝对路径）。
-
-    2026-11-21 四次实测：GUI 的 ``$HOUDINI_USER_PREF_DIR`` 指向
-    ``<USERPROFILE>/Documents/houdini22.0``，而未设置时 ``$JOB`` 回退到
-    ``<USERPROFILE>``；用户按旧提示写进前者并重启，会话里仍旧没生效。
-    hython（外部 HOME）又会落到 ``<USERPROFILE>/houdini22.0``。**只按
-    PREF_DIR 拼路径会指错文件**，因此把 $HOME / USERPROFILE（含 Documents
-    子目录）一并交给 ``paths.houdini_env_candidates`` 去重，再由窗口逐一
-    检测内容。
-    """
-    try:
-        import hou
-        pref = hou.getenv("HOUDINI_USER_PREF_DIR") or ""
-        home = hou.getenv("HOME") or ""
-        profile = os.environ.get("USERPROFILE", "")
-        try:
-            major, minor, _build = hou.applicationVersion()
-            version_dir = "houdini{}.{}".format(major, minor)
-        except Exception:
-            version_dir = "houdini22.0"
-    except Exception:
-        pref, home, profile, version_dir = "", "", "", "houdini22.0"
-    return paths.houdini_env_candidates(pref, home, profile, version_dir)
-
-
-def _job_pref_env_file():
-    """主候选（保留旧名字供兼容）；诊断与提示一律用完整候选列表。"""
-    files = _job_env_candidates()
-    return files[0] if files else "$HOUDINI_USER_PREF_DIR/houdini.env"
-
-
-def _job_persist_hint(path="<路径>", short=False):
-    """JOB 持久化的官方方式说明——别把项目根 ``.env`` 当成 Houdini 配置。
-
-    用户纠正（2026-11-20 23:58）：项目根目录的 ``.env`` 属于项目配置，
-    **Houdini 不会默认读取**；官方支持的是「用户配置目录的
-    ``houdini.env``」与「Houdini Package ``.json`` 的 env 块」两种。
-    既有约定：``HOUTOOLS_DEV`` 等每用户开关只走 ``houdini.env``，且
-    **严禁**写进随包分发的 ``HouTools.json``（AGENTS.md 热加载机制条）。
-
-    2026-11-21：本机两份 ``houdini.env`` 都可能被读到，提示列出全部候选，
-    并注明「只在启动时读取，写入后需完全退出并重启 Houdini」。
-    """
-    env_files = " 或 ".join(_job_env_candidates()) or \
-        "$HOUDINI_USER_PREF_DIR/houdini.env"
-    if short:
-        return ("持久化：用户配置 houdini.env（{0}）或 packages/*.json 的 "
-                "env 块（项目根 .env 不会被 Houdini 读取；写入后需重启 "
-                "Houdini）".format(env_files))
-    return (
-        "持久化（本次会话设置重启后失效，请二选一）："
-        "① 在用户配置 houdini.env 里写 JOB = {1}"
-        "（本机候选：{0}；该文件只在 Houdini 启动时读取，"
-        "写入后需完全退出并重启）；"
-        "② 自己的 Houdini Package .json 的 env 块加 JOB。"
-        "项目根目录的 .env 不会被 Houdini 读取；"
-        "别写进随包分发的 HouTools.json。".format(env_files, path))
-
 
 _COL_CHECK = 0
 _COL_NODE = 1
@@ -150,11 +70,6 @@ _SKIP_LABELS = {
 # 样式：基础表（qss.window_qss）没有的控件按 token 补在这里
 # ---------------------------------------------------------------------------
 _EXTRA_QSS = """
-QRadioButton {{
-    color: {TEXT_2};
-    spacing: 6px;
-    background: transparent;
-}}
 QTableWidget {{
     background-color: {INK_900};
     alternate-background-color: {INK_850};
@@ -393,9 +308,9 @@ class _ZipWorker(QThread):
                         arc = os.path.relpath(full, self._base).replace("\\", "/")
                         archive.write(full, arc)
                         count += 1
-                # 覆盖模式时 hip 不在包目录里，单独带上：hip 是用户当前工程
-                # 本身（不是包内链接），由 hou.hipFile.path() 给出，故意不做
-                # 边界检查；否则覆盖模式打包必然缺工程文件。
+                # 若当前 hip 不在包目录内（例如用户打包后又手动另存到别处），
+                # 单独附一份进 zip：hip 是当前工程本身，不是包内链接，故意
+                # 不做边界检查；正常另存流程下 hip 已在包目录内，会被跳过。
                 hip = self._hip_path
                 if hip and os.path.isfile(hip) and \
                         not paths.is_within(hip, self._package_dir):
@@ -446,10 +361,6 @@ class PackageProjectWindow(QDialog):
         self._checked = set()
         self._filling = False
         self._hip_dir = ""
-        # 本次会话指定的 JOB 目录：未显式设置 JOB 时由 _ensure_job_root()
-        # 弹窗让用户选/建，再 hou.putenv 设为会话 $JOB。窗口 Reload 重建后
-        # 由模块级 _JOB_OVERRIDE（活过热重载）兜底识别。
-        self._job_override = ""
         # 打包会话记录：只有"复制+改写+保存"全部成功才登记，zip 只认它
         # （防止换 hip 后沿用上一个工程的快照，报告 P1-02）
         self._pack_session = None
@@ -592,24 +503,28 @@ class PackageProjectWindow(QDialog):
         self._root_combo = QComboBox()
         self._root_combo.addItem("$HIP", "HIP")
         self._root_combo.addItem("$JOB", "JOB")
-        self._root_combo.addItem("自定义路径", "CUSTOM")
         self._root_combo.setToolTip(
-            "$HIP = 工程目录；$JOB = 项目根；自定义路径 = 任意绝对目录"
-            "（包将写到该目录下）")
+            "$HIP = 当前工程目录；$JOB = 项目根（默认同当前工程目录，"
+            "可在右侧自定义）")
         self._root_combo.currentIndexChanged.connect(self._on_root_changed)
         top.addWidget(self._root_combo)
-        # 自定义路径输入（选中"自定义路径"时启用）
-        self._custom_root_edit = QLineEdit()
-        self._custom_root_edit.setPlaceholderText("输入绝对目录，如 D:/projects/packs")
-        self._custom_root_edit.setMinimumWidth(220)
-        self._custom_root_edit.setEnabled(False)
-        self._custom_root_edit.textChanged.connect(self._on_targets_changed)
-        top.addWidget(self._custom_root_edit)
-        self._custom_root_btn = QPushButton("浏览…")
-        self._custom_root_btn.setEnabled(False)
-        self._custom_root_btn.setToolTip("选择一个已存在的绝对目录作为包根")
-        self._custom_root_btn.clicked.connect(self._on_browse_root)
-        top.addWidget(self._custom_root_btn)
+        # $JOB 路径：选 $JOB 时启用。默认留空 = 当前工程目录；填入任意绝对
+        # 目录即为自定义 $JOB（工具打包时用 hou.putenv 指向它，不读环境变量）
+        self._job_path_edit = QLineEdit()
+        self._job_path_edit.setPlaceholderText(
+            "$JOB 路径（留空 = 当前工程目录）")
+        self._job_path_edit.setToolTip(
+            "留空：把 $JOB 设为当前工程目录；也可手输/浏览任意绝对目录。"
+            "工具只在打包时设置本次 Houdini 会话的 $JOB，不修改任何配置文件。")
+        self._job_path_edit.setMinimumWidth(240)
+        self._job_path_edit.setEnabled(False)
+        self._job_path_edit.textChanged.connect(self._on_targets_changed)
+        top.addWidget(self._job_path_edit)
+        self._job_path_btn = QPushButton("浏览…")
+        self._job_path_btn.setEnabled(False)
+        self._job_path_btn.setToolTip("选择一个已存在的绝对目录作为 $JOB 路径")
+        self._job_path_btn.clicked.connect(self._on_browse_job)
+        top.addWidget(self._job_path_btn)
         top.addSpacing(12)
         top.addWidget(QLabel("包名"))
         self._pkg_edit = QLineEdit(paths.PACKAGE_DIR)
@@ -625,24 +540,17 @@ class PackageProjectWindow(QDialog):
         top.addWidget(self._scan_btn)
         layout.addLayout(top)
 
-        # 生成方式
+        # 生成方式固定「另存到包目录（原工程不动）」——2026-11-21 用户拍板
+        # 删除「覆盖当前工程」。这里只留一行静态说明，不再给可选项。
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("生成方式"))
-        self._save_copy_radio = QRadioButton("另存到包目录（原工程不动）")
-        self._save_copy_radio.setChecked(True)
-        self._save_copy_radio.setToolTip(
+        mode_note = QLabel("另存到包目录（原工程不动）")
+        mode_note.setProperty("htTextRole", "muted")
+        mode_note.setToolTip(
             "包内生成 <hip>_packed.hip；磁盘上的原 hip 不会被改。"
-            "打包后参数按所选包根开头：$HIP → $HIP/…（不带包名，保存后 "
-            "$HIP 就是包目录）；$JOB → $JOB/<包名>/…；自定义路径 → <路径>/<包名>/…")
-        self._overwrite_radio = QRadioButton("覆盖当前工程")
-        self._overwrite_radio.setToolTip(
-            "把改写后的结果保存回当前 hip（文件仍在原地，素材已进包目录），"
-            "参数按所选包根开头：$HIP/<包名>/…、$JOB/<包名>/… "
-            "或 <自定义路径>/<包名>/…")
-        self._save_copy_radio.toggled.connect(self._on_targets_changed)
-        self._overwrite_radio.toggled.connect(self._on_targets_changed)
-        mode_row.addWidget(self._save_copy_radio)
-        mode_row.addWidget(self._overwrite_radio)
+            "打包后参数按所选包根开头：$HIP → $HIP/…（不带包名，另存后 "
+            "$HIP 就是包目录）；$JOB → $JOB/<包名>/…")
+        mode_row.addWidget(mode_note)
         mode_row.addStretch()
         layout.addLayout(mode_row)
 
@@ -753,244 +661,83 @@ class PackageProjectWindow(QDialog):
         return paths.sanitize_pkg_name(self._pkg_edit.text())
 
     def _on_root_changed(self, *_args):
-        """切换包根选项：仅"自定义路径"时启用输入框/浏览按钮。"""
-        custom = self._root_var() == "CUSTOM"
-        self._custom_root_edit.setEnabled(custom)
-        self._custom_root_btn.setEnabled(custom)
-        self._job_warned = False    # 换包根选项后可重新提醒一次
+        """切换包根：仅 $JOB 时启用路径输入框/浏览按钮。"""
+        job = self._root_var() == "JOB"
+        self._job_path_edit.setEnabled(job)
+        self._job_path_btn.setEnabled(job)
         self._on_targets_changed()
 
-    def _on_browse_root(self):
-        start = self._custom_root_edit.text().strip() or os.path.expanduser("~")
+    def _on_browse_job(self):
+        start = self._job_path_value() or self._hip_dir or os.path.expanduser("~")
         folder = QFileDialog.getExistingDirectory(
-            self, "选择包根目录", start, QFileDialog.Option.ShowDirsOnly)
+            self, "选择 $JOB 目录", start, QFileDialog.Option.ShowDirsOnly)
         if folder:
-            self._custom_root_edit.setText(os.path.normpath(folder))
+            self._job_path_edit.setText(os.path.normpath(folder))
 
-    def _custom_root_value(self):
-        # 右键复制路径常带首尾引号；strip('"') 已覆盖任意多对引号，无须再剥
-        return self._custom_root_edit.text().strip().strip('"')
+    def _job_path_value(self):
+        # 右键复制路径常带首尾引号；strip('"') 已覆盖任意多对引号
+        return self._job_path_edit.text().strip().strip('"')
+
+    def _hip_value(self):
+        """当前工程目录（$HIP 展开值）；失败返回空串。"""
+        import hou
+        try:
+            value = hou.text.expandString("$HIP").strip().strip('"')
+        except Exception:
+            return ""
+        return os.path.normpath(value) if value else ""
+
+    def _job_root(self):
+        """$JOB 实际目录：输入框留空 = 当前工程目录；填了就用填的。
+
+        2026-11-21 用户拍板：不再靠环境变量配置指定 JOB，默认 $JOB 就是
+        当前工程路径，也可在界面上自定义任意绝对目录。
+        """
+        custom = self._job_path_value()
+        return os.path.normpath(custom) if custom else self._hip_value()
 
     def _root_var_value(self):
-        """（变量名, 展开值）——给界面与错误提示用，不做可用性判断。"""
-        import hou
-        if self._root_var() == "CUSTOM":
-            return "自定义路径", self._custom_root_value()
-        name = "$" + self._root_var()
-        value = hou.text.expandString(name).strip()
-        if len(value) > 1 and value[0] == '"' and value[-1] == '"':
-            value = value[1:-1].strip()
-        return name, value
-
-    def _job_state(self):
-        """（实际 $JOB 路径, 是否未设置, 原因）——优先用本次会话指定的路径。
-
-        未显式设置 JOB 时 Houdini 的展开值不可信（GUI 多为 $HOME，hython
-        实测为当前工作目录），由 ``paths.resolve_job_root`` 统一判定。窗口
-        不再自动回退 $HIP，而是要求用户指定 JOB 目录（2026-11-20 二次反馈）。
-        """
-        import hou
-
-        override = getattr(self, "_job_override", "") or _JOB_OVERRIDE
-        if override:
-            return os.path.normpath(override), False, ""
-
-        def expand(var):
-            try:
-                return hou.text.expandString(var).strip().strip('"')
-            except Exception:
-                return ""
-
-        try:
-            hou_home = hou.getenv("HOME") or ""
-        except Exception:
-            hou_home = ""
-        return paths.resolve_job_root(
-            expand("$JOB"), expand("$HIP"), expand("$HOME"),
-            os.getcwd(), os.environ.get("JOB", ""),
-            extra_defaults=(hou_home,))
-
-    def _job_needs_setup(self):
-        """当前选 $JOB 且确实未设置？→ (是否需要指定, 原因)。"""
-        if self._root_var() != "JOB":
-            return False, ""
-        _actual, needs, reason = self._job_state()
-        return needs, reason
+        """（变量名, 实际目录）——给界面与错误提示用，不做可用性判断。"""
+        if self._root_var() == "JOB":
+            return "$JOB", self._job_root()
+        return "$HIP", self._hip_value()
 
     def _base_dir(self):
-        """包根目录的绝对路径；$JOB 未指定 / 自定义路径非法时返回空串。"""
-        if self._root_var() == "JOB":
-            actual, _needs, _reason = self._job_state()
-            return os.path.normpath(actual.rstrip("\\/")) \
-                if actual and os.path.isabs(actual) else ""
-        name, value = self._root_var_value()
-        if not value or value == name or not os.path.isabs(value):
+        """包根目录的绝对路径；不是绝对路径时返回空串。"""
+        _name, value = self._root_var_value()
+        if not value or not os.path.isabs(value):
             return ""
         return os.path.normpath(value.rstrip("\\/"))
 
     def _package_dir(self):
         return paths.package_dir_abs(self._base_dir(), self._pkg_name())
 
-    def _check_job(self):
-        """刷新 `$JOB` 选项的 tooltip；**始终可用**——未设置时打包前会弹窗。
+    def _set_session_job(self):
+        """选 $JOB 时把会话 $JOB 指向实际目录；返回是否成功。
 
-        **注意**：提示文字必须写 ToolTipRole。``setItemData(index, text)`` 默认
-        写的是 UserRole，会把 ``addItem("$JOB", "JOB")`` 存的 userData 覆盖成
-        一串提示文字，``currentData()`` 随后返回它，拼出的变量就成了
-        ``$$JOB = D:/...``（实测踩过）。
-        """
-        job = self._job_value()
-        actual, needs, _reason = self._job_state()
-        model = self._root_combo.model()
-        item = model.item(1, 0) if hasattr(model, "item") else None
-        if item is not None:
-            item.setEnabled(True)
-        override = getattr(self, "_job_override", "") or _JOB_OVERRIDE
-        if needs:
-            tip = ("未显式设置 $JOB（当前展开为 {0}）；点「打包」时会要求"
-                   "指定 JOB 目录".format(job))
-        elif override:
-            tip = ("$JOB = {0}（本次会话指定；{1}）".format(
-                override, _job_persist_hint(override, short=True)))
-        else:
-            tip = ("$JOB = {}；点「打包」时会先确认这个目录"
-                   .format(actual or job))
-        self._root_combo.setItemData(1, tip, Qt.ToolTipRole)
-
-    def _job_value(self):
-        import hou
-        value = hou.text.expandString("$JOB").strip()
-        if len(value) > 1 and value[0] == '"' and value[-1] == '"':
-            value = value[1:-1].strip()
-        return value
-
-    def _job_env_diagnosis(self):
-        """候选 ``houdini.env`` 里已写 JOB、但当前会话没生效 → 诊断文字。
-
-        四次实测（2026-11-21）：用户照提示写进
-        ``Documents/houdini22.0/houdini.env`` 并重启，弹窗里 ``$JOB`` 仍是
-        ``C:/Users/zhouhaibin``。工具不再猜 Houdini 读哪份，而是把两份都
-        扫一遍，把「哪份已写」「当前会话的 $HOME / 用户配置目录」「写入后
-        需完全重启」「另一份也补一行」如实告诉用户。
-        """
-        import hou
-        _actual, needs, _reason = self._job_state()
-        try:
-            home = hou.getenv("HOME") or ""
-            pref = hou.getenv("HOUDINI_USER_PREF_DIR") or ""
-        except Exception:
-            home = pref = ""
-        context = "$HOME = {}，用户配置目录 = {}".format(
-            home or "?", pref or "?")
-        return paths.job_env_diagnosis(
-            _job_env_candidates(), self._job_value(), needs, context)
-
-    def _ensure_job_root(self):
-        """选 $JOB 时确认实际落点；**本会话首次必弹**，返回能否继续。
-
-        用户拍板（2026-11-20 二次反馈）：不要静默回退 $HIP —— 提示
-        「选择已有目录 / 创建 JOB 目录 / 取消」，选「创建」时手输绝对路径，
-        工具只负责建目录。三次实测又发现「猜 JOB 有没有设置」不可靠：
-        Houdini GUI 会把默认 JOB（= ``$HOME``）注入进程环境，旧版据此免检，
-        三选一被整段跳过，包静默打到 C 盘用户名下。因此改成不依赖猜测：
-
-        - 选 `$JOB` 打包时，**每个会话首次都弹窗确认**，直接显示 `$JOB`
-          当前展开值，用户一眼能看出是不是用户主目录；
-        - 判定为默认目录时只给「选择已有目录 / 创建 JOB 目录 / 取消」；
-        - 判定为正常目录时额外给「使用当前 $JOB」，点一次本会话不再打扰；
-        - 指定目录后 ``hou.putenv("JOB", path)`` 让会话变量真的指过去，
-          参数继续写 ``$JOB/<包名>/…``，包根与前缀同源。
-
-        仅当前会话生效，弹窗与日志都给出官方持久化方式（用户配置目录的
-        ``houdini.env`` / Package ``.json`` 的 env 块，见
-        ``_job_persist_hint``），并明确项目根 ``.env`` 无效；工具不擅自
-        改任何配置文件。
+        2026-11-21 用户拍板：$JOB 不再由外部配置指定。工具在打包时用
+        ``hou.putenv`` 把**本次 Houdini 会话**的 $JOB 指向界面指定的目录
+        （留空 = 当前工程目录，也可手输/浏览任意绝对目录），参数前缀
+        ``$JOB/<包名>/…`` 与实际包根因此永远同源。工具不修改任何配置文件。
         """
         if self._root_var() != "JOB":
             return True
-        global _JOB_CONFIRMED, _JOB_OVERRIDE
-        if _JOB_CONFIRMED:
-            return True
         import hou
-        _actual, needs, _reason = self._job_state()
-        job_now = self._job_value()
-        # 用户配置文件里可能已经写过 JOB（只是当前会话没读到）：如实诊断，
-        # 别再让他反复写同一份文件、反复重启。
-        hint = _job_persist_hint()
-        diagnosis = self._job_env_diagnosis()
-        if diagnosis:
-            hint += "\n\n" + diagnosis
-        if needs:
-            pick = dialogs.choice(
-                self, "未设置 $JOB",
-                "本机没有显式设置 JOB 环境变量，$JOB 当前展开为\n{0}\n"
-                "这是 Houdini 的默认目录（通常是 C 盘用户名文件夹），"
-                "继续打包会把文件复制到它下面。\n\n"
-                "请指定一个 JOB 目录：\n"
-                "· 选择已有目录：用现有文件夹作为 JOB 根\n"
-                "· 创建 JOB 目录：手输绝对路径，工具创建它\n"
-                "· 取消：中止打包\n\n"
-                "指定后仅对当前 Houdini 会话生效。\n{1}".format(
-                    job_now, hint),
-                ["选择已有目录…", "创建 JOB 目录…", "取消"])
-            if pick == 2:
-                return False
-            mode = "pick" if pick == 0 else "create"
-        else:
-            pick = dialogs.choice(
-                self, "确认 JOB 目录",
-                "当前会话 $JOB = \n{0}\n\n"
-                "包会复制到 {0}/<包名>/… ，参数也会写成 $JOB 下的相对路径。\n"
-                "确认无误请点第一项；要换目录可选「选择已有目录」或"
-                "「创建 JOB 目录」。\n\n"
-                "指定后仅对当前 Houdini 会话生效。\n{1}".format(
-                    job_now, hint),
-                ["使用当前 $JOB", "选择已有目录…", "创建 JOB 目录…", "取消"])
-            if pick == 3:
-                return False
-            if pick == 0:
-                _JOB_CONFIRMED = True
-                self._log("[信息] 已确认使用当前 $JOB：{}".format(job_now))
-                return True
-            mode = "pick" if pick == 1 else "create"
-        path = ""
-        if mode == "pick":
-            start = self._hip_dir or os.path.expanduser("~")
-            folder = QFileDialog.getExistingDirectory(
-                self, "选择 JOB 目录", start,
-                QFileDialog.Option.ShowDirsOnly)
-            if folder:
-                path = os.path.normpath(folder)
-        else:
-            text, ok = dialogs.prompt_text(
-                self, "创建 JOB 目录",
-                "JOB 目录绝对路径（例如 D:/VFX/job）：", "")
-            if ok and text.strip():
-                path = os.path.normpath(text.strip().strip('"'))
-        if not path:
-            return False
-        if not os.path.isabs(path):
-            dialogs.warn(self, "路径无效",
-                         "JOB 目录必须是绝对路径：{!r}".format(path))
+        root = self._job_root()
+        if not root or not os.path.isabs(root):
+            self._set_hint("$JOB 路径必须是绝对目录：{!r}".format(root),
+                           error=True)
+            self._set_status("失败", ok=False)
+            self._log("[失败] $JOB 路径不可用：{!r}".format(root))
             return False
         try:
-            os.makedirs(path, exist_ok=True)
-        except OSError as exc:
-            dialogs.warn(self, "创建目录失败", "{}\n{}".format(path, exc))
-            return False
-        try:
-            hou.putenv("JOB", path.replace("\\", "/"))
+            hou.putenv("JOB", root.replace("\\", "/"))
         except Exception as exc:
-            dialogs.warn(self, "设置会话 $JOB 失败", str(exc))
+            self._set_hint("设置会话 $JOB 失败：{}".format(exc), error=True)
+            self._set_status("失败", ok=False)
+            self._log("[失败] 设置会话 $JOB 失败：{}".format(exc))
             return False
-        _JOB_OVERRIDE = path
-        self._job_override = path
-        _JOB_CONFIRMED = True
-        self._log("[信息] 已指定 JOB 目录：{}".format(path))
-        self._log("[信息] 会话 $JOB 已设为该目录；仅本次 Houdini 会话有效，"
-                  + _job_persist_hint(path))
-        self._check_job()
-        self._on_targets_changed()
+        self._log("[信息] 本次会话 $JOB = {}（参数前缀与之同源）".format(root))
         return True
 
     # ------------------------------------------------------------------
@@ -1022,7 +769,6 @@ class PackageProjectWindow(QDialog):
                            error=True)
             self._log("[失败] 工程未保存，无法扫描（$HIP 未确定）")
             return
-        self._check_job()
         self._hip_dir = os.path.normpath(hou.text.expandString("$HIP"))
         self._drop_stale_session()
         # 「含空输出路径」勾选已移除（2026-11-20 用户拍板）：未落盘的输出
@@ -1113,25 +859,16 @@ class PackageProjectWindow(QDialog):
             self._update_status()
 
     def _target_prefix(self):
-        """包内目标前缀——由「包根选项」决定，生成方式只影响是否带包名。
+        """包内目标前缀——由「包根选项」决定（生成方式固定另存）。
 
-        （2026-11-20 用户拍板：包根选 $HIP/$JOB/自定义路径，打包后参数就
-        得分别以 $HIP/$JOB/该路径开头，不能一律写 $HIP。）
-
-        - 包根 ``$JOB`` → ``$JOB/<包名>``；自定义路径 → ``<路径>/<包名>``：
-          包目录是 ``<包根>/<包名>``，两种生成方式都要带包名才指向包内。
-        - 包根 ``$HIP`` + 另存到包目录 → **不带包名**：hip 存进
-          ``<原 $HIP>/<包名>/`` 后，会话的 $HIP 就变成包目录，再带一层
-          包名会得到 ``<包目录>/<包名>/…``（多一级、读取不到）。
-        - 包根 ``$HIP`` + 覆盖当前工程 → ``$HIP/<包名>``（hip 不动）。
+        - 包根 ``$JOB`` → ``$JOB/<包名>``：包目录是 ``<$JOB>/<包名>``，
+          会话 $JOB 由 ``_set_session_job()`` 在打包时指向实际目录，带包名
+          才指向包内；
+        - 包根 ``$HIP`` → ``$HIP``（**不带包名**）：hip 另存进
+          ``<$HIP>/<包名>/`` 后会话的 $HIP 就变成包目录，再带一层包名
+          会得到 ``<包目录>/<包名>/…``（多一级、读取不到）。
         """
-        root = self._root_var()
-        # $JOB 未设置时不再改写成 $HIP：打包前 _ensure_job_root() 会把会话
-        # $JOB 指向用户指定/创建的目录，参数写 $JOB/<包名>/… 才与实际包根
-        # 同源；没指定就在 _on_apply 开头中止，不会拿 $HOME 顶替。
-        base = self._base_dir() if root == "CUSTOM" else ""
-        return paths.target_prefix(
-            root, self._save_copy_radio.isChecked(), self._pkg_name(), base)
+        return paths.target_prefix(self._root_var(), self._pkg_name())
 
     def _refresh_targets(self):
         prefix = self._target_prefix()
@@ -1448,10 +1185,6 @@ class PackageProjectWindow(QDialog):
 
         if self._active_worker() is not None:
             return
-        # 未显式设置 $JOB 时先让用户指定/创建 JOB 目录（三选一）；取消则中止，
-        # 绝不静默拿 $HIP 或 $HOME 顶替（2026-11-20 二次反馈）。
-        if not self._ensure_job_root():
-            return
         base = self._base_dir()
         if not base:
             name, value = self._root_var_value()
@@ -1465,9 +1198,6 @@ class PackageProjectWindow(QDialog):
         refs = self._selected_refs()
         if not refs:
             self._set_hint("没有勾选的引用。", error=True)
-            return
-        if hou.hipFile.isNewFile() and self._overwrite_radio.isChecked():
-            self._set_hint("工程还没保存，无法「覆盖当前工程」。", error=True)
             return
         pkg = self._pkg_name()
         root = self._root_var()
@@ -1495,43 +1225,25 @@ class PackageProjectWindow(QDialog):
             for source in ref.files:
                 if source in all_plan:
                     plan[source] = all_plan[source]
-        mode_text = ("另存到包目录（原工程不动）" if self._save_copy_radio.isChecked()
-                     else "覆盖当前工程")
-        root_label = {"HIP": "$HIP", "JOB": "$JOB"}.get(root, base)
-        # 2026-11-20 用户拍板：前缀一律跟随包根选项，不再"另存模式固定 $HIP"。
-        # $HIP/$JOB 是变量写法（随包可移植），自定义包根只能写绝对路径——
-        # 明确告诉用户不随包移植，不一律说"相对路径"误导。
-        if root == "CUSTOM":
-            path_text = "改写 {} 个参数为绝对路径（{} 下，不随包移植）".format(
-                len(refs), root_label)
-        else:
-            path_text = "改写 {} 个参数为 {} 下的相对路径".format(
-                len(refs), root_label)
-        job_note = ""
-        job_override = ""
-        if root == "JOB":
-            job_override = getattr(self, "_job_override", "") or _JOB_OVERRIDE
-            # 确认弹窗直接写出 $JOB 的实际落点：只写"$JOB 下的相对路径"
-            # 时，用户看不出变量其实解析到了 C 盘用户名目录（三次实测）。
-            job_note = "\n$JOB 当前 = {}".format(base)
-            if job_override:
-                job_note += ("\n会话 $JOB = {}（仅本次 Houdini 会话有效；{}）"
-                             .format(job_override,
-                                     _job_persist_hint(job_override,
-                                                       short=True)))
+        mode_text = "另存到包目录（原工程不动）"
+        root_label = "$" + root
+        # 确认弹窗按用户拍板精简（2026-11-21）：生成方式固定、去掉所有
+        #「环境变量指定 / 会话变量 / 持久化」文字，只说落点与参数改写。
+        # 包根只有 $HIP / $JOB 两种，都是变量写法（随包可移植）。
+        path_text = "改写 {} 个参数为 {} 下的相对路径".format(
+            len(refs), root_label)
         if not dialogs.question(
                 self, "打包工程",
                 "将把 {} 个文件复制到\n{}\n\n并按文件类型归入官方工程目录"
-                "（geo/tex/render/…），{}。\n"
-                "生成方式：{}{}".format(
-                    len(plan), package_dir, path_text, mode_text, job_note)):
+                "（geo/tex/render/…），{}。".format(
+                    len(plan), package_dir, path_text)):
             return
-
         self._log_view.clear()
+        # 用户确认后才改会话变量：取消打包不留下任何副作用。放在 clear
+        # 之后，成功/失败的 [信息] 日志才会留在结果面板里。
+        if not self._set_session_job():
+            return
         self._log("[开始] 包目录：{}".format(package_dir))
-        if job_override:
-            self._log("[信息] 本次会话 $JOB = {}，参数前缀 {} 与之同源".format(
-                job_override, prefix))
         missing = [ref for ref in refs if ref.missing]
         for ref in missing:
             self._log("[失败] 缺失 {}:{} → {}（手动引用了但文件不存在，"
@@ -1681,9 +1393,9 @@ class PackageProjectWindow(QDialog):
         return rewritten, failures, skipped
 
     def _save_scene(self, base, pkg):
-        """按所选方式保存；返回 (保存后的路径, 错误文本)。
+        """另存到包目录（唯一生成方式）；返回 (保存后的路径, 错误文本)。
 
-        另存模式会把会话切到 `<包>/<hip>_packed.hip`（hipFile.path 变化），
+        另存会把会话切到 `<包>/<hip>_packed.hip`（hipFile.path 变化），
         必须同步 `_scene_sig`：否则 `_scene_poll` 会把这次打包内部产生的
         save-as 误判成「用户切换工程」，清空列表 + 作废 `_pack_session`，
         导致紧接着的「生成 zip」不可用。
@@ -1691,17 +1403,13 @@ class PackageProjectWindow(QDialog):
         import hou
 
         try:
-            if self._save_copy_radio.isChecked():
-                hip_path = hou.hipFile.path()
-                stem = os.path.splitext(os.path.basename(hip_path))[0] or "untitled"
-                target = os.path.join(base, pkg, stem + "_packed.hip")
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                hou.hipFile.save(file_name=target, save_to_recent_files=False)
-                self._scene_sig = self._current_scene_sig()
-                return target, None
-            hou.hipFile.save()
+            hip_path = hou.hipFile.path()
+            stem = os.path.splitext(os.path.basename(hip_path))[0] or "untitled"
+            target = os.path.join(base, pkg, stem + "_packed.hip")
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            hou.hipFile.save(file_name=target, save_to_recent_files=False)
             self._scene_sig = self._current_scene_sig()
-            return hou.hipFile.path(), None
+            return target, None
         except Exception as exc:                  # 原因回结果面板展示
             # 失败反馈不打控制台：结果面板已含原因（houtools 日志器 DEBUG
             # 级、任何 log 都刷控制台——同 copy_output_path 的用户拍板）
@@ -1777,13 +1485,16 @@ class PackageProjectWindow(QDialog):
     # 忙态与生命周期（worker 运行中锁界面 + 延迟关闭协议）
     # ------------------------------------------------------------------
     def _set_busy(self, busy):
-        """复制/压缩进行中锁界面：计划已固定，中途改勾选/包根/生成方式会
+        """复制/压缩进行中锁界面：计划已固定，中途改勾选/包根/$JOB 路径会
         与在跑的复制错位。解锁后由调用方 _update_status 恢复按钮态。"""
         for widget in (self._scan_btn, self._apply_btn, self._zip_btn,
                        self._select_all_btn, self._clear_btn, self._table,
-                       self._root_combo, self._pkg_edit,
-                       self._save_copy_radio, self._overwrite_radio):
+                       self._root_combo, self._pkg_edit):
             widget.setEnabled(not busy)
+        # $JOB 路径控件只在选 $JOB 时可用；busy 时一律禁用
+        job_enabled = (not busy) and self._root_var() == "JOB"
+        self._job_path_edit.setEnabled(job_enabled)
+        self._job_path_btn.setEnabled(job_enabled)
 
     def _active_worker(self):
         for worker in (self._scan_worker, self._copy_worker, self._zip_worker):

@@ -5429,18 +5429,11 @@ def main():
         == "$HIP/assets/D_proj_tex/a.jpg"
     assert pkg_paths.zip_path_for("C:/hip/shot.hip").endswith(
         "shot_package.zip")
-    # 2026-11-20 用户拍板：打包后参数前缀跟随包根选项，不再一律 $HIP。
-    # 唯一例外：$HIP + 另存（hip 存进包目录后 $HIP 就是包目录，不能带包名）。
-    assert pkg_paths.target_prefix("HIP", False, "pack") == "$HIP/pack"
-    assert pkg_paths.target_prefix("HIP", True, "pack") == "$HIP"
-    assert pkg_paths.target_prefix("JOB", False, "pack") == "$JOB/pack"
-    assert pkg_paths.target_prefix("JOB", True, "pack") == "$JOB/pack"
-    assert pkg_paths.target_prefix("CUSTOM", False, "pack", "D:/packs") == \
-        "D:/packs/pack"
-    assert pkg_paths.target_prefix("CUSTOM", True, "pack", "D:/packs") == \
-        "D:/packs/pack"
-    assert pkg_paths.target_prefix("CUSTOM", False, "pack") == \
-        "<自定义路径>/pack"
+    # 2026-11-21 用户拍板：生成方式固定「另存到包目录」，包根只有
+    # $HIP / $JOB 两种。$HIP 不带包名（另存后 $HIP 就是包目录），
+    # $JOB 必须带包名（会话 $JOB 由工具在打包时指向实际项目根）。
+    assert pkg_paths.target_prefix("HIP", "pack") == "$HIP"
+    assert pkg_paths.target_prefix("JOB", "pack") == "$JOB/pack"
     print("package target prefix OK")
 
     # POSIX 形态绝对路径（Windows 上 os.path.isabs 返 False、Houdini 视为
@@ -5633,83 +5626,104 @@ def main():
         _pkg_win._hint_label.text()
     print("package builtin ref label OK")
 
-    # $JOB 未设置 → 不再回退 $HIP：判定 needs_setup，打包前由
-    # _ensure_job_root() 弹窗指定/创建目录并 hou.putenv，参数仍写 $JOB/…
-    class _JobHouText:
-        _map = {"$JOB": "C:/Users/zhouhaibin", "$HIP": "D:/proj/shot",
-                "$HOME": "C:/Users/zhouhaibin"}
+    # 2026-11-21 用户拍板：包根只剩 $HIP / $JOB；生成方式固定「另存到
+    # 包目录」，覆盖当前工程、自定义路径选项、以及整套环境变量检测 / 诊断 /
+    # 持久化提示 / 确认弹窗全部删除。
+    assert _pkg_win._root_combo.count() == 2, _pkg_win._root_combo.count()
+    assert [_pkg_win._root_combo.itemData(_i) for _i in range(2)] == \
+        ["HIP", "JOB"]
+    assert not hasattr(_pkg_win, "_save_copy_radio")
+    assert not hasattr(_pkg_win, "_overwrite_radio")
+    assert not hasattr(_pkg_win, "_ensure_job_root")
+    assert not hasattr(_pkg_win, "_job_override")
+    print("package root options OK")
 
+    class _JobHouText:
         @staticmethod
         def expandString(var):
-            return _JobHouText._map.get(var, var)
+            return {"$HIP": "D:/proj/shot", "$JOB": "D:/proj/shot"}.get(
+                var, var)
 
     class _JobHou:
         text = _JobHouText
+        _env = {}
+
+        @staticmethod
+        def putenv(key, value):
+            _JobHou._env[key] = value
 
     _job_saved = sys.modules.get("hou")
     sys.modules["hou"] = _JobHou
     try:
-        _pkg_win._root_combo.setCurrentIndex(1)     # $JOB
-        assert _pkg_win._base_dir() == "", _pkg_win._base_dir()
-        assert _pkg_win._job_needs_setup()[0] is True
-        assert _pkg_win._target_prefix().startswith("$JOB"), \
-            _pkg_win._target_prefix()
-        # 指定 JOB 目录后包根与参数前缀同源（putenv 由对话框流程负责）
-        _pkg_win._job_override = "D:/myjob"
-        assert _pkg_win._base_dir() == os.path.normpath("D:/myjob")
-        assert _pkg_win._job_needs_setup()[0] is False
-        assert _pkg_win._target_prefix().startswith("$JOB/")
-        _pkg_win._job_override = ""
+        # $HIP：路径输入框禁用，包根取 $HIP，前缀不带包名，且不动会话 $JOB
+        _pkg_win._root_combo.setCurrentIndex(0)
+        assert not _pkg_win._job_path_edit.isEnabled()
+        assert _pkg_win._base_dir() == os.path.normpath("D:/proj/shot")
+        assert _pkg_win._target_prefix() == "$HIP"
+        _JobHou._env.clear()
+        assert _pkg_win._set_session_job() is True
+        assert not _JobHou._env
 
-        # 回归（三次实测）：Houdini GUI 把默认 JOB（=$HOME）注入
-        # os.environ 时，旧版"env 非空且绝对就免检"会让 needs_setup 变
-        # False、跳过指定弹窗，包静默打到 C 盘用户名下。
-        _env_saved = os.environ.get("JOB")
-        os.environ["JOB"] = "C:/Users/zhouhaibin"
-        try:
-            assert _pkg_win._job_needs_setup()[0] is True
-            assert _pkg_win._base_dir() == ""
-        finally:
-            if _env_saved is None:
-                os.environ.pop("JOB", None)
-            else:
-                os.environ["JOB"] = _env_saved
+        # $JOB 留空 = 当前工程目录（用户要的「默认以当前工程路径指定」）
+        _pkg_win._root_combo.setCurrentIndex(1)
+        assert _pkg_win._job_path_edit.isEnabled()
+        assert _pkg_win._job_path_btn.isEnabled()
+        assert _pkg_win._job_root() == os.path.normpath("D:/proj/shot")
+        assert _pkg_win._base_dir() == os.path.normpath("D:/proj/shot")
+        assert _pkg_win._target_prefix() == "$JOB/{}".format(
+            _pkg_win._pkg_name())
+        _JobHou._env.clear()
+        assert _pkg_win._set_session_job() is True
+        assert _JobHou._env.get("JOB") == "D:/proj/shot"
 
-        # 会话首次硬兜底：即便判定为"已设置"，打包前仍弹窗确认实际
-        # 目录；点「使用当前 $JOB」后本会话不再打扰。
+        # 用户自定义 $JOB 路径：包根、putenv、参数前缀同源
+        _pkg_win._job_path_edit.setText("D:/renderfarm/jobA")
+        assert _pkg_win._job_root() == os.path.normpath("D:/renderfarm/jobA")
+        assert _pkg_win._base_dir() == os.path.normpath("D:/renderfarm/jobA")
+        assert _pkg_win._target_prefix() == "$JOB/{}".format(
+            _pkg_win._pkg_name())
+        _JobHou._env.clear()
+        assert _pkg_win._set_session_job() is True
+        assert _JobHou._env.get("JOB") == "D:/renderfarm/jobA"
+
+        # 相对路径拒绝设置，且不留副作用
+        _pkg_win._job_path_edit.setText("relative/job")
+        _JobHou._env.clear()
+        assert _pkg_win._set_session_job() is False
+        assert not _JobHou._env
+        _pkg_win._job_path_edit.setText("D:/renderfarm/jobA")
+
+        # 确认弹窗：按用户图示去掉「生成方式」「$JOB 当前」「环境变量」
+        # 等文字，只保留落点与参数改写说明。mock question 返回 False
+        # （用户取消），不会真的复制或改会话变量。
         import houtools.ui.dialogs as _pkg_dlg
-        _saved_choice = _pkg_dlg.choice
-        _saved_confirmed = pkg_window._JOB_CONFIRMED
-        _saved_override = pkg_window._JOB_OVERRIDE
-        _calls = []
+        _saved_question = _pkg_dlg.question
+        _captured = []
 
-        def _fake_choice(_parent, title, text, buttons):
-            _calls.append((title, text, buttons))
-            return len(buttons) - 1        # 最后一项 = 取消
+        def _fake_question(_parent, title, text):
+            _captured.append((title, text))
+            return False
 
-        pkg_window._JOB_OVERRIDE = ""
-        _pkg_dlg.choice = _fake_choice
+        _pkg_dlg.question = _fake_question
         try:
-            pkg_window._JOB_CONFIRMED = False
-            assert _pkg_win._ensure_job_root() is False
-            assert _calls[-1][0] == "未设置 $JOB"
-            _calls[:] = []
-            _JobHouText._map["$JOB"] = "D:/projects/job"
-            assert _pkg_win._job_needs_setup()[0] is False
-            assert _pkg_win._ensure_job_root() is False
-            assert _calls[-1][0] == "确认 JOB 目录"
-            _pkg_dlg.choice = lambda _p, _t, _x, _b: 0
-            assert _pkg_win._ensure_job_root() is True
-            assert pkg_window._JOB_CONFIRMED is True
-            _calls[:] = []
-            assert _pkg_win._ensure_job_root() is True   # 二次不再弹
-            assert not _calls
-            _JobHouText._map["$JOB"] = "C:/Users/zhouhaibin"
+            _pkg_win._refs = [pkg_collect.Ref(
+                kind="input", node_path="/obj/a", parm_name="file",
+                raw="a.jpg", abs_path="D:/p/a.jpg", files=["D:/p/a.jpg"],
+                in_hip=False)]
+            _pkg_win._checked = {0}
+            _pkg_win._on_apply()
+            assert _captured, "确认弹窗未弹出"
+            _dlg_text = _captured[-1][1]
+            assert "生成方式" not in _dlg_text, _dlg_text
+            assert "$JOB 当前" not in _dlg_text, _dlg_text
+            assert "环境变量" not in _dlg_text, _dlg_text
+            assert "houdini.env" not in _dlg_text, _dlg_text
+            assert "改写 1 个参数为 $JOB 下的相对路径" in _dlg_text, \
+                _dlg_text
         finally:
-            _pkg_dlg.choice = _saved_choice
-            pkg_window._JOB_CONFIRMED = _saved_confirmed
-            pkg_window._JOB_OVERRIDE = _saved_override
+            _pkg_dlg.question = _saved_question
 
+        _pkg_win._job_path_edit.clear()
         _pkg_win._root_combo.setCurrentIndex(0)      # 还原 $HIP
     finally:
         if _job_saved is None:
@@ -5717,48 +5731,6 @@ def main():
         else:
             sys.modules["hou"] = _job_saved
     print("package JOB setup OK")
-
-    # 2026-11-20 23:58 用户纠正：项目根 .env / 用户配置 houdini.env /
-    # Houdini Package .json 三者不是一回事，提示必须说清区别。
-    _hint = pkg_window._job_persist_hint("D:/VFX/job")
-    assert "houdini.env" in _hint
-    assert "Package .json" in _hint and "env 块" in _hint
-    assert ".env 不会被 Houdini 读取" in _hint
-    assert "HouTools.json" in _hint
-    assert "D:/VFX/job" in _hint
-    _short_hint = pkg_window._job_persist_hint(short=True)
-    assert "houdini.env" in _short_hint and "packages/*.json" in _short_hint
-    print("package JOB persist hint OK")
-
-    # 2026-11-21 四次实测：用户按提示写进 Documents/houdini22.0/houdini.env
-    # 并重启，GUI 会话 $JOB 仍是 C 盘用户名目录 —— 只按 PREF_DIR 拼路径会
-    # 指错文件。候选必须覆盖 $HOME 与 USERPROFILE 两份，并能诊断
-    #「文件里写了但会话没生效」。
-    _cands = pkg_paths.houdini_env_candidates(
-        "C:/Users/zhouhaibin/Documents/houdini22.0",
-        "C:/Users/zhouhaibin", "C:/Users/zhouhaibin", "houdini22.0")
-    assert len(_cands) == 2, _cands
-    assert any("Documents/houdini22.0/houdini.env" in p for p in _cands)
-    assert any(p.endswith("Users/zhouhaibin/houdini22.0/houdini.env")
-               for p in _cands), _cands
-    _probe = tempfile.NamedTemporaryFile(
-        "w", suffix=".env", delete=False, encoding="utf-8")
-    _probe.write("# comment\nJOB = D:/VFX/My_Houdini_Project\n")
-    _probe.close()
-    assert pkg_paths.job_entry_in_env_file(_probe.name) == \
-        "D:/VFX/My_Houdini_Project"
-    _diag = pkg_paths.job_env_diagnosis(
-        [_probe.name] + _cands, "C:/Users/zhouhaibin", True,
-        "$HOME = C:/Users/zhouhaibin")
-    assert "[诊断]" in _diag and "重启 Houdini" in _diag
-    assert "D:/VFX/My_Houdini_Project" in _diag
-    assert "另一份" not in _diag  # 文案用「把同一行也写进」列举候选
-    assert "把同一行也写进" in _diag and "houdini22.0" in _diag
-    assert "选择已有目录" in _diag
-    assert pkg_paths.job_env_diagnosis(
-        [_probe.name], "D:/VFX/My_Houdini_Project", False) == ""
-    os.unlink(_probe.name)
-    print("package JOB env diagnosis OK")
 
     # 恢复成 2 条 fixture，供下面多选/切场景断言使用
     _pkg_win._refs = [pkg_collect.Ref(
@@ -6046,7 +6018,7 @@ def main():
     print("zip link boundary OK")
 
     # ------------------------------------------------------------------
-    # Package Project 增强（2026-11-19）：类型分类 / 默认包名 / $JOB 默认值 /
+    # Package Project 增强（2026-11-19）：类型分类 / 默认包名 / 参数前缀 /
     # 场景指纹 / 勾选统计 / 打包日志 / 分类布局——全部纯函数，无头覆盖
     # ------------------------------------------------------------------
     # 按文件类型归入 Houdini 官方 New Project 目录
@@ -6086,48 +6058,21 @@ def main():
     assert pkg_paths.default_package_name("") == "ht_package"
     print("package default name OK")
 
-    # $JOB 未显式设置检测（2026-11-20 三次反馈）：展开值随启动方式变
-    # （GUI=$HOME / hython=CWD / 也可能=$HIP），默认目录锚点要够全；
-    # **os.environ["JOB"] 不能免检**——Houdini GUI 会把默认 JOB（=$HOME）
-    # 注入进程环境，旧版据此放行，包静默打到 C 盘用户名下。
-    assert pkg_paths.job_is_default("", "C:/hip")
-    assert pkg_paths.job_is_default("$JOB", "C:/hip")
-    assert pkg_paths.job_is_default("C:/hip", "C:/hip")
-    assert pkg_paths.job_is_default(
-        "C:/Users/zhouhaibin", "D:/proj/shot", home_value="C:/Users/zhouhaibin")
-    assert pkg_paths.job_is_default(
-        "C:/cwd", "D:/proj/shot", "C:/Users/zhouhaibin", cwd_value="C:/cwd")
-    # env 指向默认目录：仍必须判为未设置（关键回归）
-    assert pkg_paths.job_is_default(
-        "C:/Users/zhouhaibin", "D:/proj/shot",
-        home_value="C:/Users/zhouhaibin", env_value="C:/Users/zhouhaibin")
-    # env 指向别处、但 $JOB 展开值仍是默认目录：以展开值为准
-    assert pkg_paths.job_is_default(
-        "C:/Users/zhouhaibin", "D:/proj/shot",
-        home_value="C:/Users/zhouhaibin", env_value="D:/some/other/path")
-    # extra_defaults（宿主侧 HOME 等）也要能命中
-    assert pkg_paths.job_is_default(
-        "D:/custom_home", "D:/proj/shot", home_value="C:/Users/zhouhaibin",
-        extra_defaults=("D:/custom_home",))
-    assert pkg_paths._path_key(os.path.expanduser("~")) in \
-        pkg_paths.default_job_roots()
-    assert not pkg_paths.job_is_default(
-        "D:/projects/main", "C:/hip", home_value="C:/Users/zhouhaibin")
-    # 未设置 → 返回空串，由窗口弹窗指定 JOB 目录（不再静默回退 $HIP）
-    _actual, _needs, _reason = pkg_paths.resolve_job_root(
-        "C:/Users/zhouhaibin", "D:/proj/shot", "C:/Users/zhouhaibin",
-        env_value="C:/Users/zhouhaibin")
-    assert _actual == "" and _needs is True
-    assert "指定" in _reason
-    _actual2, _needs2, _ = pkg_paths.resolve_job_root(
-        "D:/projects/main", "C:/hip", "C:/Users/zhouhaibin")
-    assert _actual2 == "D:/projects/main" and _needs2 is False
+    # 2026-11-21 用户拍板：$JOB 不再由环境变量指定，整套「猜默认值 /
+    # 扫 houdini.env / 诊断」纯函数已删除。参数前缀只按包根选项生成。
+    for _removed in ("job_is_default", "default_job_roots", "resolve_job_root",
+                     "houdini_env_candidates", "job_entry_in_env_file",
+                     "job_env_diagnosis", "_path_key"):
+        assert not hasattr(pkg_paths, _removed), \
+            "环境变量检测残留：" + _removed
+    assert pkg_paths.target_prefix("HIP", "pack") == "$HIP"
+    assert pkg_paths.target_prefix("JOB", "pack") == "$JOB/pack"
     # 内置引用识别（$HH/$HFS = Houdini 安装目录，非工程素材）
     assert pkg_paths.is_builtin_ref("$HH/geo/defgeo.bgeo")
     assert pkg_paths.is_builtin_ref("${HFS}/houdini/geo/x.bgeo")
     assert not pkg_paths.is_builtin_ref("$HIP/geo/x.bgeo")
     assert not pkg_paths.is_builtin_ref("D:/proj/geo/x.bgeo")
-    print("package job default OK")
+    print("package job env removed OK")
 
     # 场景指纹：new/open 后变化，重开同一工程不变
     _sig1 = pkg_paths.scene_signature("C:/p/a.hip", False)
