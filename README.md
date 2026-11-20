@@ -340,8 +340,9 @@ _houtools_dispatcher.run("<tool_id>")
 ```
 
 3. 重启 Houdini 让菜单项出现（仅此一次），之后该工具的代码迭代全部走热加载；
-4. 同步文档：更新本 README 的「工具列表」与「结构」、`docs/index.html` 的对应章节与
-   左侧栏目录、`AGENTS.md` 的 Where to Look 表；菜单新增 `scriptItem` 时还要在
+4. 同步文档：更新本 README 的「工具列表」与「结构」、`docs/index.html` 的对应章节、
+   左侧栏目录与轮播 SVG 示意卡（880×320，色值取 theme.TOKENS）、`AGENTS.md` 的 Where to Look 表；
+   菜单新增 `scriptItem` 时还要在
    `tests/test_about_sync.py` 的 `MENU_ITEM_TO_SECTION` 登记（页面专有章节登记
    `PAGE_ONLY_SECTIONS`）。右栏小节导航由正文 `h3[id]` 运行时派生，不要手写第三份清单。
    改完跑 `python tests/test_about_sync.py` 与 `python tests/test_theme_tokens.py`。
