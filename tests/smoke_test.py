@@ -5556,6 +5556,13 @@ def main():
     assert _pkg_win._zip_btn.text() == "打包+zip"
     assert _pkg_win._zip_btn.isEnabled() is False   # 没勾选引用时两个都禁用
     assert _pkg_win._zip_after_apply is False
+    # 暂停 / 中断：底部与扫描遮罩上各一组（遮罩会吞鼠标事件）
+    assert _pkg_win._pause_btn.text() == "暂停"
+    assert _pkg_win._abort_btn.text() == "中断"
+    assert _pkg_win._pause_btn.isEnabled() is False
+    assert _pkg_win._abort_btn.isEnabled() is False
+    assert _pkg_win._scan_busy.pause_btn.text() == "暂停"
+    assert _pkg_win._scan_busy.abort_btn.text() == "中断"
     assert _pkg_win._status_label.text() == "—"
     assert _pkg_win.objectName() == "htWindow"
     assert _pkg_win.is_close_deferred() is False
@@ -5873,6 +5880,114 @@ def main():
         _pkg_win._pack_session = None
         _pkg_win._zip_after_apply = False
     print("package auto zip OK")
+
+    # ⑦ 暂停 / 打断闸门：暂停阻塞、继续放行、取消必须唤醒暂停中的等待
+    import threading as _threading
+    import types as _types
+
+    def _gate_case(cancel_instead):
+        _g = pkg_window._WorkerGate()
+        _entered = _threading.Event()
+        _out = []
+
+        def _wait():
+            _entered.set()
+            _out.append(_g.wait_if_paused())
+
+        _g.pause()
+        _t = _threading.Thread(target=_wait, daemon=True)
+        _t.start()
+        assert _entered.wait(1.0), "gate 等待线程没启动"
+        _t.join(0.25)
+        assert _t.is_alive(), "暂停时 wait_if_paused 没阻塞"
+        if cancel_instead:
+            _g.cancel()          # 关窗 / 中断按钮走这条，必须唤醒
+        else:
+            _g.resume()
+        _t.join(1.0)
+        assert not _t.is_alive(), "等待未被唤醒（延迟关闭会卡死）"
+        return _out, _g
+
+    _out, _g = _gate_case(False)
+    assert _out == [False] and not _g.paused, _out
+    _out2, _g2 = _gate_case(True)
+    assert _out2 == [True] and _g2.cancelled and not _g2.paused, _out2
+
+    # collect.resolve 的 gate 钩子（纯函数，不传 gate 时旧行为不变）
+    class _ResolveGate:
+        def __init__(self, stop):
+            self.stop = stop
+            self.calls = 0
+
+        def wait_if_paused(self):
+            self.calls += 1
+            return self.stop
+
+    _cand = _types.SimpleNamespace(
+        expanded="D:/p/a.jpg", abs_path="D:/p/a.jpg", rewrite_dir=False,
+        token="", kind="input", node_path="/obj/a", parm_name="file",
+        raw="a.jpg", absolute_raw=False, builtin=False, basedir="")
+    _stop_gate = _ResolveGate(True)
+    assert pkg_collect.resolve([_cand], "D:/p", gate=_stop_gate)[0] == []
+    assert _stop_gate.calls == 1, _stop_gate.calls
+    _pass_gate = _ResolveGate(False)
+    pkg_collect.resolve([_cand], "D:/p", gate=_pass_gate)
+    assert _pass_gate.calls == 1, _pass_gate.calls
+
+    # 三个 worker 都有 gate，cancel 会唤醒暂停（closeEvent 依赖这点）
+    for _w in (pkg_window._CopyWorker({}),
+               pkg_window._ScanWorker([], "D:/p", False),
+               pkg_window._ZipWorker("D:/p/a.zip", "D:/p",
+                                     "D:/p/pack", "")):
+        assert isinstance(_w.gate, pkg_window._WorkerGate)
+        _w.gate.pause()
+        _w.cancel()
+        assert _w.cancelled and _w.gate.cancelled and not _w.gate.paused
+        assert _w.gate.wait_if_paused() is True
+
+    # 窗口槽：暂停/继续切换状态，暂停中打断能唤醒且按钮禁用
+    class _FakeWorker:
+        def __init__(self):
+            self.gate = pkg_window._WorkerGate()
+            self.cancelled = False
+            self.cancel_calls = 0
+
+        def isRunning(self):
+            return True
+
+        def cancel(self):
+            self.cancel_calls += 1
+            self.cancelled = True
+            self.gate.cancel()
+
+    _fake = _FakeWorker()
+    _saved_worker = _pkg_win._copy_worker
+    _pkg_win._copy_worker = _fake
+    try:
+        _pkg_win._set_busy(True)
+        assert _pkg_win._pause_btn.isEnabled()
+        assert _pkg_win._abort_btn.isEnabled()
+        _pkg_win._on_pause()
+        assert _pkg_win._paused and _fake.gate.paused
+        assert _pkg_win._pause_btn.text() == "继续"
+        assert _pkg_win._status_label.text() == "已暂停"
+        _pkg_win._on_pause()
+        assert not _pkg_win._paused and not _fake.gate.paused
+        assert _pkg_win._pause_btn.text() == "暂停"
+        _pkg_win._on_pause()          # 再次暂停后打断
+        _pkg_win._on_abort()
+        assert _fake.cancel_calls == 1 and _fake.gate.cancelled
+        assert not _fake.gate.paused and not _pkg_win._paused
+        assert not _pkg_win._pause_btn.isEnabled()
+        assert not _pkg_win._abort_btn.isEnabled()
+        assert "中断" in _pkg_win._log_view.toPlainText()
+    finally:
+        _pkg_win._copy_worker = _saved_worker
+        _pkg_win._set_busy(False)
+        _pkg_win._update_status()
+    assert not _pkg_win._pause_btn.isEnabled()
+    assert not _pkg_win._abort_btn.isEnabled()
+    print("package pause abort OK")
 
     _pkg_win._refs = []
     _pkg_win._targets = []

@@ -1330,7 +1330,8 @@ body.ds{ font-size:15px; }
     <li><strong>表达式驱动的参数不改写</strong>:<code>chs()</code> 链接 / 表达式 / 关键帧驱动的参数自动跳过——对它写静态值等于把表达式冻成常数(同 File Cache 转绝对的拒绝语义),并计入执行结果的跳过统计;filecache 的 <code>basedir</code> 同查(其 <code>file</code>/<code>basename</code> 只是拼路径的片段,本就不单独收)。</li>
     <li><strong>生成方式固定「另存到包目录(原工程不动)」</strong>:生成 <code>&lt;包名&gt;/&lt;hip&gt;_packed.hip</code>,磁盘上的原工程不动;「覆盖当前工程」已删除。包名默认「工程名 + <code>-pack</code>」(未保存工程回落 <code>ht_package</code>),可在窗口里改(输入会净化,Windows 禁用符与 <code>..</code> 被收敛,防止写出包目录之外)。</li>
     <li>表格 6 列(勾选 / 节点 / 参数 / <strong>参数现值</strong> / <strong>打包后参数值</strong> / 状态),类型信息并入状态列;数据列列宽可拖,<code>Ctrl+滚轮</code> 缩放表格字号(7–24pt)。扫描期间有全窗口等待遮罩,取消勾选实时联动待复制数/体积,切换工程自动清空上一工程的扫描结果。</li>
-    <li>帧模板 <code>foo.$F4.exr</code> 原样保留,现有帧整段收进包里;参数改写在一个 undo 组里,<strong>Ctrl+Z 可整体撤销</strong>。复制/zip 在后台线程执行,运行中关闭窗口即协作取消——复制停在当前文件边界(取消后不进行参数改写与保存),zip 半成品(<code>.part</code>)不落盘。</li>
+    <li>帧模板 <code>foo.$F4.exr</code> 原样保留,现有帧整段收进包里;参数改写在一个 undo 组里,<strong>Ctrl+Z 可整体撤销</strong>。复制/zip 在后台线程执行。</li>
+    <li><strong>暂停 / 继续 与 中断</strong>:扫描、打包、打包+zip(含自动压缩阶段)运行中都能点底部「暂停」(再点变「继续」)或「中断」;暂停在当前工作项完成后停住,中断原地取消且窗口保持打开。扫描阶段全窗口遮罩会吞鼠标事件,所以遮罩上也有同款两颗按钮。关闭窗口仍会协作取消——复制停在当前文件边界(取消后不进行参数改写与保存),zip 半成品(<code>.part</code>)不落盘。参数改写 + 保存 hip 在主线程,这段很短、不可暂停。</li>
     <li><strong>执行结果面板</strong>:完成 / 失败两态,逐条列出复制失败(源路径 + 原因)、改写失败(节点:参数 + 原因)、保存失败与跳过计数,并显示扫描统计。</li>
     <li><strong>双击某行跳转到该节点</strong>(网络编辑器定位并居中;跳转前自动切 Manual 更新模式,避免 Auto Update / OnMouseUp 下跳重节点当场重烤卡死,恢复在播放条手动选回);<strong>右键</strong>只有两项:「跳转到节点」「在资源管理器中打开原路径」(Shell API 定位并选中,序列取第一帧)。</li>
     <li><strong>两个按钮:「打包」与「打包+zip」</strong>:「打包」只复制 + 改写 + 另存 hip,不压缩;「打包+zip」执行同一套打包并在成功后<strong>自动</strong>把包目录压成 <code>&lt;包根&gt;/&lt;包名&gt;.zip</code>(确认弹窗会注明「完成后自动生成」),无需再点一次。逐条明细写在 <code>&lt;包根&gt;/&lt;包名&gt;/package_log.txt</code>,先落盘、随 zip 归档;打包失败或取消时不压缩。</li>

@@ -123,6 +123,8 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
 
 - 扫描的文件系统检查阶段（`_ScanWorker`，后台线程）显示 `_ScanBusyOverlay`
   全窗口半透明遮罩 + marquee 进度条，避免"扫描中…"文字太小让人以为卡死。
+  遮罩会吞鼠标事件，底部按钮点不到——2026-11-21 起遮罩上另放「暂停 / 中断」
+  两颗按钮，连到窗口同一组槽（`set_paused` / `set_aborting` / `reset`）。
 - 窗口经 window_manager 跨工程复用；`_sync_scene()` 用
   `paths.scene_signature()` 比对场景指纹，new/open 不同工程后清空上一工程的
   **表格行**/日志/扫描结果/包名复位，防止残留（2026-11-20 用户反馈：
@@ -256,11 +258,26 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
 守卫活过 Reload，同 videoseq/_LIVE_ENGINES）：Reload 关窗路径会 deleteLater
 窗口，实例属性保不住引用，运行中的 QThread 被 GC 析构即 Qt6 qFatal。
 
+**暂停 / 打断（2026-11-21 四次反馈）**：`_WorkerGate`（`threading.Condition`）
+由 `_ScanWorker` / `_CopyWorker` / `_ZipWorker` 共用，`wait_if_paused()` 在工作项
+边界阻塞（单个 copy2 / zip 条目 / glob 不可打断），`resume()` 放行、`cancel()`
+清暂停并 `notify_all` 唤醒等待——**这是关键约束**：暂停中关窗或点「中断」若
+不唤醒，线程永远等下去，延迟关闭协议轮询不到 done、窗口关不掉。
+`collect.resolve(..., gate=None)` 每个候选前调 `wait_if_paused()`（不传则旧行为
+不变，纯函数测试不受影响）。窗口 `_on_pause()` 切换按钮文案/状态（继续时恢复
+`_run_label`），`_on_abort()` 调 `worker.cancel()` 后**原地**等 done、窗口保持
+打开；复制被中断不改写参数/不保存 hip/不自动 zip，压缩被中断丢弃 `.part`。
+`_set_busy` 对这两颗按钮**反着来**：busy 时启用、空闲禁用并复位；`closeEvent`
+对已 `cancelled` 的 worker 不再重复弹确认。
+已知边界：参数改写 + `hipFile.save` 仍在主线程、很短且不可暂停；单个文件
+复制与单个 zip 条目内部不可打断。
+
 **延迟关闭协议**（window_manager）：worker 运行中 `is_close_deferred()` 返回
 True——closeEvent 先确认（Reload 触发的 close_all 不弹模态，直接取消），然后
 `cancel()` + `hide()` + QTimer 轮询线程退出，最后窗口自行 close + deleteLater
 （close_all 对延迟窗口只持引用不删，收尾必须自删，同 videoseq）。忙态锁界面
-（`_set_busy`）：计划已固定，中途改勾选/包根/输出目录会与在跑的复制错位。
+`（`_set_busy`）：计划已固定，中途改勾选/包根/输出目录会与在跑的复制错位；
+「暂停 / 中断」两颗按钮例外——busy 时才启用。
 
 **失败反馈不打控制台**：复制/改写/保存失败只走结果面板 + notify（面板已含
 节点路径与原因；houtools 日志器 DEBUG 级、任何 log 都刷控制台——同
@@ -356,8 +373,17 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
 - 选 `$JOB` 时工具用 `hou.putenv` 设置的 `$JOB` **只对当前 Houdini 会话
   有效**。若打包出的工程需要长期依赖 `$JOB/…` 参数，由使用者按自己的环境
   配置方式保证 `$JOB` 指向正确目录；工具不读写任何配置文件。
+- 暂停只在工作项边界生效：单个 `shutil.copy2`、单个 zip 条目、单次 glob
+  内部不可打断；**参数改写 + 保存 hip 在主线程，这段不可暂停**。
+- 仍无真正的百分比进度条：扫描是 marquee 无限滚动遮罩、复制是
+  「复制 x/y」文字计数、压缩只有「压缩中…」状态（见线程模型）。
 
 ## 测试
+
+- 2026-11-21 四次反馈新增回归：`package pause abort OK`——`_WorkerGate`
+  暂停阻塞 / `resume` 放行 / `cancel` 唤醒暂停中的等待（线程 + 超时保护）、
+  `collect.resolve` 的 gate 钩子、三个 worker 的 gate 与 `cancel()`、
+  窗口底部与遮罩按钮文案、`_on_pause` / `_on_abort` 的状态联动与按钮禁用。
 
 - `tests/smoke_test.py`：`paths` 纯函数（帧模板 / needs_packaging / POSIX
   绝对形态 / flatten_dir / 包名净化）、分类 `category_for` / `_ext_chain` /

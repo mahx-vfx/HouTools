@@ -25,6 +25,9 @@
 协作式取消——文件边界检查标志，对齐 Automation 的取消语义）；参数改写
 与 hipFile.save 必须主线程（HOM 非线程安全），由 worker 的 done 信号
 （队列连接自动回主线程）触发。改写/保存不进 worker。
+扫描/复制/压缩共用 `_WorkerGate`（threading.Condition）：暂停时在工作项
+边界阻塞，「中断」或关窗取消会唤醒等待；窗口底部与扫描遮罩上都有
+「暂停 / 中断」按钮。参数改写与保存仍在主线程，这段很短、不可暂停。
 
 样式：品牌 token 体系——`qss.window_qss(_EXTRA_QSS)`（表格/表头等基础
 表没有的控件在 _EXTRA_QSS 里按 token 补），根 objectName=`htWindow`，
@@ -35,6 +38,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 import zipfile
 
 from PySide6.QtCore import Qt, QEvent, QThread, QTimer, Signal
@@ -163,22 +167,58 @@ class _ScanBusyOverlay(QWidget):
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
         layout.setContentsMargins(0, 0, 0, 120)
-        label = QLabel("正在扫描场景文件引用，请稍候…")
-        label.setObjectName("htScanBusyLabel")
-        label.setAlignment(Qt.AlignCenter)
+        self.label = QLabel("正在扫描场景文件引用，请稍候…")
+        self.label.setObjectName("htScanBusyLabel")
+        self.label.setAlignment(Qt.AlignCenter)
         bar = QProgressBar(self)
         bar.setObjectName("htScanBusyBar")
         bar.setRange(0, 0)          # 0/0 = indeterminate marquee 动画
         bar.setTextVisible(False)
         bar.setFixedWidth(360)
+        # 遮罩吞掉鼠标事件，底部按钮点不到：扫描阶段的暂停/中断必须放在
+        # 遮罩上，连到窗口同一组槽。
+        self.pause_btn = QPushButton("暂停")
+        self.pause_btn.setFixedWidth(110)
+        self.pause_btn.setToolTip(
+            "暂停扫描（当前候选项检查完后停住）；再点一次「继续」恢复")
+        self.pause_btn.clicked.connect(host._on_pause)
+        self.abort_btn = QPushButton("中断")
+        self.abort_btn.setFixedWidth(110)
+        self.abort_btn.setToolTip("打断（取消）本次扫描，窗口保持打开")
+        self.abort_btn.clicked.connect(host._on_abort)
+        ctrl = QHBoxLayout()
+        ctrl.setAlignment(Qt.AlignCenter)
+        ctrl.addWidget(self.pause_btn)
+        ctrl.addSpacing(12)
+        ctrl.addWidget(self.abort_btn)
         layout.addStretch(1)
-        layout.addWidget(label)
+        layout.addWidget(self.label)
         layout.addSpacing(14)
         layout.addWidget(bar, 0, Qt.AlignCenter)
+        layout.addSpacing(18)
+        layout.addLayout(ctrl)
         layout.addStretch(1)
         self.hide()
 
+    def set_paused(self, paused):
+        self.pause_btn.setText("继续" if paused else "暂停")
+        self.label.setText(
+            "已暂停：点「继续」恢复，或点「中断」打断。"
+            if paused else "正在扫描场景文件引用，请稍候…")
+
+    def set_aborting(self):
+        self.label.setText("正在中断：等待当前工作项结束…")
+        self.pause_btn.setEnabled(False)
+        self.abort_btn.setEnabled(False)
+
+    def reset(self):
+        self.label.setText("正在扫描场景文件引用，请稍候…")
+        self.pause_btn.setText("暂停")
+        self.pause_btn.setEnabled(True)
+        self.abort_btn.setEnabled(True)
+
     def show_over(self):
+        self.reset()
         self.setGeometry(0, 0, self.parentWidget().width(),
                          self.parentWidget().height())
         self.raise_()
@@ -198,6 +238,53 @@ except NameError:
     _LIVE_WORKERS = set()
 
 
+class _WorkerGate:
+    """协作式「暂停 / 继续 / 打断」闸门（扫描/复制/压缩三个 worker 共用）。
+
+    只在工作项边界生效：单个 ``shutil.copy2`` / zip 条目 / glob 不可打断。
+    ``wait_if_paused()`` 在暂停时阻塞；``cancel()`` 会清掉暂停并唤醒等待——
+    否则「暂停中关窗」或「暂停中点中断」会让线程永远等下去，延迟关闭协议
+    轮询不到 done（2026-11-21 加暂停/打断时的关键约束）。
+    """
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._paused = False
+        self._cancelled = False
+
+    def pause(self):
+        with self._cond:
+            self._paused = True
+
+    def resume(self):
+        with self._cond:
+            self._paused = False
+            self._cond.notify_all()
+
+    def cancel(self):
+        with self._cond:
+            self._cancelled = True
+            self._paused = False
+            self._cond.notify_all()
+
+    @property
+    def paused(self):
+        with self._cond:
+            return self._paused
+
+    @property
+    def cancelled(self):
+        with self._cond:
+            return self._cancelled
+
+    def wait_if_paused(self):
+        """暂停时阻塞；返回 True 表示已取消，调用方应立即 break / raise。"""
+        with self._cond:
+            while self._paused and not self._cancelled:
+                self._cond.wait(0.2)
+            return self._cancelled
+
+
 class _CopyWorker(QThread):
     """后台线程：按计划复制素材进包目录（纯文件 IO，不碰 hou）。
 
@@ -215,15 +302,17 @@ class _CopyWorker(QThread):
         super().__init__()
         self._items = list(plan.items())
         self.cancelled = False
+        self.gate = _WorkerGate()
 
     def cancel(self):
         self.cancelled = True
+        self.gate.cancel()
 
     def run(self):
         copied = 0
         failures = []
         for source, target in self._items:
-            if self.cancelled:
+            if self.gate.wait_if_paused():
                 break
             try:
                 os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -250,15 +339,17 @@ class _ScanWorker(QThread):
         self._hip_dir = hip_dir
         self._include_output = include_output
         self.cancelled = False
+        self.gate = _WorkerGate()
 
     def cancel(self):
         self.cancelled = True
+        self.gate.cancel()
 
     def run(self):
         try:
             refs, stats = collect.resolve(
                 self._candidates, self._hip_dir, self._include_output,
-                should_cancel=lambda: self.cancelled)
+                should_cancel=lambda: self.cancelled, gate=self.gate)
         except Exception as exc:                  # 错误文本回结果面板展示
             self.done.emit([], {"error": str(exc)})
             return
@@ -283,9 +374,11 @@ class _ZipWorker(QThread):
         self._package_dir = package_dir
         self._hip_path = hip_path
         self.cancelled = False
+        self.gate = _WorkerGate()
 
     def cancel(self):
         self.cancelled = True
+        self.gate.cancel()
 
     def run(self):
         tmp_path = self.zip_path + ".part"
@@ -295,7 +388,7 @@ class _ZipWorker(QThread):
         try:
             with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as archive:
                 for root, dirs, files in os.walk(self._package_dir):
-                    if self.cancelled:
+                    if self.gate.wait_if_paused():
                         raise _Cancelled()
                     # 目录级链接：os.walk 默认不跟随，但要计数并显式摘掉，
                     # 否则用户看不到「跳过」，且 followlinks 语义一变就泄漏
@@ -305,7 +398,7 @@ class _ZipWorker(QThread):
                             skipped += 1
                             dirs.remove(name)
                     for name in files:
-                        if self.cancelled:
+                        if self.gate.wait_if_paused():
                             raise _Cancelled()
                         full = os.path.join(root, name)
                         if not collect.archivable(full, real_pkg):
@@ -320,7 +413,7 @@ class _ZipWorker(QThread):
                 hip = self._hip_path
                 if hip and os.path.isfile(hip) and \
                         not paths.is_within(hip, self._package_dir):
-                    if self.cancelled:
+                    if self.gate.wait_if_paused():
                         raise _Cancelled()
                     archive.write(hip, os.path.basename(hip))
                     count += 1
@@ -372,6 +465,9 @@ class PackageProjectWindow(QDialog):
         self._pack_session = None
         # 「打包+zip」：本次打包成功后自动压缩（确认后才置位，取消无副作用）
         self._zip_after_apply = False
+        # 暂停 / 打断：窗口级暂停态 + 当前阶段的状态文字（继续时恢复）
+        self._paused = False
+        self._run_label = ""
         # 扫描/复制/压缩 worker（QThread）：None = 空闲；_apply_ctx 是复制
         # 完成后主线程继续改写/保存所需的上下文
         self._scan_worker = None
@@ -694,6 +790,21 @@ class PackageProjectWindow(QDialog):
             "（无需再点一次）")
         self._zip_btn.clicked.connect(lambda: self._on_apply(True))
         btn_row.addWidget(self._zip_btn)
+        btn_row.addSpacing(16)
+        self._pause_btn = QPushButton("暂停")
+        self._pause_btn.setEnabled(False)
+        self._pause_btn.setToolTip(
+            "暂停当前扫描 / 打包 / 压缩（当前工作项完成后停住）；"
+            "再点一次「继续」恢复")
+        self._pause_btn.clicked.connect(self._on_pause)
+        btn_row.addWidget(self._pause_btn)
+        self._abort_btn = QPushButton("中断")
+        self._abort_btn.setEnabled(False)
+        self._abort_btn.setToolTip(
+            "打断（取消）当前操作，窗口保持打开；复制被中断后"
+            "不会改写参数或保存 hip")
+        self._abort_btn.clicked.connect(self._on_abort)
+        btn_row.addWidget(self._abort_btn)
         btn_row.addStretch()
         close_btn = QPushButton("关闭")
         close_btn.clicked.connect(self.close)
@@ -836,7 +947,8 @@ class PackageProjectWindow(QDialog):
             return
         self._pending_skip_stats = skip_stats
         self._set_busy(True)
-        self._set_status("扫描中…")
+        self._run_label = "扫描中…"
+        self._set_status(self._run_label)
         # 第 8 项：全窗口等待遮罩（marquee 进度条），文件检查在后台线程，
         # 主线程事件循环空闲，动画正常滚动，用户不会误以为卡死。
         self._scan_busy.show_over()
@@ -1318,7 +1430,8 @@ class PackageProjectWindow(QDialog):
                                         ref.abs_path))
 
         self._set_busy(True)
-        self._set_status("打包中…")
+        self._run_label = "打包中…"
+        self._set_status(self._run_label)
         # 开始新的打包：旧的会话记录立即作废（失败/取消后 zip 不可用）
         self._pack_session = None
         source_hip = "" if hou.hipFile.isNewFile() else hou.hipFile.path()
@@ -1526,7 +1639,8 @@ class PackageProjectWindow(QDialog):
         zip_path = os.path.join(base, pkg + ".zip")
         hip_path = hou.hipFile.path() if not hou.hipFile.isNewFile() else ""
         self._set_busy(True)
-        self._set_status("压缩中…")
+        self._run_label = "压缩中…"
+        self._set_status(self._run_label)
         worker = _ZipWorker(zip_path, base, package_dir, hip_path)
         worker.done.connect(self._on_zip_done)
         self._retire_worker(worker)
@@ -1580,6 +1694,56 @@ class PackageProjectWindow(QDialog):
         root_path_enabled = not busy
         self._root_path_edit.setEnabled(root_path_enabled)
         self._root_path_btn.setEnabled(root_path_enabled)
+        # 「暂停 / 中断」反过来只在有 worker 运行时可用；空闲时禁用并复位。
+        # 这两颗不能和上面的控件一起锁死，否则运行中没有打断入口。
+        self._pause_btn.setEnabled(busy)
+        self._abort_btn.setEnabled(busy)
+        if not busy:
+            self._paused = False
+            self._pause_btn.setText("暂停")
+        overlay = getattr(self, "_scan_busy", None)
+        if overlay is not None:
+            overlay.reset()
+
+    def _on_pause(self):
+        """「暂停 / 继续」：只在工作项边界生效，扫描/复制/压缩统一走 gate。"""
+        worker = self._active_worker()
+        if worker is None:
+            return
+        if self._paused:
+            worker.gate.resume()
+            self._paused = False
+            self._pause_btn.setText("暂停")
+            self._set_status(self._run_label or "进行中…")
+            self._set_hint("已继续：正在处理…")
+            self._log("[信息] 已继续。")
+        else:
+            worker.gate.pause()
+            self._paused = True
+            self._pause_btn.setText("继续")
+            self._set_status("已暂停")
+            self._set_hint("已暂停：点「继续」恢复，或点「中断」打断。")
+            self._log("[信息] 已暂停：当前工作项完成后停住。")
+        overlay = getattr(self, "_scan_busy", None)
+        if overlay is not None and not overlay.isHidden():
+            overlay.set_paused(self._paused)
+
+    def _on_abort(self):
+        """「中断」：原地打断当前操作（窗口保持打开），不改写参数/保存 hip。"""
+        worker = self._active_worker()
+        if worker is None:
+            return
+        worker.cancel()               # gate.cancel() 会唤醒暂停中的等待
+        self._paused = False
+        self._pause_btn.setText("暂停")
+        self._pause_btn.setEnabled(False)
+        self._abort_btn.setEnabled(False)
+        self._set_status("中断中…")
+        self._set_hint("已请求中断：当前工作项完成后停止。")
+        self._log("[信息] 已请求中断（打断）：等待当前工作项结束…")
+        overlay = getattr(self, "_scan_busy", None)
+        if overlay is not None and not overlay.isHidden():
+            overlay.set_aborting()
 
     def _active_worker(self):
         for worker in (self._scan_worker, self._copy_worker, self._zip_worker):
@@ -1644,7 +1808,7 @@ class PackageProjectWindow(QDialog):
             # 已处于延迟关闭中（隐藏窗口再被 close_all 触发）：维持推迟
             event.ignore()
             return
-        if not reload_closing and not dialogs.question(
+        if not reload_closing and not worker.cancelled and not dialogs.question(
                 self, "打包进行中",
                 "打包仍在进行，取消并关闭窗口？",
         ):

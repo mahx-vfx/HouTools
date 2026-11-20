@@ -449,16 +449,21 @@ def gather(hip_dir="", include_output=False):
     return candidates, skip_stats
 
 
-def resolve(candidates, hip_dir, include_output=False, should_cancel=None):
+def resolve(candidates, hip_dir, include_output=False, should_cancel=None,
+             gate=None):
     """文件系统阶段：对候选做 isfile/glob/isdir，返回 (refs, skip_stats)。
 
-    可以在 QThread 里跑（只碰文件系统，不碰 HOM）。
+    可以在 QThread 里跑（只碰文件系统，不碰 HOM）。``gate`` 可选（鸭子类型）：
+    每个候选项前调 ``wait_if_paused()``——暂停时阻塞、返回 True 表示已取消；
+    不传则行为与旧版完全一致（无窗口调用/纯函数测试不受影响）。
     """
     hip = os.path.normpath(hip_dir) if hip_dir else ""
     refs = []
     skip_stats = {}
     for cand in candidates:
         if should_cancel is not None and should_cancel():
+            break
+        if gate is not None and gate.wait_if_paused():
             break
         expanded = cand.expanded
         if _is_noise(expanded, hip):
