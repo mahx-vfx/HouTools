@@ -511,7 +511,8 @@
   .table-wrap table { margin: 0; min-width: 520px; }
   .car-toggle {
     position: absolute;
-    left: 14px; bottom: 12px;
+    /* 与右侧圆点同列、压在圆点上方（避开左下角文字说明） */
+    right: 16px; bottom: 40px;
     z-index: 2;
     padding: 3px 10px;
     border-radius: 999px;
@@ -536,7 +537,7 @@
     .slide-cap strong { font-size: 16px; }
     .car-btn { width: 30px; height: 30px; font-size: 17px; }
     .car-dots { right: 10px; bottom: 10px; gap: 6px; }
-    .car-toggle { left: 10px; bottom: 10px; }
+    .car-toggle { right: 10px; bottom: 36px; }
   }
   @media (prefers-reduced-motion: reduce) {
     .donate-modal:not([hidden]) .donate-card { animation: none; }
