@@ -93,6 +93,15 @@ root/
 
 ## Conventions
 
+- **开源工具隐私保护（2026-11-21 起）**：HouTools 是开源工具，本仓库的代码 / 注释 /
+  测试夹具 / 文档示例 / 离线手册 / 提交信息里，在**不影响具体功能**的前提下禁止出现
+  真实用户名、本机用户目录、个人绝对路径等隐私元素（含 `C:\Users\<真实用户名>\…` 形态）。
+  路径示例统一用 `C:/Users/<user>/…`、`D:/proj/…`、`<项目目录>/…`、`$HIP/…`、`$JOB/…`
+  等占位；测试断言也用占位字符串，不依赖任何本机真实目录。**提交前自检**：在仓库根
+  跑一次全仓 `grep`（真实用户名），命中即改成占位，但不得改变断言语义；历史 commit
+  不回头改写，只清当前改动文件里的存量。不为「脱敏」改动功能行为、测试断言语义或
+  用户原文含义；本机内部交接文档里用于定位仓库的功能性绝对路径属开发现场记录，
+  不受本条约束。
 - **新增工具三步 + 第四步文档同步**：`houtools/tools/<tool_id>.py`（暴露 `run()`）→ 两份菜单 XML 各加 `scriptItem`（scriptCode 仅 `import houtools.dev.dispatcher` + `_houtools_dispatcher.run("<tool_id>")` 两行）→ 重启 Houdini 一次让菜单出现；此后该工具代码迭代全部走 Reload 热加载。**第四步必做**：同步 README（工具列表 + 结构）、`docs/index.html`（对应 section + 左栏 nav + 轮播卡：窗口类优先在 `tests/gen_about_shots.py` 生成真实截图，否则 880×320 内联 SVG；右栏 TOC 由正文 `h3[id]` 派生，无需手写）、AGENTS.md（Where to Look 行），并在 `tests/test_about_sync.py` 的 `MENU_ITEM_TO_SECTION`（无菜单项的页面专有章节用 `PAGE_ONLY_SECTIONS`）登记新 `scriptItem`；改完跑 `python tests/test_about_sync.py`。
 - **视觉系统**：唯一 token 源 `houtools/ui/theme.py`（纯 Python 无 Qt）；QSS 经 `ui/qss.window_qss()` 拼接；共享组件在 `ui/components.py`。**新工具窗口必须**：根 objectName=`htWindow`、`fonts.apply(self)`、`setStyleSheet(qss.window_qss(...))`；**不要新增 BrandHeader/次级品牌顶栏（用户 2026-11 否决）**。按钮变体用 `btn.setProperty("htRole", "primary|ghost|danger")`，不写裸 hex；品牌字（钉钉进步体）只用于 docs/README 品牌资产；工具面板统一用 Alimama ShuHeiTi Bold，Recipe 文档用 FangYuanTi VF，Consolas 只给代码编辑器。改窗口视觉后重跑 `tests/gen_about_shots.py`（`hdr.png` 精修图固定保留、不重生成）；`tests/gen_brand_assets.py` 只生成 `docs/brand/houtools-wordmark.png`，README 头图 `houtools-banner.png` 是用户固定资产（1600×600，改图先改 `brand/houtools-banner.svg` 再重渲染压缩并 bump README `?v=N`），环境徽章走 shields.io 不本地生成。
 - **菜单栏标签一律英文/ASCII**（H22 菜单栏对中文渲染不可靠；右键菜单 OPmenu 同款——中文 label 条目行出现但文字不渲染）；工具窗口内部 UI 可用中文。
