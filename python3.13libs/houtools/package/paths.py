@@ -266,11 +266,13 @@ def asset_subdir(abs_path, hip_dir=""):
 def package_target(abs_path, prefix, hip_dir=""):
     """包内目标（Houdini 写法）：``<prefix>/assets/<子目录>/<文件名>``。
 
-    ``prefix`` 由调用方按**生成方式**算（这是最容易写错的地方）：
+    ``prefix`` 由调用方按**包根选项 + 生成方式**算（见
+    ``window._target_prefix``，2026-11-20 起前缀跟随包根）：
 
-    - 覆盖当前工程（hip 留在原地）：``$HIP/<包名>``（或 ``$JOB/<包名>``）；
-    - 另存到包目录（hip 存进包目录）：**``$HIP``**——保存后 hip 的 ``$HIP``
-      就是包目录，再带一层包名会多出一级目录、路径直接失效。
+    - 包根 ``$JOB`` → ``$JOB/<包名>``；自定义路径 → ``<路径>/<包名>``；
+    - 包根 ``$HIP`` + 覆盖当前工程 → ``$HIP/<包名>``；
+    - 包根 ``$HIP`` + 另存到包目录 → **只写 ``$HIP``**：hip 存进包目录后
+      会话的 ``$HIP`` 就是包目录，再带一层包名会多出一级目录、路径失效。
     """
     sub = asset_subdir(abs_path, hip_dir)
     tail = "/" + sub if sub else ""
@@ -363,6 +365,27 @@ def sanitize_pkg_name(text, default=PACKAGE_DIR):
     if stem in _RESERVED_NAMES:
         value = "pkg_" + value
     return value
+
+
+def target_prefix(root, save_copy, package_name, custom_base=""):
+    """打包后参数的前缀（Houdini 写法），按**包根选项**生成（纯函数）。
+
+    ``root`` ∈ ``{"HIP", "JOB", "CUSTOM"}``；``save_copy`` = 是否「另存到
+    包目录」。2026-11-20 用户拍板：不能一律写 ``$HIP``，包根选什么，
+    打包后参数就以什么开头。唯一例外是 ``$HIP`` + 另存——hip 存进包目录
+    后会话的 ``$HIP`` 就是包目录，必须**省略包名**，否则多一级目录。
+
+    - ``JOB`` → ``$JOB/<包名>``；``CUSTOM`` → ``<路径>/<包名>``；
+    - ``HIP`` + 另存 → ``$HIP``；``HIP`` + 覆盖 → ``$HIP/<包名>``。
+    """
+    if root == "CUSTOM":
+        base = (custom_base or "<自定义路径>").rstrip("/\\")
+        return "{}/{}".format(base, package_name)
+    if root == "JOB":
+        return "$JOB/{}".format(package_name)
+    if save_copy:
+        return "$HIP"
+    return "$HIP/{}".format(package_name)
 
 
 def zip_path_for(hip_path):

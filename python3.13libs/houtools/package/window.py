@@ -5,8 +5,9 @@
 1. **扫描**：遍历已启用节点上的文件参数，收外部引用 / 节点缓存 /
    `$HIP` 内相对引用——凡是场景真正用到的、磁盘上存在的文件；
 2. **预览**：逐行「节点 / 参数 / 参数现值 / 打包后参数值 / 状态」，可勾选；
-3. **打包**：后台线程把勾选的文件复制到 `<包根>/<包名>/assets/<展平源目录>/`，
-   完成后主线程改写成 `$HIP/…` 或 `$JOB/…`（帧模板 `$F4` 原样保留）；
+3. **打包**：后台线程把勾选的文件复制到 `<包根>/<包名>/<类型>/…`，
+   完成后主线程按**所选包根**改写参数（$HIP / $JOB / 自定义路径，
+   见 `_target_prefix`；帧模板 `$F4` 原样保留）；
 4. **生成方式**（二选一）：
    - **覆盖当前工程**：改写后保存当前 hip（文件仍在原地）；
    - **另存到包目录**（默认）：改写后另存为 `<包名>/<hip>_packed.hip`，
@@ -381,6 +382,12 @@ class PackageProjectWindow(QDialog):
         self._close_poll = None
         # 场景指纹：new/open 工程后窗口复用，指纹变化时清空上一工程残留
         self._scene_sig = None
+        # 勾选列批量操作：鼠标按下时记录选区快照（点框会改变 selection）
+        self._check_batch_rows = set()
+        # 切换工程轮询（parent=本窗口，随窗口销毁；1.2s 一拍，空闲才检查）
+        self._scene_poll = QTimer(self)
+        self._scene_poll.setInterval(1200)
+        self._scene_poll.timeout.connect(self._poll_scene)
 
         self._build_ui()
         self.setStyleSheet(STYLE_SHEET)
@@ -393,6 +400,7 @@ class PackageProjectWindow(QDialog):
         self._set_hint("点「扫描」收集当前工程用到的文件。")
         self._set_status("—")
         self._log("等待扫描…")
+        self._scene_poll.start()
 
     def _current_scene_sig(self):
         """当前场景指纹（未保存 / hip 路径）——new/open 后用于清空残留。"""
@@ -405,11 +413,13 @@ class PackageProjectWindow(QDialog):
         return paths.scene_signature(path, is_new)
 
     def _sync_scene(self):
-        """场景切换检测：new/open 工程后清空上一工程的日志与扫描结果。
+        """场景切换检测：工程切换完成后清空上一工程的表格/日志/扫描结果。
 
-        window_manager 让工具窗口跨工程复用；若不清理，用户 new 一个新工程
-        后仍看到上一工程的日志与引用列表（用户反馈）。这里在扫描前与显示时
-        比对指纹，变化则整体复位。worker 运行中不做，避免打断在跑的打包。
+        window_manager 让工具窗口跨工程复用；若不清理，用户打开另一个 hip
+        后仍看到上一工程的引用列表与路径（2026-11-20 用户实测反馈）。
+        触发时机：显示时、点扫描时、以及 `_scene_poll` 定时轮询（切工程
+        完成时窗口仍开着，光靠前两者不够）。worker 运行中不复位，避免打断
+        正在进行的复制/改写。
         """
         if self._active_worker() is not None:
             return
@@ -419,7 +429,9 @@ class PackageProjectWindow(QDialog):
             return
         if sig == self._scene_sig:
             return
+        previous = self._scene_sig
         self._scene_sig = sig
+        dropped = len(self._refs)
         self._refs = []
         self._targets = []
         self._plan = {}
@@ -427,11 +439,45 @@ class PackageProjectWindow(QDialog):
         self._conflicts = []
         self._checked = set()
         self._pack_session = None
+        self._hip_dir = ""
+        # 真正清掉表格里的旧行——之前只清了内部状态，界面仍显示上一工程
+        # 的「参数现值 / 打包后参数值」（用户反馈的根因）。
+        self._filling = True
+        self._table.setRowCount(0)
+        self._filling = False
         self._set_default_package_name()
         self._log_view.clear()
         self._set_hint("已切换工程：点「扫描」收集当前工程用到的文件。")
         self._set_status("—")
-        self._log("已切换工程，等待扫描…")
+        self._log("[信息] 检测到工程切换：{} → {}".format(
+            self._scene_label(previous), self._scene_label(sig)))
+        self._log("[信息] 已清空上一工程的 {} 条引用、复制计划、打包会话"
+                  "与包目录路径；zip 已失效，请重新点「扫描」。".format(dropped))
+
+    @staticmethod
+    def _scene_label(sig):
+        """场景指纹 → 可读文字（日志用）。"""
+        if not sig:
+            return "（未知）"
+        kind, path = sig
+        return "未保存的新工程" if kind == "new" else (path or "（空路径）")
+
+    def _poll_scene(self):
+        """`_scene_poll` 回调：窗口可见且空闲时比对场景指纹。
+
+        用窗口内 QTimer 而非 hou.hipFile 全局事件回调——后者在 Reload /
+        窗口销毁后会残留对已删除 Qt 对象的引用（RuntimeError）。QTimer 的
+        parent 是本窗口，随窗口一起销毁，零生命周期风险；「切换工程完成后」
+        由加载结束后的下一拍检测到，符合用户要求。
+        """
+        if not self.isVisible() or self._active_worker() is not None:
+            return
+        try:
+            self._sync_scene()
+        except Exception:
+            # Houdini 正在加载 hip 的瞬间 HOM 可能暂不可用；忽略这一拍，
+            # 下一拍（1.2s 后）再比，不要在 UI 事件循环里抛异常。
+            pass
 
     def _set_default_package_name(self, force=False):
         """包名默认取「工程名-pack」（用户要求）；已手改则不覆盖，除非 force。
@@ -503,11 +549,13 @@ class PackageProjectWindow(QDialog):
         self._save_copy_radio.setChecked(True)
         self._save_copy_radio.setToolTip(
             "包内生成 <hip>_packed.hip；磁盘上的原 hip 不会被改。"
-            "注意：保存后 hip 的 $HIP 就是包目录，所以参数写成 $HIP/assets/…")
+            "打包后参数按所选包根开头：$HIP → $HIP/…（不带包名，保存后 "
+            "$HIP 就是包目录）；$JOB → $JOB/<包名>/…；自定义路径 → <路径>/<包名>/…")
         self._overwrite_radio = QRadioButton("覆盖当前工程")
         self._overwrite_radio.setToolTip(
             "把改写后的结果保存回当前 hip（文件仍在原地，素材已进包目录），"
-            "参数写成 $HIP/<包名>/assets/… 或 $JOB/<包名>/assets/…")
+            "参数按所选包根开头：$HIP/<包名>/…、$JOB/<包名>/… "
+            "或 <自定义路径>/<包名>/…")
         self._save_copy_radio.toggled.connect(self._on_targets_changed)
         self._overwrite_radio.toggled.connect(self._on_targets_changed)
         mode_row.addWidget(self._save_copy_radio)
@@ -521,14 +569,22 @@ class PackageProjectWindow(QDialog):
             ["", "节点", "参数", "参数现值", "打包后参数值", "状态"])
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        # Windows 资源管理器风格多选（2026-11-20 用户拍板）：Ctrl 加选 /
+        # Shift 连选 / 拖拽框选；选中多行后点任一勾选框整批一起切换。
+        self._table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setAlternatingRowColors(True)
         self._table.itemChanged.connect(self._on_item_changed)
         self._table.setContextMenuPolicy(Qt.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._on_context_menu)
         self._table.doubleClicked.connect(self._on_row_activated)
-        # Ctrl+滚轮缩放表格字号（长分类/长路径看不清时放大，见 eventFilter）
+        self._table.horizontalHeader().sectionClicked.connect(
+            self._on_header_clicked)
+        # viewport 接鼠标（记录点勾选框时的选区快照 + Ctrl+滚轮缩放字号）；
+        # table 本身接键盘（空格 / Ctrl+A）。表格级 tooltip 仍不设——
+        # 用户反馈空白区弹 tooltip 干扰视线，说明改挂在「全选」按钮上。
         self._table.viewport().installEventFilter(self)
+        self._table.installEventFilter(self)
         # tooltip 只挂在具体单元项上（见 _fill_table）：鼠标停在打包项上才
         # 弹出操作说明，停在表格空白区域不再弹（用户反馈）。
         # H21 / PySide6 6.5 会把表头指针粘连成 QAbstractScrollArea 包装，
@@ -573,9 +629,15 @@ class PackageProjectWindow(QDialog):
         # 按钮
         btn_row = QHBoxLayout()
         self._select_all_btn = QPushButton("全选")
+        self._select_all_btn.setToolTip(
+            "勾选全部行。表格支持 Windows 文件夹式多选：Ctrl 加选 / "
+            "Shift 连选 / 拖拽框选，选中多行后点任一勾选框或按空格可整批"
+            "一起切换，Ctrl+A 全选行，右键可批量勾选/取消/反选，"
+            "点表头勾选列也能全选/全不选")
         self._select_all_btn.clicked.connect(lambda: self._set_all_checked(True))
         btn_row.addWidget(self._select_all_btn)
         self._clear_btn = QPushButton("清空")
+        self._clear_btn.setToolTip("取消勾选全部行")
         self._clear_btn.clicked.connect(lambda: self._set_all_checked(False))
         btn_row.addWidget(self._clear_btn)
         btn_row.addSpacing(16)
@@ -820,16 +882,22 @@ class PackageProjectWindow(QDialog):
             self._update_status()
 
     def _target_prefix(self):
-        """包内目标前缀——取决于生成方式（写错就多一层目录）。"""
-        if self._save_copy_radio.isChecked():
-            # hip 会存进包目录：保存后 $HIP 就是包目录，不能再带包名
-            return "$HIP"
+        """包内目标前缀——由「包根选项」决定，生成方式只影响是否带包名。
+
+        （2026-11-20 用户拍板：包根选 $HIP/$JOB/自定义路径，打包后参数就
+        得分别以 $HIP/$JOB/该路径开头，不能一律写 $HIP。）
+
+        - 包根 ``$JOB`` → ``$JOB/<包名>``；自定义路径 → ``<路径>/<包名>``：
+          包目录是 ``<包根>/<包名>``，两种生成方式都要带包名才指向包内。
+        - 包根 ``$HIP`` + 另存到包目录 → **不带包名**：hip 存进
+          ``<原 $HIP>/<包名>/`` 后，会话的 $HIP 就变成包目录，再带一层
+          包名会得到 ``<包目录>/<包名>/…``（多一级、读取不到）。
+        - 包根 ``$HIP`` + 覆盖当前工程 → ``$HIP/<包名>``（hip 不动）。
+        """
         root = self._root_var()
-        if root == "CUSTOM":
-            base = self._base_dir()
-            return "{}/{}".format(base, self._pkg_name()) if base \
-                else "<自定义路径>/{}".format(self._pkg_name())
-        return "${}/{}".format(root, self._pkg_name())
+        base = self._base_dir() if root == "CUSTOM" else ""
+        return paths.target_prefix(
+            root, self._save_copy_radio.isChecked(), self._pkg_name(), base)
 
     def _refresh_targets(self):
         prefix = self._target_prefix()
@@ -895,11 +963,58 @@ class PackageProjectWindow(QDialog):
         row = item.row()
         if row < 0 or row >= len(self._refs):
             return
-        if item.checkState() == Qt.Checked:
+        checked = item.checkState() == Qt.Checked
+        # Windows 文件夹语义：选中多行后点其中一行的勾选框，整批一起切换。
+        # 选区快照在鼠标按下时记录（点勾选框会改变 selection，不能在这里
+        # 读 selectionModel——那时通常只剩刚点的那一行）。
+        batch = getattr(self, "_check_batch_rows", None)
+        self._check_batch_rows = None
+        if batch and len(batch) > 1 and row in batch:
+            self._set_rows_checked(batch, checked)
+            return
+        if checked:
             self._checked.add(row)
         else:
             self._checked.discard(row)
         self._update_status()
+
+    def _selected_rows(self):
+        """当前选中的行号集合（ExtendedSelection 下可多行）。"""
+        model = self._table.selectionModel()
+        if model is None:
+            return set()
+        return {index.row() for index in model.selectedIndexes()
+                if 0 <= index.row() < self._table.rowCount()}
+
+    def _set_rows_checked(self, rows, checked):
+        """批量设置勾选状态；_filling 屏蔽 itemChanged 避免逐行回灌。"""
+        self._filling = True
+        for row in rows:
+            if row < 0 or row >= len(self._refs):
+                continue
+            cell = self._table.item(row, _COL_CHECK)
+            if cell is not None:
+                cell.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+            if checked:
+                self._checked.add(row)
+            else:
+                self._checked.discard(row)
+        self._filling = False
+        self._update_status()
+
+    def _toggle_selected_rows(self):
+        """空格键：选中行全勾则整批取消，否则整批勾选（Windows 语义）。"""
+        rows = self._selected_rows()
+        if not rows:
+            return
+        self._set_rows_checked(rows, not rows.issubset(self._checked))
+
+    def _on_header_clicked(self, section):
+        """点表头勾选列：全选 / 全不选（Windows 详细信息视图的表头复选框）。"""
+        if section != _COL_CHECK:
+            return
+        rows = set(range(self._table.rowCount()))
+        self._set_rows_checked(rows, not rows.issubset(self._checked))
 
     def _set_all_checked(self, checked):
         self._checked = set(range(len(self._refs))) if checked else set()
@@ -956,13 +1071,41 @@ class PackageProjectWindow(QDialog):
     def _on_context_menu(self, pos):
         index = self._table.indexAt(pos)
         ref = self._ref_at(index)
-        if ref is None:
+        rows = self._selected_rows()
+        if not rows:
             return
         menu = QMenu(self)
-        menu.addAction("跳转到节点", lambda: self._jump_to_node(ref))
-        menu.addAction("在资源管理器中打开原路径",
-                       lambda: self._reveal_source(ref))
+        label = "所选 {} 项".format(len(rows)) if len(rows) > 1 else "该项"
+        menu.addAction("勾选" + label,
+                       lambda: self._set_rows_checked(rows, True))
+        menu.addAction("取消勾选" + label,
+                       lambda: self._set_rows_checked(rows, False))
+        menu.addAction("反选" + label,
+                       lambda: self._invert_rows(rows))
+        if ref is not None:
+            menu.addSeparator()
+            menu.addAction("跳转到节点", lambda: self._jump_to_node(ref))
+            menu.addAction("在资源管理器中打开原路径",
+                           lambda: self._reveal_source(ref))
         menu.exec(self._table.viewport().mapToGlobal(pos))
+        menu.deleteLater()
+
+    def _invert_rows(self, rows):
+        """反选指定行（右键批量操作）。"""
+        self._filling = True
+        for row in rows:
+            if row < 0 or row >= len(self._refs):
+                continue
+            checked = row not in self._checked
+            cell = self._table.item(row, _COL_CHECK)
+            if cell is not None:
+                cell.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+            if checked:
+                self._checked.add(row)
+            else:
+                self._checked.discard(row)
+        self._filling = False
+        self._update_status()
 
     # ---- 表格字号缩放（Ctrl+滚轮，仅本窗口会话内生效） ----
     _FONT_MIN_PT = 7
@@ -984,13 +1127,31 @@ class PackageProjectWindow(QDialog):
         self._set_hint("表格字号：{}pt（7–24，Ctrl+滚轮或右键调整）".format(pt))
 
     def eventFilter(self, obj, event):  # noqa: N802 — Qt 命名约定
-        if obj is self._table.viewport() and event.type() == QEvent.Wheel \
-                and event.modifiers() & Qt.ControlModifier:
-            delta = event.angleDelta().y()
-            if delta:
-                self._set_table_pt(self._table_pt() +
-                                   (1 if delta > 0 else -1))
-            return True
+        if obj is self._table.viewport():
+            if event.type() == QEvent.Wheel \
+                    and event.modifiers() & Qt.ControlModifier:
+                delta = event.angleDelta().y()
+                if delta:
+                    self._set_table_pt(self._table_pt() +
+                                       (1 if delta > 0 else -1))
+                return True
+            # 点勾选框「按下」时先记下选区：Qt 会在点击时把 selection 收
+            # 到当前行，itemChanged 触发时再读就只剩一行了。
+            if event.type() == QEvent.MouseButtonPress \
+                    and event.button() == Qt.LeftButton:
+                hit = self._table.indexAt(event.pos())
+                self._check_batch_rows = (
+                    self._selected_rows()
+                    if hit.isValid() and hit.column() == _COL_CHECK else set())
+            return super().eventFilter(obj, event)
+        if obj is self._table and event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Space:
+                self._toggle_selected_rows()
+                return True
+            if event.key() == Qt.Key_A \
+                    and event.modifiers() & Qt.ControlModifier:
+                self._table.selectAll()
+                return True
         return super().eventFilter(obj, event)
 
     def _jump_to_node(self, ref):
@@ -1085,14 +1246,14 @@ class PackageProjectWindow(QDialog):
         mode_text = ("另存到包目录（原工程不动）" if self._save_copy_radio.isChecked()
                      else "覆盖当前工程")
         root_label = {"HIP": "$HIP", "JOB": "$JOB"}.get(root, base)
-        # 另存模式前缀固定 $HIP、覆盖模式 $HIP/$JOB 是变量写法，都随包可移植；
-        # 覆盖模式 + 自定义包根只能写绝对路径——明确告诉用户不随包移植，
-        # 不再一律说"相对路径"误导（2026-11-19 接手审查发现）。
-        if self._save_copy_radio.isChecked() or root != "CUSTOM":
-            path_text = "改写 {} 个参数为 {} 下的相对路径".format(
+        # 2026-11-20 用户拍板：前缀一律跟随包根选项，不再"另存模式固定 $HIP"。
+        # $HIP/$JOB 是变量写法（随包可移植），自定义包根只能写绝对路径——
+        # 明确告诉用户不随包移植，不一律说"相对路径"误导。
+        if root == "CUSTOM":
+            path_text = "改写 {} 个参数为绝对路径（{} 下，不随包移植）".format(
                 len(refs), root_label)
         else:
-            path_text = "改写 {} 个参数为绝对路径（{} 下，不随包移植）".format(
+            path_text = "改写 {} 个参数为 {} 下的相对路径".format(
                 len(refs), root_label)
         if not dialogs.question(
                 self, "打包工程",
@@ -1253,7 +1414,13 @@ class PackageProjectWindow(QDialog):
         return rewritten, failures, skipped
 
     def _save_scene(self, base, pkg):
-        """按所选方式保存；返回 (保存后的路径, 错误文本)。"""
+        """按所选方式保存；返回 (保存后的路径, 错误文本)。
+
+        另存模式会把会话切到 `<包>/<hip>_packed.hip`（hipFile.path 变化），
+        必须同步 `_scene_sig`：否则 `_scene_poll` 会把这次打包内部产生的
+        save-as 误判成「用户切换工程」，清空列表 + 作废 `_pack_session`，
+        导致紧接着的「生成 zip」不可用。
+        """
         import hou
 
         try:
@@ -1263,8 +1430,10 @@ class PackageProjectWindow(QDialog):
                 target = os.path.join(base, pkg, stem + "_packed.hip")
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 hou.hipFile.save(file_name=target, save_to_recent_files=False)
+                self._scene_sig = self._current_scene_sig()
                 return target, None
             hou.hipFile.save()
+            self._scene_sig = self._current_scene_sig()
             return hou.hipFile.path(), None
         except Exception as exc:                  # 原因回结果面板展示
             # 失败反馈不打控制台：结果面板已含原因（houtools 日志器 DEBUG

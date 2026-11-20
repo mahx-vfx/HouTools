@@ -5429,6 +5429,19 @@ def main():
         == "$HIP/assets/D_proj_tex/a.jpg"
     assert pkg_paths.zip_path_for("C:/hip/shot.hip").endswith(
         "shot_package.zip")
+    # 2026-11-20 用户拍板：打包后参数前缀跟随包根选项，不再一律 $HIP。
+    # 唯一例外：$HIP + 另存（hip 存进包目录后 $HIP 就是包目录，不能带包名）。
+    assert pkg_paths.target_prefix("HIP", False, "pack") == "$HIP/pack"
+    assert pkg_paths.target_prefix("HIP", True, "pack") == "$HIP"
+    assert pkg_paths.target_prefix("JOB", False, "pack") == "$JOB/pack"
+    assert pkg_paths.target_prefix("JOB", True, "pack") == "$JOB/pack"
+    assert pkg_paths.target_prefix("CUSTOM", False, "pack", "D:/packs") == \
+        "D:/packs/pack"
+    assert pkg_paths.target_prefix("CUSTOM", True, "pack", "D:/packs") == \
+        "D:/packs/pack"
+    assert pkg_paths.target_prefix("CUSTOM", False, "pack") == \
+        "<自定义路径>/pack"
+    print("package target prefix OK")
 
     # POSIX 形态绝对路径（Windows 上 os.path.isabs 返 False、Houdini 视为
     # 绝对——同 filecache_abs_path._is_abs 的兼容语义）
@@ -5578,6 +5591,43 @@ def main():
         _pkg_win._table.item(0, 5).text()
     assert _pkg_win._table.item(1, 5).text() == "缓存缺失", \
         _pkg_win._table.item(1, 5).text()
+
+    # ---- 2026-11-20 用户反馈 4 项 ----
+    # ② Windows 文件夹式多选：ExtendedSelection + 批量勾选/取消/反选
+    from PySide6.QtCore import Qt as _PkgQt
+    assert _pkg_win._table.selectionMode() == \
+        _QtW.QAbstractItemView.ExtendedSelection
+    _pkg_win._set_rows_checked({0, 1}, True)
+    assert _pkg_win._checked == {0, 1}
+    assert all(_pkg_win._table.item(r, 0).checkState() == _PkgQt.Checked
+               for r in (0, 1))
+    _pkg_win._set_rows_checked({0}, False)
+    assert _pkg_win._checked == {1}
+    # 空格/表头：选区全勾则整批取消，否则整批勾选
+    _pkg_win._table.selectAll()
+    _pkg_win._toggle_selected_rows()
+    assert _pkg_win._checked == {0, 1}
+    _pkg_win._on_header_clicked(0)       # 全勾 → 全不选
+    assert _pkg_win._checked == set()
+    _pkg_win._on_header_clicked(0)        # 全不选 → 全勾
+    assert _pkg_win._checked == {0, 1}
+    _pkg_win._invert_rows({0})
+    assert _pkg_win._checked == {1}
+    print("package multi-select OK")
+
+    # ④ 切换工程后必须真正清掉表格行，并在日志打印相关信息
+    _pkg_win._scene_sig = ("hip", "d:/old/old.hip")
+    _pkg_win._current_scene_sig = lambda: ("hip", "d:/new/new.hip")
+    _pkg_win._sync_scene()
+    assert _pkg_win._table.rowCount() == 0, "切工程后表格行未清空"
+    assert _pkg_win._refs == [] and _pkg_win._checked == set()
+    assert _pkg_win._pack_session is None and _pkg_win._hip_dir == ""
+    _scene_log = _pkg_win._log_view.toPlainText()
+    assert "工程切换" in _scene_log and "old.hip" in _scene_log \
+        and "new.hip" in _scene_log and "2 条引用" in _scene_log, _scene_log
+    assert _pkg_win._scene_poll.isActive(), "场景轮询定时器未启动"
+    print("package scene switch reset OK")
+
     _pkg_win._refs = []
     _pkg_win._targets = []
     # worker 类可无头构造（不 start）：协作式取消标志就位
@@ -5923,6 +5973,68 @@ def main():
     assert "已改名" in _log_text and "复制 1/1" in _log_text
     assert "tex/a.jpg" in _log_text
     print("package log text OK")
+
+    # ③ filecache 参数现值：raw 保留 `$HIP/geo` 写法，扫描路径仍用绝对路径
+    # （2026-11-20 用户反馈：明明填的是 $HIP/$JOB，列表却显示绝对路径）
+    class _FCPkgParm:
+        def __init__(self, value, raw):
+            self._value, self._raw = value, raw
+
+        def evalAsString(self):
+            return self._value
+
+        def unexpandedString(self):
+            return self._raw
+
+        def keyframes(self):
+            return ()
+
+        def name(self):
+            return "basedir"
+
+    class _FCPkgNode:
+        def parm(self, name):
+            if name == "sopoutput":
+                return _FCPkgParm("D:/hip/geo/v1/cache.0018.bgeo.sc", "")
+            return _FCPkgParm("$HIP/geo", "$HIP/geo")
+
+        def path(self):
+            return "/obj/geo1/filecache1"
+
+    class _FCPkgHouText:
+        @staticmethod
+        def expandString(value):
+            return value.replace("$HIP", "D:/hip").replace("$JOB", "D:/job")
+
+    class _FCPkgHou:
+        text = _FCPkgHouText
+
+    _fc_saved = sys.modules.get("hou")
+    sys.modules["hou"] = _FCPkgHou
+    try:
+        _fc_cand, _fc_reason = pkg_collect._gather_filecache(
+            _FCPkgNode(), _FCPkgNode().parm("basedir"), False)
+    finally:
+        if _fc_saved is None:
+            sys.modules.pop("hou", None)
+        else:
+            sys.modules["hou"] = _fc_saved
+    assert _fc_reason is None and _fc_cand is not None
+    assert _fc_cand.raw == "$HIP/geo", _fc_cand.raw
+    assert _fc_cand.abs_path.endswith("cache.0018.bgeo.sc"), _fc_cand.abs_path
+    assert _fc_cand.basedir == os.path.normpath("D:/hip/geo"), \
+        _fc_cand.basedir
+    assert _fc_cand.rewrite_dir is True
+    # 日志里同时保留「源($HIP 写法)」与「扫描(绝对路径)」，可排查不丢信息
+    _fc_log = pkg_collect.build_package_log(
+        refs=[pkg_collect.Ref(kind="output", node_path="/obj/geo1/filecache1",
+                              parm_name="basedir", raw="$HIP/geo",
+                              abs_path="D:/hip/geo/v1/cache.0018.bgeo.sc",
+                              rewrite_dir=True)],
+        plan={}, targets=["$HIP/geo"], stats="", package_dir="C:/pkg",
+        package_name="pack", mode_text="", prefix="$HIP")
+    assert "源: $HIP/geo" in _fc_log and "扫描: D:/hip/geo" in _fc_log, _fc_log
+    print("package filecache display raw OK")
 
     # 分类布局：目标进官方目录、无 assets 层、复制与改写目标一致
     _cat_targets, _cat_plan, _cat_notes, _cat_conflicts = \

@@ -64,7 +64,7 @@ class Ref:
     kind: str                  # "input" / "output"
     node_path: str
     parm_name: str             # 要改写的参数（filecache 是 basedir）
-    raw: str                   # 展示用原始值（filecache 用真实输出路径）
+    raw: str                   # 展示用原始值（filecache 用 basedir 的 $HIP/$JOB 写法）
     abs_path: str = ""         # 具体文件；序列则为模板路径（含帧 token）
     token: str = ""            # 序列模板的帧 token（$F4 / <UDIM> / ...）
     files: list = field(default_factory=list)   # 实际存在的文件（绝对路径）
@@ -317,11 +317,15 @@ def _gather_filecache(node, parm, include_output):
         basedir_raw = parm.unexpandedString()
     except Exception:
         basedir_raw = parm.evalAsString()
+    # 参数现值展示用 basedir 的**原始写法**（`$HIP/geo` / `$JOB/...`），
+    # 不是 sopoutput 展开后的绝对路径——用户看表格「参数现值」列时，
+    # 要能认出自己在 Houdini 里填的写法（2026-11-20 实测反馈）。
+    # 注意：raw 只用于展示；扫描/复制一律走 expanded / abs_path / basedir。
     return Candidate(
         kind="output",
         node_path=node.path(),
         parm_name=parm.name(),
-        raw=produced,
+        raw=basedir_raw or produced,
         expanded=produced,
         abs_path=produced,
         token=token,
@@ -585,6 +589,10 @@ def build_package_log(refs, plan, targets, stats, package_dir, package_name,
         lines.append("  [{:>3}] {:<8} {}:{}".format(
             index + 1, ref.kind, ref.node_path, ref.parm_name))
         lines.append("         源: {}".format(ref.raw))
+        # filecache 等目录参数：raw 是 `$HIP/geo` 写法，另列实际扫描到的
+        # 绝对路径，便于排查帧序列 glob 是否命中（不影响参数现值展示）。
+        if getattr(ref, "rewrite_dir", False) and getattr(ref, "abs_path", ""):
+            lines.append("         扫描: {}".format(ref.abs_path))
         lines.append("         目标: {}".format(target))
     lines.append("-" * 60)
     lines.append(" 复制计划（共 {} 个文件，按来源目录聚合）:".format(len(plan)))
