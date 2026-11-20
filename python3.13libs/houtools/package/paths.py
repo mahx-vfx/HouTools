@@ -191,21 +191,57 @@ def default_package_name(hip_path, suffix="-pack"):
     return sanitize_pkg_name(stem + suffix) if stem else PACKAGE_DIR
 
 
-def job_is_default(job_value, hip_value):
-    """$JOB 是否处于"默认值"——未设置、展开成自身、或与 $HIP 相同。
+def job_is_default(job_value, hip_value, home_value=""):
+    """$JOB 是否"未设置/处于默认值"——需要回退到 $HIP 的情形。
 
-    Houdini 空工程里 $JOB 常与 $HIP 相同（或没设置时展开成字面 ``$JOB``）。
-    此时把包根目录默认当成项目根是不安全的，窗口据此弹提醒；用户仍可选择
-    继续打包到该默认路径。
+    Houdini 未显式设置 ``JOB`` 环境变量时，``hou.text.expandString("$JOB")``
+    **不会**返回字面 ``$JOB``，而是回退到 ``$HOME``（Windows 上是
+    ``C:\\Users\\<用户名>``）。旧版只判断"空 / 字面 $JOB / 等于 $HIP"，
+    漏掉了这个最常见的情形——用户选 $JOB 却把包静默打到了 C 盘用户名下
+    （2026-11-20 用户实测反馈）。
+
+    ``home_value`` 传 ``hou.text.expandString("$HOME")``；为空时忽略这一条。
+    返回 True 表示 $JOB 不可信，窗口应把实际包根回退到 $HIP（当前工程
+    所在文件夹），并弹提醒说明。
     """
     job = (job_value or "").strip().strip('"')
     hip = (hip_value or "").strip().strip('"')
+    home = (home_value or "").strip().strip('"')
     if not job or job == "$JOB":
         return True
     if hip and os.path.normcase(os.path.normpath(job)) == \
             os.path.normcase(os.path.normpath(hip)):
         return True
+    # 未设置 JOB 时 Houdini 回退到 $HOME（用户主目录），必须识别
+    if home and os.path.normcase(os.path.normpath(job)) == \
+            os.path.normcase(os.path.normpath(home)):
+        return True
     return False
+
+
+def is_builtin_ref(raw):
+    """参数原始写法是否指向 Houdini 安装目录（``$HH`` / ``$HFS``）。
+
+    ``$HH`` = ``$HFS/houdini``，展开后是安装目录里的内置资源
+    （如 ``$HH/geo/defgeo.bgeo`` 默认几何体），**不是用户工程素材**。
+    这类引用按用户要求仍列在打包列表里（可见、由勾选决定是否打包），
+    但状态列要标「内置」，避免把它当成需要搬运的工程文件。
+    """
+    value = (raw or "").strip().strip('"').lower()
+    return value.startswith(("$hh/", "${hh}", "$hfs/", "${hfs}"))
+
+
+def resolve_job_root(job_value, hip_value, home_value=""):
+    """（实际包根, 是否发生回退, 回退原因）——$JOB 不可信时回退 $HIP。
+
+    2026-11-20 用户拍板：「job 和 hip 都打包到当前工程所在文件夹」。
+    $JOB 未设置/处于默认值时，实际包根用 $HIP；参数前缀仍按用户所选的
+    包根选项写（见 ``target_prefix``），两者由 Houdini 变量解析对齐。
+    """
+    if job_is_default(job_value, hip_value, home_value):
+        reason = "未设置 $JOB（展开为 $HOME 或与 $HIP 相同），已回退到 $HIP"
+        return (hip_value or "").strip().strip('"'), True, reason
+    return (job_value or "").strip().strip('"'), False, ""
 
 
 def scene_signature(hip_path, is_new_file):

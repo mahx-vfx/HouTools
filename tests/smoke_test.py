@@ -5592,6 +5592,64 @@ def main():
     assert _pkg_win._table.item(1, 5).text() == "缓存缺失", \
         _pkg_win._table.item(1, 5).text()
 
+    # 内置引用（$HH/$HFS）状态列标「内置」，仍可勾选、仍显示原始写法
+    _pkg_win._refs = [pkg_collect.Ref(
+        kind="input", node_path="/obj/ocean/geo1", parm_name="geometrydef",
+        raw="$HH/geo/defgeo.bgeo", abs_path="C:/HFS/houdini/geo/defgeo.bgeo",
+        files=["C:/HFS/houdini/geo/defgeo.bgeo"], builtin=True)]
+    _pkg_win._targets = ["$HIP/geo/defgeo.bgeo"]
+    _pkg_win._fill_table()
+    app.processEvents()
+    assert _pkg_win._table.item(0, 5).text().startswith("内置 · "), \
+        _pkg_win._table.item(0, 5).text()
+    assert _pkg_win._table.item(0, 3).text() == "$HH/geo/defgeo.bgeo"
+    _pkg_win._update_status()
+    assert "内置 1 个" in _pkg_win._hint_label.text(), \
+        _pkg_win._hint_label.text()
+    print("package builtin ref label OK")
+
+    # $JOB 未设置（展开成 $HOME）→ 包根与参数前缀都回退到 $HIP
+    class _JobHouText:
+        _map = {"$JOB": "C:/Users/zhouhaibin", "$HIP": "D:/proj/shot",
+                "$HOME": "C:/Users/zhouhaibin"}
+
+        @staticmethod
+        def expandString(var):
+            return _JobHouText._map.get(var, var)
+
+    class _JobHou:
+        text = _JobHouText
+
+    _job_saved = sys.modules.get("hou")
+    sys.modules["hou"] = _JobHou
+    try:
+        _pkg_win._root_combo.setCurrentIndex(1)     # $JOB
+        assert _pkg_win._base_dir() == os.path.normpath("D:/proj/shot"), \
+            _pkg_win._base_dir()
+        assert _pkg_win._job_fallback()[0] is True
+        assert _pkg_win._target_prefix().startswith("$HIP"), \
+            _pkg_win._target_prefix()
+        assert not _pkg_win._target_prefix().startswith("$JOB"), \
+            "回退后参数前缀必须同步按 $HIP，否则包内路径失效"
+        _pkg_win._root_combo.setCurrentIndex(0)      # 还原 $HIP
+    finally:
+        if _job_saved is None:
+            sys.modules.pop("hou", None)
+        else:
+            sys.modules["hou"] = _job_saved
+    print("package JOB fallback OK")
+
+    # 恢复成 2 条 fixture，供下面多选/切场景断言使用
+    _pkg_win._refs = [pkg_collect.Ref(
+        kind="input", node_path="/obj/a", parm_name="file",
+        raw="a.jpg", abs_path="D:/p/a.jpg", files=["D:/p/a.jpg"],
+        in_hip=True),
+        pkg_collect.Ref(kind="output", node_path="/obj/b", parm_name="picture",
+                        raw="b.$F4.exr", abs_path="D:/p/b.$F4.exr", files=[])]
+    _pkg_win._targets = ["$HIP/tex/a.jpg", "$HIP/render/b.$F4.exr"]
+    _pkg_win._fill_table()
+    app.processEvents()
+
     # ---- 2026-11-20 用户反馈 4 项 ----
     # ② Windows 文件夹式多选：ExtendedSelection + 批量勾选/取消/反选
     from PySide6.QtCore import Qt as _PkgQt
@@ -5907,11 +5965,28 @@ def main():
     assert pkg_paths.default_package_name("") == "ht_package"
     print("package default name OK")
 
-    # $JOB 默认值检测
+    # $JOB 默认值检测（2026-11-20 补：未设置时 Houdini 展开成 $HOME，
+    # 旧版漏判导致选 $JOB 却把包打到 C 盘用户名下）
     assert pkg_paths.job_is_default("", "C:/hip")
     assert pkg_paths.job_is_default("$JOB", "C:/hip")
     assert pkg_paths.job_is_default("C:/hip", "C:/hip")
-    assert not pkg_paths.job_is_default("D:/projects/main", "C:/hip")
+    assert pkg_paths.job_is_default(
+        "C:/Users/zhouhaibin", "D:/proj/shot", home_value="C:/Users/zhouhaibin")
+    assert not pkg_paths.job_is_default(
+        "D:/projects/main", "C:/hip", home_value="C:/Users/zhouhaibin")
+    # 回退：未设置 → 用 $HIP（当前工程所在文件夹）
+    _actual, _fallback, _reason = pkg_paths.resolve_job_root(
+        "C:/Users/zhouhaibin", "D:/proj/shot", "C:/Users/zhouhaibin")
+    assert _actual == "D:/proj/shot" and _fallback is True
+    assert "回退" in _reason
+    _actual2, _fallback2, _ = pkg_paths.resolve_job_root(
+        "D:/projects/main", "C:/hip", "C:/Users/zhouhaibin")
+    assert _actual2 == "D:/projects/main" and _fallback2 is False
+    # 内置引用识别（$HH/$HFS = Houdini 安装目录，非工程素材）
+    assert pkg_paths.is_builtin_ref("$HH/geo/defgeo.bgeo")
+    assert pkg_paths.is_builtin_ref("${HFS}/houdini/geo/x.bgeo")
+    assert not pkg_paths.is_builtin_ref("$HIP/geo/x.bgeo")
+    assert not pkg_paths.is_builtin_ref("D:/proj/geo/x.bgeo")
     print("package job default OK")
 
     # 场景指纹：new/open 后变化，重开同一工程不变

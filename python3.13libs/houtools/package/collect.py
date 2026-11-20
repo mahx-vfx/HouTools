@@ -72,6 +72,7 @@ class Ref:
     absolute_raw: bool = False  # 参数本身是绝对路径或 $VAR 写法
     rewrite_dir: bool = False  # True = 改的是目录参数（filecache basedir）
     basedir: str = ""          # rewrite_dir 时的目录绝对路径
+    builtin: bool = False      # $HH/$HFS 内置引用（Houdini 安装目录资源）
 
     @property
     def is_sequence(self):
@@ -107,6 +108,7 @@ class Candidate:
     absolute_raw: bool = False
     rewrite_dir: bool = False
     basedir: str = ""
+    builtin: bool = False
 
 
 def _hou():
@@ -332,6 +334,7 @@ def _gather_filecache(node, parm, include_output):
         absolute_raw=paths.needs_packaging(basedir_raw),
         rewrite_dir=True,
         basedir=basedir,
+        builtin=paths.is_builtin_ref(basedir_raw),
     ), None
 
 
@@ -419,6 +422,7 @@ def _gather_ref(node, parm, include_output=False):
         abs_path=abs_path,
         token=token,
         absolute_raw=paths.needs_packaging(raw),
+        builtin=paths.is_builtin_ref(raw),
     ), None
 
 
@@ -483,6 +487,7 @@ def resolve(candidates, hip_dir, include_output=False, should_cancel=None):
             absolute_raw=cand.absolute_raw,
             rewrite_dir=cand.rewrite_dir,
             basedir=cand.basedir if cand.rewrite_dir else "",
+            builtin=cand.builtin,
         ))
     return refs, skip_stats
 
