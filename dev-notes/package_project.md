@@ -92,9 +92,10 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
   的自动加 `_2/_3`，复制目标和参数改写目标共用这份映射——不会再静默覆盖。
 
 - **包根**：`$HIP`（默认）、`$JOB`、**自定义绝对路径**。
-  **`$JOB` 未显式设置时，打包前弹窗要求指定/创建 JOB 目录**（2026-11-20
-  二次反馈，详见下节），不再静默回退 `$HIP`；指定后用 `hou.putenv` 把会话
-  `$JOB` 指向该目录，参数仍写 `$JOB/<包名>/…`。
+  **选 `$JOB` 打包时，每个会话首次必弹窗确认实际目录**（2026-11-20
+  三次反馈，详见下节）：落在默认目录就要求指定/创建 JOB 目录，不再静默
+  回退 `$HIP`；指定后用 `hou.putenv` 把会话 `$JOB` 指向该目录，参数仍写
+  `$JOB/<包名>/…`。
 - **包名**：默认取 **工程名 + `-pack`**（如 `shot_v001-pack`，无 hou/未保存时
   回落 `ht_package`），可改；**用户输入必须过 `paths.sanitize_pkg_name`**——
   包名直接进 `os.path.join(base, pkg, ...)`，不净化的话 `..`、含 `/` 的输入会
@@ -189,9 +190,9 @@ C 盘用户名下，上一版「自动回退 `$HIP`」没有生效。
 - 确定后 `hou.putenv("JOB", path)` 让**会话** `$JOB` 真正指向该目录，参数
   继续写 `$JOB/<包名>/…`，包根与前缀同源；取消则中止打包，不复制不改写。
 - 判定：`paths.job_is_default(job, hip, home, cwd, env)` 把 `$HIP`/`$HOME`/
-  CWD 一起纳入比较；`os.environ["JOB"]` 非空且绝对时视为用户显式设置、
-  直接信任。`resolve_job_root()` 未设置时返回 `(空串, True, 原因)`，
-  **不再返回 `$HIP`**。
+  CWD 一起纳入比较（**三次反馈已删除 `os.environ["JOB"]` 免检并扩容默认
+  锚点，见下一节**）。`resolve_job_root()` 未设置时返回
+  `(空串, True, 原因)`，**不再返回 `$HIP`**。
 - 窗口：`_ensure_job_root()` 在 `_on_apply` 开头调用；`_job_override` 记住
   本次会话指定的路径（窗口 Reload 重建后由**模块级 `_JOB_OVERRIDE`**（NameError
   守卫活过热重载，同 `_LIVE_WORKERS`）兜底——否则 JOB 目录恰好等于 `$HIP`
@@ -201,11 +202,43 @@ C 盘用户名下，上一版「自动回退 `$HIP`」没有生效。
 - **物理约束**：参数写 `$JOB/<包名>/…` 的前提是会话 `$JOB` 真的指向包根；
   只把文件放到别的目录而不 `putenv`，打包后参数会解析到 `$HOME`，路径失效。
 - **若用户后续显式设置了 JOB**（`houdini.env` 里 `JOB = D:/projects/main`），
-  `os.environ` 有值 → 直接信任，不再弹窗，包根与参数都按 `$JOB/<包名>/…`。
-- **缓存目录行色**（同轮第二项反馈）：`_fill_table()` 的 `rewrite_dir`
-  分支此前恒用 `TEXT`，让 `$HIP/geo` 的 basedir 行和包外素材一样亮；现按
-  `in_hip` 弱化（`TEXT_3`）并在状态列加「$HIP 内 · 」前缀，冒烟固化两种
-  分支的文案与前景色。
+  会话首次打包仍会弹一次确认（见下一节），点「使用当前 $JOB」后本会话
+  不再打扰，包根与参数都按 `$JOB/<包名>/…`。
+- **缓存目录行色**（同轮第二项反馈，真机已确认生效）：`_fill_table()` 的
+  `rewrite_dir` 分支此前恒用 `TEXT`，让 `$HIP/geo` 的 basedir 行和包外
+  素材一样亮；现按 `in_hip` 弱化（`TEXT_3`）并在状态列加「$HIP 内 · 」
+  前缀，冒烟固化两种分支的文案与前景色。
+
+## 三次反馈：会话首次确认 + 删除 env 免检（2026-11-20 23:33）
+
+**现象**：第二轮的三选一弹窗**根本没出现**，确认弹窗照旧显示
+`C:\Users\zhouhaibin\cccc-pack`，参数仍写「$JOB 下的相对路径」；同时
+2/3/4 行已变暗并标「$HIP 内 · 缓存目录」，说明新代码确实加载了。
+
+**根因**：`paths.job_is_default()` 里有一句「`os.environ["JOB"]` 非空且是
+绝对路径 → 认定用户显式设置过，直接免检」。**Houdini GUI 会把默认 JOB
+（= `$HOME`）注入进程环境**，`os.environ["JOB"]` 因而非空且绝对，短路
+命中 → `needs=False` → `_ensure_job_root()` 提前返回 True，三选一整段
+被跳过。hython 里 `os.environ["JOB"]` 是空的，所以 headless 冒烟没复现，
+只有真机暴露。这已经是第二次栽在「猜默认值」上。
+
+**修复（不再依赖猜测）**：
+
+- `paths.default_job_roots()` 汇总默认目录锚点：`$HIP`、`$HOME`、CWD、
+  `os.path.expanduser("~")`、`USERPROFILE`、`HOME` 环境变量、
+  `HOMEDRIVE+HOMEPATH`，以及调用方补的 `hou.getenv("HOME")`。
+  `job_is_default(..., env, extra_defaults)` **删掉 env 免检**，`env_value`
+  只为兼容调用点保留、不参与判定，一律以 `$JOB` 的实际展开值为准。
+- **硬兜底：选 `$JOB` 打包时每个会话首次无条件弹窗确认**，弹窗直接写出
+  `$JOB` 当前展开值，用户一眼能看出是不是 C 盘用户名目录：
+  - 判定为默认目录 → 三选一「选择已有目录… / 创建 JOB 目录… / 取消」；
+  - 判定为正常目录 → 四选一「使用当前 $JOB / 选择已有目录… /
+    创建 JOB 目录… / 取消」，点第一项后本会话不再打扰（模块级
+    `_JOB_CONFIRMED`，NameError 守卫活过 Reload）。
+- **确认弹窗新增「$JOB 当前 = <绝对路径>」一行**，不再只写「$JOB 下的
+  相对路径」，避免用户看不出变量实际解析到哪里。
+- 冒烟固化三条回归：env 注入默认值仍判 `needs=True`、会话首次即使
+  `needs=False` 也弹确认、「使用当前」后二次打包不再弹。
 
 **坑：包根下拉项的 userData 不能被提示文字覆盖。** `setItemData(index, text)`
 默认写 `Qt.UserRole`，会把 `addItem("$JOB", "JOB")` 存的 `"JOB"` 换成提示文字，
@@ -325,10 +358,10 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
 - 不做贴图转码/降分辨率；不处理 unlocked HDA 内部参数的导出问题。
 - `$F` 之外的帧写法（`%04d`）不识别；UDIM 只识别 `<UDIM>`（4 位 Tile），
   `<UVTILE>`（u1_v1）暂不支持。
-- `$JOB` 若未显式设置，打包前会弹窗要求指定/创建目录并临时 `hou.putenv`；
-  该设置**只对当前 Houdini 会话有效**，重启后需在 `houdini.env` 写
-  `JOB = <路径>`，否则已打包的 `$JOB/…` 参数会解析回 `$HOME`。工具不自动改
-  `houdini.env`。
+- 选 `$JOB` 打包时**每个会话首次都会弹窗确认实际目录**；落在默认目录则
+  必须指定/创建（工具临时 `hou.putenv`）。该设置**只对当前 Houdini 会话
+  有效**，重启后需在 `houdini.env` 写 `JOB = <路径>`，否则已打包的
+  `$JOB/…` 参数会解析回 `$HOME`。工具不自动改 `houdini.env`。
 
 ## 测试
 
@@ -340,9 +373,12 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
   `copy_plan` 去重、`_is_noise` 节点路径 vs POSIX 文件、菜单接线、窗口可
   实例化（htWindow / is_close_deferred / worker 可构造）、`reveal` 缺失路径
   必须抛 OSError；另跑 `test_theme_tokens.py`（窗口不得写裸 hex）。
-- 2026-11-20 二次反馈新增：`job_is_default` 的 CWD / 显式 env 判定、
+- 2026-11-20 二次反馈新增：`job_is_default` 的 CWD 判定、
   `resolve_job_root` 未设置返回空串、窗口 `_job_needs_setup()` /
   `_job_override` 与 `$JOB` 前缀、缓存目录行 in_hip 与包外两种文案/前景色。
+- 2026-11-20 三次反馈新增：`default_job_roots` 锚点集合与 env 免检移除
+  （env 指向默认目录仍判未设置）、`extra_defaults`、会话首次确认弹窗
+  （`needs=False` 也弹 / 「使用当前」后不再弹 / 取消中止）。
 - 2026-11-19 审查修复新增回归：目标唯一性（build_layout 碰撞加 `_2`）、
   UDIM 枚举（只收 1001/1002，不收 backup）、严格帧 glob（不收
   `sim.backup.bgeo.sc`）、Windows 保留包名（CON → pkg_CON）、非法 UTF-8

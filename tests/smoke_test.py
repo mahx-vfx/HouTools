@@ -5660,6 +5660,56 @@ def main():
         assert _pkg_win._job_needs_setup()[0] is False
         assert _pkg_win._target_prefix().startswith("$JOB/")
         _pkg_win._job_override = ""
+
+        # 回归（三次实测）：Houdini GUI 把默认 JOB（=$HOME）注入
+        # os.environ 时，旧版"env 非空且绝对就免检"会让 needs_setup 变
+        # False、跳过指定弹窗，包静默打到 C 盘用户名下。
+        _env_saved = os.environ.get("JOB")
+        os.environ["JOB"] = "C:/Users/zhouhaibin"
+        try:
+            assert _pkg_win._job_needs_setup()[0] is True
+            assert _pkg_win._base_dir() == ""
+        finally:
+            if _env_saved is None:
+                os.environ.pop("JOB", None)
+            else:
+                os.environ["JOB"] = _env_saved
+
+        # 会话首次硬兜底：即便判定为"已设置"，打包前仍弹窗确认实际
+        # 目录；点「使用当前 $JOB」后本会话不再打扰。
+        import houtools.ui.dialogs as _pkg_dlg
+        _saved_choice = _pkg_dlg.choice
+        _saved_confirmed = pkg_window._JOB_CONFIRMED
+        _saved_override = pkg_window._JOB_OVERRIDE
+        _calls = []
+
+        def _fake_choice(_parent, title, text, buttons):
+            _calls.append((title, text, buttons))
+            return len(buttons) - 1        # 最后一项 = 取消
+
+        pkg_window._JOB_OVERRIDE = ""
+        _pkg_dlg.choice = _fake_choice
+        try:
+            pkg_window._JOB_CONFIRMED = False
+            assert _pkg_win._ensure_job_root() is False
+            assert _calls[-1][0] == "未设置 $JOB"
+            _calls[:] = []
+            _JobHouText._map["$JOB"] = "D:/projects/job"
+            assert _pkg_win._job_needs_setup()[0] is False
+            assert _pkg_win._ensure_job_root() is False
+            assert _calls[-1][0] == "确认 JOB 目录"
+            _pkg_dlg.choice = lambda _p, _t, _x, _b: 0
+            assert _pkg_win._ensure_job_root() is True
+            assert pkg_window._JOB_CONFIRMED is True
+            _calls[:] = []
+            assert _pkg_win._ensure_job_root() is True   # 二次不再弹
+            assert not _calls
+            _JobHouText._map["$JOB"] = "C:/Users/zhouhaibin"
+        finally:
+            _pkg_dlg.choice = _saved_choice
+            pkg_window._JOB_CONFIRMED = _saved_confirmed
+            pkg_window._JOB_OVERRIDE = _saved_override
+
         _pkg_win._root_combo.setCurrentIndex(0)      # 还原 $HIP
     finally:
         if _job_saved is None:
@@ -5994,9 +6044,10 @@ def main():
     assert pkg_paths.default_package_name("") == "ht_package"
     print("package default name OK")
 
-    # $JOB 未显式设置检测（2026-11-20 二次反馈）：展开值随启动方式变
-    # （GUI=$HOME / hython=CWD / 也可能=$HIP），三者都要认；os.environ 里
-    # 显式设置过就信任，不再打扰。
+    # $JOB 未显式设置检测（2026-11-20 三次反馈）：展开值随启动方式变
+    # （GUI=$HOME / hython=CWD / 也可能=$HIP），默认目录锚点要够全；
+    # **os.environ["JOB"] 不能免检**——Houdini GUI 会把默认 JOB（=$HOME）
+    # 注入进程环境，旧版据此放行，包静默打到 C 盘用户名下。
     assert pkg_paths.job_is_default("", "C:/hip")
     assert pkg_paths.job_is_default("$JOB", "C:/hip")
     assert pkg_paths.job_is_default("C:/hip", "C:/hip")
@@ -6004,14 +6055,26 @@ def main():
         "C:/Users/zhouhaibin", "D:/proj/shot", home_value="C:/Users/zhouhaibin")
     assert pkg_paths.job_is_default(
         "C:/cwd", "D:/proj/shot", "C:/Users/zhouhaibin", cwd_value="C:/cwd")
-    assert not pkg_paths.job_is_default(
+    # env 指向默认目录：仍必须判为未设置（关键回归）
+    assert pkg_paths.job_is_default(
         "C:/Users/zhouhaibin", "D:/proj/shot",
         home_value="C:/Users/zhouhaibin", env_value="C:/Users/zhouhaibin")
+    # env 指向别处、但 $JOB 展开值仍是默认目录：以展开值为准
+    assert pkg_paths.job_is_default(
+        "C:/Users/zhouhaibin", "D:/proj/shot",
+        home_value="C:/Users/zhouhaibin", env_value="D:/some/other/path")
+    # extra_defaults（宿主侧 HOME 等）也要能命中
+    assert pkg_paths.job_is_default(
+        "D:/custom_home", "D:/proj/shot", home_value="C:/Users/zhouhaibin",
+        extra_defaults=("D:/custom_home",))
+    assert pkg_paths._path_key(os.path.expanduser("~")) in \
+        pkg_paths.default_job_roots()
     assert not pkg_paths.job_is_default(
         "D:/projects/main", "C:/hip", home_value="C:/Users/zhouhaibin")
     # 未设置 → 返回空串，由窗口弹窗指定 JOB 目录（不再静默回退 $HIP）
     _actual, _needs, _reason = pkg_paths.resolve_job_root(
-        "C:/Users/zhouhaibin", "D:/proj/shot", "C:/Users/zhouhaibin")
+        "C:/Users/zhouhaibin", "D:/proj/shot", "C:/Users/zhouhaibin",
+        env_value="C:/Users/zhouhaibin")
     assert _actual == "" and _needs is True
     assert "指定" in _reason
     _actual2, _needs2, _ = pkg_paths.resolve_job_root(

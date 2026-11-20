@@ -59,6 +59,16 @@ try:
 except NameError:
     _JOB_OVERRIDE = ""
 
+# 本会话是否已就 $JOB 的实际落点向用户确认过（模块级，活过 Reload）。
+# 判定"JOB 是否设置"本质上是在猜 Houdini 的默认值，已经连错两次
+# （2026-11-20 三次实测：GUI 把默认 JOB 注入进程环境）。这里加一道不依赖
+# 猜测的硬兜底：选 $JOB 打包时，每个会话首次都弹窗确认实际目录，确认后
+# 本会话不再打扰。
+try:
+    _JOB_CONFIRMED
+except NameError:
+    _JOB_CONFIRMED = False
+
 _COL_CHECK = 0
 _COL_NODE = 1
 _COL_PARM = 2
@@ -730,9 +740,14 @@ class PackageProjectWindow(QDialog):
             except Exception:
                 return ""
 
+        try:
+            hou_home = hou.getenv("HOME") or ""
+        except Exception:
+            hou_home = ""
         return paths.resolve_job_root(
             expand("$JOB"), expand("$HIP"), expand("$HOME"),
-            os.getcwd(), os.environ.get("JOB", ""))
+            os.getcwd(), os.environ.get("JOB", ""),
+            extra_defaults=(hou_home,))
 
     def _job_needs_setup(self):
         """当前选 $JOB 且确实未设置？→ (是否需要指定, 原因)。"""
@@ -769,14 +784,16 @@ class PackageProjectWindow(QDialog):
         item = model.item(1, 0) if hasattr(model, "item") else None
         if item is not None:
             item.setEnabled(True)
+        override = getattr(self, "_job_override", "") or _JOB_OVERRIDE
         if needs:
             tip = ("未显式设置 $JOB（当前展开为 {0}）；点「打包」时会要求"
                    "指定 JOB 目录".format(job))
-        elif getattr(self, "_job_override", ""):
+        elif override:
             tip = ("$JOB = {0}（本次会话指定；重启 Houdini 前请在 "
-                   "houdini.env 写入 JOB = {0}）".format(actual))
+                   "houdini.env 写入 JOB = {0}）".format(override))
         else:
-            tip = "$JOB = {}".format(actual or job)
+            tip = ("$JOB = {}；点「打包」时会先确认这个目录"
+                   .format(actual or job))
         self._root_combo.setItemData(1, tip, Qt.ToolTipRole)
 
     def _job_value(self):
@@ -787,36 +804,67 @@ class PackageProjectWindow(QDialog):
         return value
 
     def _ensure_job_root(self):
-        """选 $JOB 且未显式设置时，弹三选一让用户指定路径；返回能否继续。
+        """选 $JOB 时确认实际落点；**本会话首次必弹**，返回能否继续。
 
-        用户拍板（2026-11-20 二次反馈）：不要静默回退 $HIP —— 直接提示
-        「选择已有目录 / 创建 JOB 目录 / 取消打包」；选「创建」时手输绝对
-        路径，工具只负责建目录（不让工具替用户决定位置）。确定后用
-        ``hou.putenv("JOB", path)`` 让会话 $JOB 真的指向它，参数继续写
-        ``$JOB/<包名>/…``。仅当前会话生效，弹窗与日志都提示重启前要写
-        houdini.env（工具不擅自改用户的配置文件）。
+        用户拍板（2026-11-20 二次反馈）：不要静默回退 $HIP —— 提示
+        「选择已有目录 / 创建 JOB 目录 / 取消」，选「创建」时手输绝对路径，
+        工具只负责建目录。三次实测又发现「猜 JOB 有没有设置」不可靠：
+        Houdini GUI 会把默认 JOB（= ``$HOME``）注入进程环境，旧版据此免检，
+        三选一被整段跳过，包静默打到 C 盘用户名下。因此改成不依赖猜测：
+
+        - 选 `$JOB` 打包时，**每个会话首次都弹窗确认**，直接显示 `$JOB`
+          当前展开值，用户一眼能看出是不是用户主目录；
+        - 判定为默认目录时只给「选择已有目录 / 创建 JOB 目录 / 取消」；
+        - 判定为正常目录时额外给「使用当前 $JOB」，点一次本会话不再打扰；
+        - 指定目录后 ``hou.putenv("JOB", path)`` 让会话变量真的指过去，
+          参数继续写 ``$JOB/<包名>/…``，包根与前缀同源。
+
+        仅当前会话生效，弹窗与日志都提示重启前要写 houdini.env（工具
+        不擅自改用户的配置文件）。
         """
         if self._root_var() != "JOB":
             return True
-        _actual, needs, _reason = self._job_state()
-        if not needs:
+        global _JOB_CONFIRMED, _JOB_OVERRIDE
+        if _JOB_CONFIRMED:
             return True
         import hou
-        pick = dialogs.choice(
-            self, "未设置 $JOB",
-            "本机没有显式设置 JOB 环境变量，$JOB 当前展开为 {0}。\n"
-            "Houdini 会把 $JOB/… 解析到用户主目录，包会打错位置。\n\n"
-            "请指定一个 JOB 目录：\n"
-            "· 选择已有目录：用现有文件夹作为 JOB 根\n"
-            "· 创建 JOB 目录：手输绝对路径，工具创建它\n"
-            "· 取消：中止打包\n\n"
-            "指定后仅对当前 Houdini 会话生效；重启前请在 houdini.env 写入 "
-            "JOB = <该路径>。".format(self._job_value()),
-            ["选择已有目录…", "创建 JOB 目录…", "取消"])
-        if pick == 2:
-            return False
+        _actual, needs, _reason = self._job_state()
+        job_now = self._job_value()
+        if needs:
+            pick = dialogs.choice(
+                self, "未设置 $JOB",
+                "本机没有显式设置 JOB 环境变量，$JOB 当前展开为\n{0}\n"
+                "这是 Houdini 的默认目录（通常是 C 盘用户名文件夹），"
+                "继续打包会把文件复制到它下面。\n\n"
+                "请指定一个 JOB 目录：\n"
+                "· 选择已有目录：用现有文件夹作为 JOB 根\n"
+                "· 创建 JOB 目录：手输绝对路径，工具创建它\n"
+                "· 取消：中止打包\n\n"
+                "指定后仅对当前 Houdini 会话生效；重启前请在 houdini.env "
+                "写入 JOB = <该路径>。".format(job_now),
+                ["选择已有目录…", "创建 JOB 目录…", "取消"])
+            if pick == 2:
+                return False
+            mode = "pick" if pick == 0 else "create"
+        else:
+            pick = dialogs.choice(
+                self, "确认 JOB 目录",
+                "当前会话 $JOB = \n{0}\n\n"
+                "包会复制到 {0}/<包名>/… ，参数也会写成 $JOB 下的相对路径。\n"
+                "确认无误请点第一项；要换目录可选「选择已有目录」或"
+                "「创建 JOB 目录」。\n\n"
+                "指定后仅对当前 Houdini 会话生效；重启前请在 houdini.env "
+                "写入 JOB = <该路径>。".format(job_now),
+                ["使用当前 $JOB", "选择已有目录…", "创建 JOB 目录…", "取消"])
+            if pick == 3:
+                return False
+            if pick == 0:
+                _JOB_CONFIRMED = True
+                self._log("[信息] 已确认使用当前 $JOB：{}".format(job_now))
+                return True
+            mode = "pick" if pick == 1 else "create"
         path = ""
-        if pick == 0:
+        if mode == "pick":
             start = self._hip_dir or os.path.expanduser("~")
             folder = QFileDialog.getExistingDirectory(
                 self, "选择 JOB 目录", start,
@@ -845,9 +893,9 @@ class PackageProjectWindow(QDialog):
         except Exception as exc:
             dialogs.warn(self, "设置会话 $JOB 失败", str(exc))
             return False
-        global _JOB_OVERRIDE
         _JOB_OVERRIDE = path
         self._job_override = path
+        _JOB_CONFIRMED = True
         self._log("[信息] 已指定 JOB 目录：{}".format(path))
         self._log("[信息] 会话 $JOB 已设为该目录；仅本次 Houdini 会话有效，"
                   "重启前请在 houdini.env 写入 JOB = {}".format(path))
@@ -1370,10 +1418,16 @@ class PackageProjectWindow(QDialog):
             path_text = "改写 {} 个参数为 {} 下的相对路径".format(
                 len(refs), root_label)
         job_note = ""
-        if getattr(self, "_job_override", ""):
-            job_note = ("\n会话 $JOB = {}（仅本次 Houdini 会话有效；"
-                        "重启前请在 houdini.env 写入 JOB = {}）".format(
-                            self._job_override, self._job_override))
+        job_override = ""
+        if root == "JOB":
+            job_override = getattr(self, "_job_override", "") or _JOB_OVERRIDE
+            # 确认弹窗直接写出 $JOB 的实际落点：只写"$JOB 下的相对路径"
+            # 时，用户看不出变量其实解析到了 C 盘用户名目录（三次实测）。
+            job_note = "\n$JOB 当前 = {}".format(base)
+            if job_override:
+                job_note += ("\n会话 $JOB = {}（仅本次 Houdini 会话有效；"
+                             "重启前请在 houdini.env 写入 JOB = {}）".format(
+                                 job_override, job_override))
         if not dialogs.question(
                 self, "打包工程",
                 "将把 {} 个文件复制到\n{}\n\n并按文件类型归入官方工程目录"
@@ -1384,9 +1438,9 @@ class PackageProjectWindow(QDialog):
 
         self._log_view.clear()
         self._log("[开始] 包目录：{}".format(package_dir))
-        if getattr(self, "_job_override", ""):
+        if job_override:
             self._log("[信息] 本次会话 $JOB = {}，参数前缀 {} 与之同源".format(
-                self._job_override, prefix))
+                job_override, prefix))
         missing = [ref for ref in refs if ref.missing]
         for ref in missing:
             self._log("[失败] 缺失 {}:{} → {}（手动引用了但文件不存在，"

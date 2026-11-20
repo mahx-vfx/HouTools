@@ -191,36 +191,59 @@ def default_package_name(hip_path, suffix="-pack"):
     return sanitize_pkg_name(stem + suffix) if stem else PACKAGE_DIR
 
 
+def _path_key(value):
+    """路径归一化键（Windows 大小写/斜杠不敏感）；空值返回空串。"""
+    text = (value or "").strip().strip('"')
+    return os.path.normcase(os.path.normpath(text)) if text else ""
+
+
+def default_job_roots(hip_value="", home_value="", cwd_value="", extra=()):
+    """Houdini 未显式设置 JOB 时，`$JOB` 可能落到的"默认目录"键集合。
+
+    除了 Houdini 自己的 ``$HOME`` / CWD / ``$HIP``，还纳入 Windows 用户主目录
+    的其他写法（``expanduser("~")`` / ``USERPROFILE`` / ``HOME`` 环境变量 /
+    ``HOMEDRIVE+HOMEPATH``），避免 GUI 与 hython 的展开口径不一致导致漏判。
+    ``extra`` 供调用方补充宿主侧变量（如 ``hou.getenv("HOME")``）。
+    """
+    drive = os.environ.get("HOMEDRIVE", "")
+    hpath = os.environ.get("HOMEPATH", "")
+    roots = [hip_value, home_value, cwd_value,
+             os.path.expanduser("~"),
+             os.environ.get("USERPROFILE", ""),
+             os.environ.get("HOME", ""),
+             (drive + hpath) if drive and hpath else ""]
+    roots.extend(extra or ())
+    out = []
+    for raw in roots:
+        key = _path_key(raw)
+        if key and key not in out:
+            out.append(key)
+    return out
+
+
 def job_is_default(job_value, hip_value, home_value="", cwd_value="",
-                   env_value=""):
-    """$JOB 是否"未显式设置"——需要用户指定 JOB 目录的情形。
+                   env_value="", extra_defaults=()):
+    """`$JOB` 是否落在"默认目录"——需要用户指定 JOB 目录的情形。
 
-    Houdini 未设置 ``JOB`` 时，``$JOB`` 展开值**随启动方式变**：GUI 里多为
+    Houdini 未显式设置 ``JOB`` 时，``$JOB`` 展开值**随启动方式变**：GUI 里多为
     ``$HOME``（Windows 上 C 盘用户名目录），hython/部分启动方式下则是当前
-    工作目录或 ``$HIP``（2026-11-20 本机 hython 实测为 CWD）。只比较
-    ``$HOME`` 不足以保证命中，必须把 ``$HIP``/CWD 一起纳入。
+    工作目录或 ``$HIP``（2026-11-20 本机 hython 实测为 CWD）。
 
-    优先看 ``env_value``（``os.environ.get("JOB")``）：非空且绝对说明用户
-    在 houdini.env / 系统环境里**显式**设置过，此时即便展开值恰好等于
-    $HOME 也信任它，不再打扰。
+    **``env_value`` 不能用来免检**（2026-11-20 三次实测反馈）：旧版只要
+    ``os.environ["JOB"]`` 非空且是绝对路径就判定"用户显式设置过"，但 Houdini
+    GUI 会把默认 JOB（= ``$HOME``）注入进程环境，于是 C 盘用户名目录被当成
+    合法 JOB 根，打包前的指定弹窗被整段跳过，包静默打到用户主目录。参数
+    保留仅为兼容调用点与日志，不参与判定。
 
     返回 True 表示 $JOB 不可信；窗口会弹窗让用户指定/创建 JOB 目录，并用
     ``hou.putenv`` 把会话 $JOB 指过去（不再自动回退 $HIP）。
     """
     job = (job_value or "").strip().strip('"')
-    hip = (hip_value or "").strip().strip('"')
-    home = (home_value or "").strip().strip('"')
-    cwd = (cwd_value or "").strip().strip('"')
-    env = (env_value or "").strip().strip('"')
-    if env and os.path.isabs(env):
-        return False
     if not job or job == "$JOB":
         return True
-    job_key = os.path.normcase(os.path.normpath(job))
-    for other in (hip, home, cwd):
-        if other and job_key == os.path.normcase(os.path.normpath(other)):
-            return True
-    return False
+    job_key = _path_key(job)
+    return job_key in default_job_roots(
+        hip_value, home_value, cwd_value, extra_defaults)
 
 
 def is_builtin_ref(raw):
@@ -236,7 +259,7 @@ def is_builtin_ref(raw):
 
 
 def resolve_job_root(job_value, hip_value, home_value="", cwd_value="",
-                     env_value=""):
+                     env_value="", extra_defaults=()):
     """（实际 $JOB 路径, 是否未设置, 原因）——未设置时**返回空串**。
 
     2026-11-20 用户推翻「自动回退 $HIP」：静默改用 $HIP 既让用户选了 $JOB
@@ -245,7 +268,8 @@ def resolve_job_root(job_value, hip_value, home_value="", cwd_value="",
     ``hou.putenv("JOB", path)`` 让会话变量真正指向它；参数继续写
     ``$JOB/<包名>/…``（见 ``target_prefix``）。
     """
-    if job_is_default(job_value, hip_value, home_value, cwd_value, env_value):
+    if job_is_default(job_value, hip_value, home_value, cwd_value,
+                      env_value, extra_defaults):
         reason = "未显式设置 $JOB（当前展开为 {!r}），需先指定 JOB 目录".format(
             (job_value or "").strip())
         return "", True, reason
