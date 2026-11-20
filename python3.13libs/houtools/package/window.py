@@ -51,6 +51,14 @@ from houtools.ui import (
 
 TOOL_ID = "package_project"
 
+# 本次会话指定的 JOB 目录（模块级，NameError 守卫活过 Reload——同
+# _LIVE_WORKERS）：窗口实例重建后仍记得用户已经指定过，避免把"恰好等于
+# $HIP 的 JOB 目录"重新误判成未设置而重复弹窗。
+try:
+    _JOB_OVERRIDE
+except NameError:
+    _JOB_OVERRIDE = ""
+
 _COL_CHECK = 0
 _COL_NODE = 1
 _COL_PARM = 2
@@ -369,7 +377,7 @@ class PackageProjectWindow(QDialog):
         self._hip_dir = ""
         # 本次会话指定的 JOB 目录：未显式设置 JOB 时由 _ensure_job_root()
         # 弹窗让用户选/建，再 hou.putenv 设为会话 $JOB。窗口 Reload 重建后
-        # 该字段为空，靠 hou.getenv("$JOB") 的展开值兜底识别。
+        # 由模块级 _JOB_OVERRIDE（活过热重载）兜底识别。
         self._job_override = ""
         # 打包会话记录：只有"复制+改写+保存"全部成功才登记，zip 只认它
         # （防止换 hip 后沿用上一个工程的快照，报告 P1-02）
@@ -712,7 +720,7 @@ class PackageProjectWindow(QDialog):
         """
         import hou
 
-        override = getattr(self, "_job_override", "") or ""
+        override = getattr(self, "_job_override", "") or _JOB_OVERRIDE
         if override:
             return os.path.normpath(override), False, ""
 
@@ -837,6 +845,8 @@ class PackageProjectWindow(QDialog):
         except Exception as exc:
             dialogs.warn(self, "设置会话 $JOB 失败", str(exc))
             return False
+        global _JOB_OVERRIDE
+        _JOB_OVERRIDE = path
         self._job_override = path
         self._log("[信息] 已指定 JOB 目录：{}".format(path))
         self._log("[信息] 会话 $JOB 已设为该目录；仅本次 Houdini 会话有效，"

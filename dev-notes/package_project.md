@@ -193,8 +193,9 @@ C 盘用户名下，上一版「自动回退 `$HIP`」没有生效。
   直接信任。`resolve_job_root()` 未设置时返回 `(空串, True, 原因)`，
   **不再返回 `$HIP`**。
 - 窗口：`_ensure_job_root()` 在 `_on_apply` 开头调用；`_job_override` 记住
-  本次会话指定的路径（窗口 Reload 重建后该字段为空，靠 `hou.getenv` 的
-  展开值兜底识别）；`_check_job()` tooltip、确认弹窗与结果日志都提示
+  本次会话指定的路径（窗口 Reload 重建后由**模块级 `_JOB_OVERRIDE`**（NameError
+  守卫活过热重载，同 `_LIVE_WORKERS`）兜底——否则 JOB 目录恰好等于 `$HIP`
+  时会被重新判成「未设置」而重复弹窗）；`_check_job()` tooltip、确认弹窗与结果日志都提示
   「仅本次 Houdini 会话有效，重启前请在 `houdini.env` 写 `JOB = <路径>`」
   ——**工具不擅自改用户的配置文件**。
 - **物理约束**：参数写 `$JOB/<包名>/…` 的前提是会话 `$JOB` 真的指向包根；
