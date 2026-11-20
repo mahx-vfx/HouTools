@@ -341,7 +341,8 @@ _houtools_dispatcher.run("<tool_id>")
 
 3. 重启 Houdini 让菜单项出现（仅此一次），之后该工具的代码迭代全部走热加载；
 4. 同步文档：更新本 README 的「工具列表」与「结构」、`docs/index.html` 的对应章节、
-   左侧栏目录与轮播 SVG 示意卡（880×320，色值取 theme.TOKENS）、`AGENTS.md` 的 Where to Look 表；
+   左侧栏目录与轮播卡（窗口类优先用 `tests/gen_about_shots.py` 生成真实截图，否则 880×320 内联 SVG、
+   色值取 theme.TOKENS）、`AGENTS.md` 的 Where to Look 表；
    菜单新增 `scriptItem` 时还要在
    `tests/test_about_sync.py` 的 `MENU_ITEM_TO_SECTION` 登记（页面专有章节登记
    `PAGE_ONLY_SECTIONS`）。右栏小节导航由正文 `h3[id]` 运行时派生，不要手写第三份清单。
@@ -386,7 +387,7 @@ HDR Library / Recipe Library / Package Project / 设置窗口）、拖放导入�
 python tests/test_theme_tokens.py          # token lint + 对比度
 python tests/test_about_sync.py            # About 页版本/锚点/菜单覆盖/资源/离线与无障碍同步断言
 python tests/test_fonts.py                 # 字体角色 / 逐控件 stamping / ChildAdded enforcer
-python tests/gen_about_shots.py            # 离屏重生成 3 张 About 截图（hdr.png 固定保留）
+python tests/gen_about_shots.py            # 离屏重生成 4 张 About 截图（hdr.png 固定保留）
 python tests/gen_brand_assets.py           # 离屏重生成 docs/brand/ 字标（README 头图为固定资产，不生成）
 ```
 
@@ -405,7 +406,7 @@ HouTools/
 │   ├── assets/                   # hero.jpg（AI 主视觉）+ donate.png（赞赏码）
 │   ├── brand/                    # README 头图（1600×600 固定资产 + SVG 源稿）+ 字标（gen_brand_assets.py 生成）
 │   ├── fonts/                    # 离线字体文件
-│   └── about_shots/              # 窗口截图（3 张离屏生成 + hdr.png 用户精修图固定保留）
+│   └── about_shots/              # 窗口截图（4 张离屏生成 + hdr.png 用户精修图固定保留）
 ├── python_panels/Automation.pypanel  # Automation 的 Python Panel 界面
 ├── python3.11libs/               # H21 (Python 3.11) 入口壳：uiready 转发 + __path__ 扩展，真身唯一在 python3.13libs
 ├── python3.13libs/

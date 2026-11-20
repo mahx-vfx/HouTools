@@ -255,6 +255,75 @@ print("renamed %d nodes" % len(hou.selectedNodes()))
     return ok
 
 
+# -------------------------------------------------------------------
+# 4) Package Project — 6 列预览表里塞一组演示引用（真实窗口 UI）
+# -------------------------------------------------------------------
+def shot_package(tmp: Path):
+    from houtools.package import collect as pkg_collect
+    from houtools.package import paths as pkg_paths
+    from houtools.package.window import PackageProjectWindow
+
+    def ref(kind, node, parm, raw, files, in_hip=False, token="",
+            rewrite_dir=False):
+        return pkg_collect.Ref(
+            kind=kind, node_path=node, parm_name=parm, raw=raw,
+            abs_path=raw, files=files, in_hip=in_hip, token=token,
+            rewrite_dir=rewrite_dir)
+
+    frames = ["D:/shots/SA01/geo/cache.%04d.bgeo.sc" % n
+              for n in range(1001, 1025)]
+    udims = ["D:/proj/tex/diffuse.%d.exr" % n for n in range(1001, 1004)]
+    refs = [
+        ref("input", "/obj/geo1/file1", "file",
+            "$HIP/geo/hero_base.bgeo.sc",
+            ["D:/shots/SA01/geo/hero_base.bgeo.sc"], in_hip=True),
+        ref("input", "/obj/geo1/shop_material1", "texture",
+            "D:/proj/tex/albedo.exr", ["D:/proj/tex/albedo.exr"]),
+        ref("output", "/out/karma1", "picture",
+            "$HIP/render/shot.$F4.exr",
+            ["D:/shots/SA01/render/shot.%04d.exr" % n
+             for n in range(1001, 1004)],
+            in_hip=True, token="$F4"),
+        ref("output", "/obj/cache1", "basedir", "$HIP/geo/", frames,
+            in_hip=True, token="$F4", rewrite_dir=True),
+        ref("input", "/obj/geo1/principled1", "file",
+            "D:/proj/tex/diffuse.<UDIM>.exr", udims,
+            token=pkg_paths.UDIM_TOKEN),
+        ref("input", "/obj/geo1/missing_tex", "file",
+            "D:/proj/tex/missing_normal.exr", []),
+    ]
+    targets = [
+        "$HIP/geo/hero_base.bgeo.sc",
+        "$HIP/tex/D_proj_tex/albedo.exr",
+        "$HIP/render/shot.$F4.exr",
+        "$HIP/geo/",
+        "$HIP/tex/D_proj_tex/diffuse.<UDIM>.exr",
+        "$HIP/tex/D_proj_tex/missing_normal.exr",
+    ]
+
+    win = PackageProjectWindow(None)
+    # 无 hou 会话：setText 会触发 _on_targets_changed → _base_dir()
+    # → import hou 失败，改名期间先屏蔽信号（演示数据随后直接灌入表格）
+    win._pkg_edit.blockSignals(True)
+    win._pkg_edit.setText("shot_v001-pack")
+    win._pkg_edit.blockSignals(False)
+    win._refs = refs
+    win._targets = targets
+    win._checked = set(range(len(refs) - 1))   # 缺失行不勾选
+    win._fill_table()
+    win._set_status("扫描完成", ok=True)
+    win._set_hint("共 6 个引用 · 选中 5 · 待复制 31 个文件（128.4 MB）")
+    win._apply_btn.setEnabled(True)
+    win._log("[信息] 扫描完成：6 个引用，1 个缺失（打包时跳过）")
+    win._log("[信息] 按文件类型归入 geo / tex / render，帧模板 $F4 原样保留")
+    win.resize(1080, 680)
+    win.show()
+    _settle(win, 500)
+    ok = _grab(win, "package.png")
+    win.deleteLater()
+    return ok
+
+
 def _save_tmp_png(tmp: Path, pm: QtGui.QPixmap) -> str:
     p = tmp / ("thumb_%d.png" % int(time.time() * 1000))
     pm.save(str(p), "PNG")
@@ -284,6 +353,7 @@ def main():
             shot_automation(tmp),
             shot_videoseq(tmp),
             shot_recipe(tmp),
+            shot_package(tmp),
         ]
     # 精修图只读校验：缺失即失败，绝不用合成图兜底覆盖。
     for name in CURATED_SHOTS:
