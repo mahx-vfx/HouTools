@@ -69,8 +69,8 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings.
 | 视窗截图嵌入 | 节点右键 `Capture Viewport to Node [HT]` | 截取当前 3D 视窗存为 JPG（`$HIP/HouTools_cfg/captures/`），作为网络编辑器背景图钉在节点旁，随节点移动/改名跟随；只存路径引用不进 hip；右键 `Delete Viewport Capture [HT]` 删除截图 |
 | 粘贴边界框 | 节点右键 `Paste Bounding Box [HT]` | Ctrl+C 复制源节点后，右键带三分量 `size`/`t` 参数的目标节点（如 box），把源节点包围盒尺寸/中心粘贴到其 `size`/`t`——绝对值或 `bbox()`/`centroid()` 表达式（同网络相对路径、跨层级绝对路径）两种模式 |
 | 粘贴中心 | 节点右键 `Paste Center [HT]` | Ctrl+C 复制源节点后右键任意目标节点，在其下方创建 transform 并启用（接管显示/渲染）：枢轴=目标中心、平移=源中心−目标中心（目标内容对齐到源中心）——绝对值或 `centroid()` 表达式两种模式 |
-| 视频转序列图 | `HouTools → Video to Sequence` | ffmpeg 提取视频为 JPG 序列（帧级进度，质量/起始帧/位数/前缀可调），EXR/PNG/TIF 静帧序列同样支持（浏览时同一序列折叠为一个选项，EXR 自动转 sRGB），相机支持在 Houdini 节点选择器中直接选取 + 一键跳转定位，相机行「匹配素材分辨率」一键把相机分辨率对齐素材（防背景拉伸），分辨率可读取/编辑（宽/高双框 + 预设），「编码器」行 ⓘ 按钮悬停/点击查看实际生效的 ffmpeg/ffprobe，可选自动设置相机 Background Image |
-| Package Project | `HouTools → Package Project`（主菜单与网络编辑器菜单） | 打包工程：只扫**启用节点**上用户填过的路径（默认值不收），filecache 按 `sopoutput` 求值整段收帧、改写目标为 `basedir`；素材复制进 `<包根>/<包名>/assets/…`，参数按生成方式写成 `$HIP/assets/…`（另存到包目录）或 `$HIP/<包名>/assets/…` / `$JOB/<包名>/assets/…`（覆盖当前工程），帧模板 `$F4` 原样保留、表达式驱动参数跳过不改写；默认「另存到包目录」生成 `<包名>/<hip>_packed.hip`（原工程不动），也可「覆盖当前工程」，包目录整体压成 `<包根>/<包名>.zip` 上传渲染农场 |
+| 视频转序列图 | `HouTools → Video to Sequence` | ffmpeg 提取视频为 JPG 序列（帧级进度，质量/起始帧/位数/前缀可调），EXR/PNG/TIF 静帧序列同样支持（浏览时同一序列折叠为一个选项，EXR 自动转 sRGB），相机支持在 Houdini 节点选择器中直接选取 + 一键跳转定位，相机行「匹配素材分辨率」一键把相机分辨率对齐素材（防背景拉伸），分辨率可读取/编辑（宽/高双框 + 预设），「编码器」行 ⓘ 按钮悬停/点击查看实际生效的 ffmpeg/ffprobe，可选自动设置相机 Background Image；同前缀旧序列转换前询问后改名 `.bak` 让位（成功才清理、取消/失败还原） |
+| Package Project | `HouTools → Package Project`（主菜单与网络编辑器菜单） | 打包工程：只扫**启用节点**上用户填过的路径（默认值不收），filecache 按 `sopoutput` 求值整段收帧、改写目标为 `basedir`；素材按文件类型归入 Houdini 官方 New Project 目录 `geo/hda/sim/abc/tex/render/flip/scripts/other`（不再有统一 `assets/` 层），参数按生成方式写成 `$HIP/<类型>/…`（另存到包目录）或 `$HIP/<包名>/<类型>/…` / `$JOB/<包名>/<类型>/…` / `<自定义>/<包名>/<类型>/…`（覆盖当前工程），帧模板 `$F4` 原样保留、表达式驱动参数跳过不改写；默认「另存到包目录」生成 `<包名>/<hip>_packed.hip`（原工程不动，包名默认「工程名 + `-pack`」），也可「覆盖当前工程」，包目录整体压成 `<包根>/<包名>.zip`（包内附 `package_log.txt` 明细）上传渲染农场 |
 | HDR Library | `HouTools → HDR Library` | HDR 环境贴图库浏览器：缩略图网格（后台生成）、子文件夹分类 + 收藏，选中灯光后双击即贴图 |
 | Recipe Library | `HouTools → Recipe Library` | recipes 资产库浏览器：官方 recipes 卡片网格浏览（缩略图/标签/主题色），树形侧栏过滤，双击/拖拽应用到网络，VEX/Python 代码块卡片（双击追加到选中节点），Markdown 文档，数据导入/导出 |
 | HouTools Settings | `HouTools → HouTools Settings...` | 设置窗口：配置目录展示（含修改方法）+ 快捷键设置（Paste as Object Merge / Copy Output Path，捕获式改键，会话即时生效） |
@@ -91,6 +91,10 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings.
   「删除」按钮可删除废弃配置（二级确认，物理删除）
 - DW 软件路径在配置目录的 `Automation_Config.json` 中配置（随机器保存，缺失时打开面板自动按默认值补建，可直接编辑）
 - 节点可直接拖入参数路径框（原生投递、无视窗泄漏）
+- BUTTON_CLICK 任务里的**节点路径跟随改名**：节点或父级改名时，配置 JSON 与面板槽位
+  里的路径实时同步改写（像原生参数引用一样）；改名/删除反馈走左下角 toast，控制台零提示
+- 节点被删除只摘监听、路径保留：槽位显示红色「丢失」标签（不自动改配置），撤销删除或
+  同名重建后自动恢复；无头/农场会话不挂监听、hip 零写入
 - `Reload Modules (Dev)` 不会自动重建已打开的面板（避免丢弃未 Start 保存的编辑），
   需点面板工具条自带的刷新按钮重建界面
 
@@ -125,11 +129,11 @@ Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_paste_as_object_mer
 网络编辑器里选中节点按 `Ctrl+Shift+C`（或点网络编辑器的 `HouTools` 菜单），把该节点输出文件**所在的文件夹**复制到系统剪贴板（如 `C:\...\render\TTT`，不含文件名），直接粘进文件对话框或其他软件。对与右键 `Open Cache Folder [HT]` **同一批节点**生效（按输出参数命中：filecache / mantra / karma / usdrender / rop geometry 等，第三方 Arnold 节点带相应参数即支持），取值与节点右键 `Open Cache Folder [HT]` 同源——`$HIP`/`$OS` 等变量展开后的绝对路径。目录尚未写出（缓存未落盘）时**不复制**，左下角红色错误通知；各类失败反馈只走通知模块、不刷控制台。多选时把命中节点的目录去重后逐行合并复制；键位在 `HouTools → HouTools Settings...` 修改（捕获式输入，保存到配置目录的 `hotkeys.json`，每次启动自动应用），也可在 Houdini 自带 Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_copy_output_path`。
 
 ffmpeg 说明：优先使用 Houdini 自带的 `$HFS/bin/hffmpeg`，**无需单独安装**；如需指定版本，
-把 `ffmpeg.exe` 放到 HouTools 配置目录即可优先使用（包清单 `HouTools.json` 里
-`HOUTOOLS_FFMPEG` 变量的默认位置，`$HOUDINI_USER_PREF_DIR/../HouTools`，即设置目录
-的上级；值也可改成
-ffmpeg.exe 完整路径或其他目录）。ffprobe 无需单独配置：视频信息探测优先借用
-ffmpeg 同目录配套的 ffprobe，缺失时自动回退 PATH / Houdini 自带的 `hffprobe`。
+把 `ffmpeg.exe` 放到 `Documents/HouTools/`（配置目录 `Documents/HouTools/settings` 的
+上级，即包清单 `HouTools.json` 里 `HOUTOOLS_FFMPEG` 的默认值
+`$HOUDINI_USER_PREF_DIR/../HouTools`）即可优先使用；该变量也可改成 ffmpeg.exe 完整
+路径或其他目录。ffprobe 无需单独配置：视频信息探测优先借用 ffmpeg 同目录配套的
+ffprobe，缺失时自动回退 PATH / Houdini 自带的 `hffprobe`。
 
 ### File Cache 路径转绝对
 
@@ -221,34 +225,45 @@ File > Import > Alembic Scene... / File > Import > Filmbox FBX...）：
   `basedir` + `basename` + 版本子目录拼出来。工具按 `sopoutput` 求值拿首帧、
   glob 出整段帧，并把改写目标定为 **`basedir`**——下游用
   `chs("…/sopoutput")` 引用的节点会自动跟着走。
-- **其它输出参数默认只收已落盘的**：`sopoutput` / `vm_picture` / `picture` /
-  `outputimage` 等有文件才列出；勾选顶部「含空输出路径」才把还没写出的也列出来。
+- **其它输出参数只收已落盘的**：`sopoutput` / `vm_picture` / `picture` /
+  `outputimage` 等有文件才收；未落盘的只作「缺失」行列出，不复制不改写
+  （顶部「含空输出路径」勾选已移除）。
 - **表达式驱动的参数不改写**：`chs()` 链接 / 表达式 / 关键帧驱动的参数自动跳过
   ——对它写静态值等于把表达式冻成常数（同 File Cache 转绝对的拒绝语义），
   计入执行结果的跳过统计；filecache 的 `basedir` 同查（其 `file`/`basename`
   只是拼路径的片段，本就不单独收）。
-- **`$HIP` 内素材保留相对目录**：`$HIP/geo/x.bgeo.sc` → `assets/geo/x.bgeo.sc`；
-  包外素材才用展平目录（`D:\proj\tex` → `D_proj_tex`），避免同名覆盖。
-  帧模板 `$F4` 原样保留，现有帧整段收。
+- **按文件类型归入官方工程目录**：包内不再有统一 `assets/` 层，顶层直接是 Houdini
+  官方 New Project 目录 `geo / hda / sim / abc / tex / render / flip / scripts / other`，
+  解压后即可当工程用。`$HIP` 内素材保留相对目录（`$HIP/geo/x.bgeo.sc` →
+  `geo/x.bgeo.sc`，类型与首段同名不重复前缀），包外才用展平目录
+  （`D:\proj\tex` → `tex/D_proj_tex`）避免同名覆盖；帧模板 `$F4` 原样保留，现有帧整段收。
 - **参数写法按生成方式区分**：
-  - 另存到包目录 → **`$HIP/assets/…`**（hip 就住在包目录里，`$HIP` = 包目录）；
-  - 覆盖当前工程 → `$HIP/<包名>/assets/…` 或 `$JOB/<包名>/assets/…`。
-  包根可选 **`$HIP`（默认）** 或 **`$JOB`**；`$JOB` 未设置时选项自动禁用。
-  注意：**另存模式下即使包根选 `$JOB`，参数前缀仍是 `$HIP/assets/…`**——hip 被
-  保存进 `<JOB>/<包名>/`，它的 `$HIP` 就是那个目录。
+  - 另存到包目录 → **`$HIP/<类型>/…`**（hip 就住在包目录里，`$HIP` = 包目录）；
+  - 覆盖当前工程 → `$HIP/<包名>/<类型>/…`、`$JOB/<包名>/<类型>/…` 或
+    `<自定义根>/<包名>/<类型>/…`。
+  包根可选 **`$HIP`（默认）**、**`$JOB`**（未设置时自动禁用）或**自定义绝对路径**；
+  `$JOB` 与 `$HIP` 相同/为空时打包前弹窗提醒。**另存模式下无论包根选哪个，参数前缀
+  仍是 `$HIP/<类型>/…`**——hip 被保存进包目录，它的 `$HIP` 就是那个目录。
 - **两种生成方式**：
   - **另存到包目录**（默认）：另存 `<包名>/<hip>_packed.hip`，磁盘上的原工程不动；
   - **覆盖当前工程**：把改写结果保存回当前 hip（素材已进包目录）。
-  包名默认 `ht_package`，可在窗口里改（输入会净化，Windows 禁用符与 `..`
-  被收敛，防止写出包目录之外）。
+  包名默认「工程名 + `-pack`」（如 `shot_v001-pack`，未保存工程回落 `ht_package`），
+  可在窗口里改（输入会净化，Windows 禁用符、保留设备名与 `..` 被收敛，防止写出包目录之外）。
+- **表格 6 列**：勾选 / 节点 / 参数 / **参数现值** / **打包后参数值** / 状态
+  （类型信息并入状态列，原「原路径/目标」表头已改名）；数据列列宽可拖，
+  `Ctrl+滚轮` 缩放表格字号（7–24pt，右键字号菜单已移除）。扫描期有全窗口 marquee
+  等待遮罩，取消勾选实时联动待复制数/体积，切换工程自动清空上一工程的扫描结果。
 - **一次 undo 可整体撤销**参数改写；复制失败只跳过相关条目、不牵连其他文件。
 - **复制/zip 在后台线程执行**：运行中关闭窗口即协作取消——复制停在当前
   文件边界（取消后不进行参数改写与保存），zip 半成品（`.part`）不落盘。
 - **执行结果面板**：完成 / 失败两态，逐条列出复制失败（源路径 + 原因）、
   改写失败（节点:参数 + 原因）、保存失败与跳过计数，并显示扫描统计。
-- **生成 zip**：把包目录整体压成 `<包根>/<包名>.zip`（覆盖模式下附带的 hip 也会进包）。
-- **行操作**：**双击某行跳转到该节点**（网络编辑器定位并居中）；**右键**只有两项
-  ——「跳转到节点」「在资源管理器中打开原路径」（Shell API 定位并选中文件，序列取第一帧）。
+- **生成 zip**：把包目录整体压成 `<包根>/<包名>.zip`（覆盖模式下附带的 hip 也会进包），
+  并在 `<包根>/<包名>/package_log.txt` 写逐条打包明细（随 zip 归档）。
+- **行操作**：**双击某行跳转到该节点**（网络编辑器定位并居中；跳转前自动把会话切到
+  Manual 更新模式，避免 Auto Update / OnMouseUp 下跳到重节点当场重烤卡死，恢复在播放条
+  手动选回）；**右键**只有两项——「跳转到节点」「在资源管理器中打开原路径」
+  （Shell API 定位并选中文件，序列取第一帧）。
 
 ### HDR Library
 
@@ -325,14 +340,18 @@ _houtools_dispatcher.run("<tool_id>")
 ```
 
 3. 重启 Houdini 让菜单项出现（仅此一次），之后该工具的代码迭代全部走热加载；
-4. 同步文档：更新本 README 的「工具列表」与「结构」，并在 `AGENTS.md` 的 Where to Look 表补一行。
+4. 同步文档：更新本 README 的「工具列表」与「结构」、`docs/index.html` 的对应章节与
+   左侧栏目录、`AGENTS.md` 的 Where to Look 表；菜单新增 `scriptItem` 时还要在
+   `tests/test_about_sync.py` 的 `MENU_ITEM_TO_SECTION` 登记（页面专有章节登记
+   `PAGE_ONLY_SECTIONS`）。右栏小节导航由正文 `h3[id]` 运行时派生，不要手写第三份清单。
+   改完跑 `python tests/test_about_sync.py` 与 `python tests/test_theme_tokens.py`。
 
 ## 约定
 
 - **窗口**：所有 PySide6 顶层窗口必须经 `houtools.ui.window_manager.open_window(tool_id, factory)`
   创建（单例 + 登记），否则 Reload 无法自动关闭旧窗口，会残留旧代码引用。
-- **任务栏常驻**：独立工具窗口（videoseq / HDR Library）构造时调
-  `houtools.ui.taskbar.apply_appwindow_flags(self)`；不要用进程级 AppUserModelID
+- **任务栏常驻**：独立工具窗口（Video to Sequence / HDR Library / Recipe Library /
+  Package Project）构造时调 `houtools.ui.taskbar.apply_appwindow_flags(self)`；不要用进程级 AppUserModelID
   （会连 Houdini 主窗的任务栏分组一起改）。
 - **日志**：`from houtools.core.log import get_logger`，`get_logger("tools.xxx")`。
 - **设置**：`houtools.core.settings.JsonStore("xxx.json", defaults={...})`，存到配置目录
@@ -342,16 +361,33 @@ _houtools_dispatcher.run("<tool_id>")
   无头冒烟测试依赖这一点。
 - **菜单栏标签一律英文/ASCII**：H22 菜单栏对中文字符渲染不可靠；工具窗口内部的中文 UI 不受影响。
 - **二进制不入库**：`*.exe` 已被 `.gitignore` 排除。
+- **三处文档同步**：功能、入口、键位、命令或配置变更后，同时更新本 README（用法与结构）、
+  `docs/index.html`（About 离线手册章节）与 `AGENTS.md`（机制/坑表指针/命令）；版本号只改
+  `python3.13libs/houtools/__init__.py`（无 `v`）与 index.html 里全部 `vX.Y.Z`（顶栏/首屏/
+  页脚共 3 处）。改完跑 `python tests/test_about_sync.py`（校验版本/锚点/菜单覆盖/资源/
+  离线与无障碍）；发版走 `.agents/skills/houtools-release`（`$houtools-release vX.Y.Z`）。
 
 ## 测试
 
 ```
-"C:\Program Files\Side Effects Software\Houdini 22.0.429\python313\python.exe" tests\smoke_test.py
+"<安装盘>:\Program Files\Side Effects Software\Houdini <版本>\python313\python.exe" tests/smoke_test.py
 ```
 
 （按本机 Houdini 安装位置调整路径，须用 Houdini 自带的 Python 3.13。）
-无头验证菜单 XML、全包导入、各窗口实例化（Automation / 视频转序列图 / HDR Library / Recipe Library）、
-拖放导入的 .abc/.fbx 过滤与节点名清洗，以及 `reload_all()`。
+无头验证菜单 XML、全包导入、`reload_all()`、各窗口实例化（Automation / 视频转序列图 /
+HDR Library / Recipe Library / Package Project / 设置窗口）、拖放导入的 .abc/.fbx/.usd* 过滤
+与节点名清洗、打包路径与 6 列表格、Automation 改动即存与路径跟随改名、热键事务、
+对话框主题、Toast 槽位、qtcompat 重包、settings 解析链与版本过滤等。
+
+文档与视觉另有独立检查（前两条任意 Python 可跑；其余三条把 `python` 换成上面的 Houdini 自带解释器）：
+
+```
+python tests/test_theme_tokens.py          # token lint + 对比度
+python tests/test_about_sync.py            # About 页版本/锚点/菜单覆盖/资源/离线与无障碍同步断言
+python tests/test_fonts.py                 # 字体角色 / 逐控件 stamping / ChildAdded enforcer
+python tests/gen_about_shots.py            # 离屏重生成 3 张 About 截图（hdr.png 固定保留）
+python tests/gen_brand_assets.py           # 离屏重生成 docs/brand/ 字标（README 头图为固定资产，不生成）
+```
 
 ## 结构
 
@@ -359,37 +395,43 @@ _houtools_dispatcher.run("<tool_id>")
 HouTools/
 ├── MainMenuCommon.xml             # 顶部菜单（Houdini 规定文件名）
 ├── NetworkViewMenu.xml            # 网络编辑器面板菜单栏（HouTools 顶层菜单，注入机制同上）
-├── HouTools.json                # 包清单副本（生效的一份在 packages/ 下）
-├── scripts/externaldragdrop.py  # 官方拖放钩子分发器（拖 .abc/.fbx 导入，逻辑在 houtools/dragdrop.py）
+├── OPmenu.xml                     # 节点右键菜单（自有条目带 [HT] 后缀）
+├── HouTools.json                # 包清单副本（生效的一份在 packages/ 下；env 含 HOUTOOLS_SETTINGS_DIR / HOUTOOLS_FFMPEG）
+├── scripts/externaldragdrop.py  # 官方拖放钩子分发器（拖 .abc/.fbx/.usd* 导入，逻辑在 houtools/dragdrop.py）
 ├── docs/                         # 离线使用手册（About HouTools 菜单用默认浏览器打开，零外部网络资源）
-│   ├── index.html                # 手册页面（资源全部内联或本地）
+│   ├── index.html                # 手册页面（资源全部内联或本地；右栏小节导航由正文 h3 派生）
 │   ├── brand.md                  # 品牌手册
-│   ├── brand/                    # README 头图资源（tests/gen_brand_assets.py 生成）
+│   ├── assets/                   # hero.jpg（AI 主视觉）+ donate.png（赞赏码）
+│   ├── brand/                    # README 头图（1600×600 固定资产 + SVG 源稿）+ 字标（gen_brand_assets.py 生成）
 │   ├── fonts/                    # 离线字体文件
-│   └── about_shots/              # 窗口截图（hdr.png 用户精修图固定保留）
+│   └── about_shots/              # 窗口截图（3 张离屏生成 + hdr.png 用户精修图固定保留）
 ├── python_panels/Automation.pypanel  # Automation 的 Python Panel 界面
+├── python3.11libs/               # H21 (Python 3.11) 入口壳：uiready 转发 + __path__ 扩展，真身唯一在 python3.13libs
 ├── python3.13libs/
-│   ├── uiready.py                 # UI 启动钩子：装默认键位（会话启动时执行）
+│   ├── uiready.py                 # UI 启动钩子：装默认键位 + 启动即装 recipe 库 + Automation 路径跟随（bootstrap）
 │   └── houtools/
 │       ├── dev/                   # 热加载框架（reloader / dispatcher，不参与重载）
-│       ├── core/                  # 路径常量 / 日志 / JSON 设置
-│       ├── ui/                    # theme / qss / components + window_manager / taskbar
-│       │                          # + fonts / dialogs / sidebar / badge / notify
-│       ├── automation/            # Automation（任务类型/持久化/执行引擎/窗口）
-│       ├── dragdrop.py            # 外部拖放导入 .abc（obj 层级 Alembic Archive / SOP 层级 alembic）
+│       ├── core/                  # 路径常量 / 日志 / JSON 设置 / 默认热键
+│       ├── ui/                    # theme / qss / components / fonts / qtcompat + window_manager / taskbar
+│       │                          # + dialogs / notify / reveal / networknav / sidebar / badge / status_flash
+│       ├── automation/            # Automation（任务类型/持久化/执行引擎/路径跟随/样式/窗口）
+│       ├── dragdrop.py            # 外部拖放导入 .abc / .fbx / .usd*
 │       ├── videoseq/              # 视频转序列图（ffmpeg 查找 + 窗口）
 │       ├── hdrlight/              # HDR Library（HDR 库浏览 + 缩略图 + 灯光赋值）
 │       ├── recipelib/             # Recipe Library（资产库浏览/元数据/文档/数据导入导出/缩略图裁剪）
-│       ├── package/               # Package Project（引用扫描 + 收进 $HIP + 改相对路径 + zip）
+│       ├── package/               # Package Project（引用扫描 + 按类型归入官方工程目录 + 改相对路径 + zip + package_log.txt）
 │       ├── icons/                 # UI 图标（SVG）
 │       ├── fonts/                 # 字体文件
 │       └── tools/                 # 工具入口（<tool_id>.py 暴露 run()）
+├── dev-notes/                    # 各功能实现细节与坑表（改对应模块前必读，不入发行包）
 ├── tests/
 │   ├── smoke_test.py             # 无头回归（菜单/导入/窗口实例化/行为断言）
-│   ├── test_theme_tokens.py      # token lint
-│   ├── test_fonts.py             # 字体加载测试
+│   ├── test_theme_tokens.py      # token lint + 对比度
+│   ├── test_about_sync.py        # About 页版本/锚点/菜单覆盖/资源/离线与无障碍同步断言
+│   ├── test_fonts.py             # 字体角色 / 逐控件 stamping / ChildAdded enforcer
 │   ├── gen_about_shots.py        # 离屏重生成 3 张 About 截图（hdr.png 不重生成）
-│   └── gen_brand_assets.py       # 离屏重生成 README 头图与徽章
+│   └── gen_brand_assets.py       # 离屏重生成 docs/brand/ 字标（README 头图与徽章不由脚本生成）
+└── .agents/skills/houtools-release/  # 发版流程（版本号 / 文档同步 / 截图 / zip / gitcode 发行版）
 ```
 
 配置目录（默认 `Documents\HouTools\settings`，不在仓库内；开发机旧版在插件根 `settings/`，
@@ -400,6 +442,7 @@ settings/
 ├── Automation_Config.json     # Automation 的 DW 软件路径等配置（缺失时自动补建）
 ├── hotkeys.json               # HouTools Settings 自定义键位
 ├── hdr_library.json           # HDR Library 的库目录/缩略图大小/收藏
+├── hdr_scan_index.json        # HDR 扫描快照（可再生缓存，库未改动时打开免重扫）
 ├── recipelib.json             # Recipe Library 的库目录与元数据（标签/收藏/颜色/显示名）
 ├── recipe_thumbs/             # Recipe Library 缩略图
 ├── recipe_docs/               # Recipe Library Markdown 文档

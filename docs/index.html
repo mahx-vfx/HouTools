@@ -60,7 +60,7 @@
   ::selection { background: var(--accent); color: var(--ink-1000); }
   .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px 64px; }
 
-  /* ---- 头部：真实 UI 截图拼贴 + 品牌字标 + 蓝图网格 ---- */
+  /* ---- 头部：AI 主视觉背景（hero.jpg）+ 品牌字标 + 液态玻璃仓库卡 ---- */
   .hero {
     position: relative;
     overflow: hidden;
@@ -75,7 +75,7 @@
     margin: 0 auto;
     padding: 52px 28px 56px;
   }
-  /* 文字列限宽落在主视觉左半暗部；右半整块留给能量线与方块群 */
+  /* 文字列限宽落在主视觉左半暗部；右半留给橙色能量环与发光立方体 */
   .hero-copy { max-width: 620px; }
   .hero-kicker {
     font-size: 12px;
@@ -128,7 +128,7 @@
     padding: 2px 12px;
     border-radius: 999px;
     font-size: 12.5px;
-    /* 自带暗色 scrim：badge 压在主视觉亮部（机甲壳左缘）时仍可读，
+    /* 自带暗色 scrim：badge 压在主视觉上时仍可读，
        不依赖背景图该处恰好是暗部 */
     background: rgba(5, 5, 10, .72);
     border: 1px solid var(--line-strong);
@@ -588,7 +588,7 @@ body.ds{ font-size:15px; }
 /* 底部亮边：亮度跟随背景。mask 的 17 个 stop 按 hero.jpg 顶栏背景条带
    实测亮度生成；2026-11-20 再换图（1672x941 发光立方体 hero-C，源图 y290-296），
    以「亮度→alpha」锚点重采样：新图左半（0-50%）纯黑压到 .12，
-   发光 logo 主体偏右，峰值挪到 62.5% / 81.25% / 100%（.4/.44/.69）——换 hero 图必须重采样。
+   发光 logo 主体偏右，峰值挪到 62.5% / 81.25% / 100%（.4/.44/.69）——换 hero 图必须重采样这些 stop 并同步脚本里的 IW/IH。
    滚过 hero 后（无 .lg-on）背景全是暗色内容，整条等比减暗（物理：无光源则无亮边）。
    亮边独立成 ::after 层 + 水平 mask 调制，而不是把两层渐变塞进一个 background */
 .ds-top::after{
@@ -624,7 +624,7 @@ body.ds{ font-size:15px; }
 .ds-btn svg{width:14px;height:14px}
 
 .ds-hero{border-bottom:1px solid var(--line);
-  /* 主视觉背景（assets/hero.jpg，1672x941 / 1.78:1 / q4 ≈247KB）：墨黑底 + 品牌橙机甲环 + 发光立方体 logo。
+  /* 主视觉背景（assets/hero.jpg，1672x941 / 1.78:1 / q4 ≈247KB）：墨黑底 + 品牌橙能量环 + 发光立方体 logo。
      图体零雾化叠加——右半（画面主体）保持原图干净；
      仅两处结构性渐变：横向左缘护字（文字列内实暗、47% 归零）、
      纵向底边窄渐隐（78% 起才介入，收掉橙轮廓灯与正文的硬切缝） */
@@ -752,10 +752,10 @@ body.ds{ font-size:15px; }
 <body class="ds" id="top">
 
 <!-- 液态玻璃滤镜组（施加在顶栏/仓库卡的 hero.jpg 背景副本上，SVG 元素滤镜全浏览器支持）：
-     lg-frost = 中间毛玻璃（blur6+提饱和）；lg-rimsharp = 边缘折射层的轻滤镜（blur1.5+提饱和，
+     lg-frost = 中间毛玻璃（blur5+提饱和 1.4）；lg-rimsharp = 边缘折射层的轻滤镜（blur1+提饱和 1.5+暗染色，
      保持弯曲内容清晰）。
-     边缘折射本体不靠滤镜：JS 把折射层副本按比例向栏/卡中心压缩绘制（顶栏垂直 0.45、
-     卡片 0.9/0.5），压缩让平滑背景在边缘被挤成可见的厚度带、直线在玻璃内真实弯曲；
+     边缘折射本体不靠滤镜：JS 把折射层副本按比例向栏/卡中心压缩绘制（顶栏垂直 0.3、
+     卡片 0.85/0.4），压缩让平滑背景在边缘被挤成可见的厚度带、直线在玻璃内真实弯曲；
      lg-rim 遮罩只露边缘带，中间让位毛玻璃。
      已证伪并弃用：backdrop-filter:url()（真机+无头落级纯模糊）、feImage 贴图（整链失效）、
      feTurbulence 位移（噪声=雾感，读不出折射）。取值不含 #hex（规避 svg-hex 扫描） -->
@@ -1157,7 +1157,7 @@ body.ds{ font-size:15px; }
 
     <div class="ds-lead">
       <div class="ds-lead-t">这是一份使用手册</div>
-      <p>左侧是 16 个工具与章节的目录，可按名称筛选；右侧是当前页的小节导航。每个工具都写清了<b>入口位置</b>、<b>快捷键</b>、<b>行为规则</b>与<b>已知边界</b>，按需查阅即可。</p>
+      <p>左侧是 16 个工具与章节的目录，可按名称筛选；右侧是当前章节的小节导航（链接由正文小节标题自动派生，窄屏下沉到章节顶部）。每个工具都写清了<b>入口位置</b>、<b>快捷键</b>、<b>行为规则</b>与<b>已知边界</b>，按需查阅即可。</p>
     </div>
     <div class="ds-grid">
       <div class="ds-card"><div class="k">工具 / 章节</div><div class="v"><b>16</b></div></div>
@@ -1182,6 +1182,8 @@ body.ds{ font-size:15px; }
     <li>后台线程执行,不阻塞 Houdini 界面;对 Houdini 的调用统一派发主线程,<strong>上一任务真正完成后才派发下一个</strong>——顺序语义有保证,主线程被解算阻塞多久就等多久。</li>
     <li>取消是协作式的,只在任务边界生效;点停止后按钮显示「停止中…」直到当前任务结束。</li>
     <li>节点可直接<strong>拖入参数路径框</strong>(原生投递)。</li>
+    <li><strong>任务里的节点路径跟随改名</strong>:BUTTON_CLICK 任务的节点路径随节点或父级改名实时更新(配置 JSON 与面板槽位同步刷新),像 Houdini 原生参数引用一样;改名/删除反馈走左下角 toast,控制台零提示。</li>
+    <li>节点被删除时只摘监听、路径保留,槽位显示红色「丢失」标签(不自动改配置);撤销删除或同名重建后自动恢复。无头/农场会话不挂监听、hip 零写入。</li>
     <li>配置 JSON 存 <code>$HIP/HouTools_cfg/Automation_json/</code>(跟工程走,多配置文件可切换),执行日志存 <code>$HIP/HouTools_cfg/Automation_logs/</code>。<strong>默认配置为本机计算机名</strong>,多台机器共用同一工程目录时各写各的配置文件,互不覆盖;「上次使用的配置」也按机器随工程记忆,重开同一工程自动切回。</li>
     <li>任务列表<strong>改动即存</strong>:编辑后 600ms 自动落盘(切配置/Start/关窗时强制保存),崩溃不丢配置;配置被其他机器修改过时,写盘会弹窗让用户选择<strong>覆盖 / 另存 / 取消</strong>(取消=放弃本次修改,恢复磁盘内容);工具栏「删除」按钮可删除废弃配置(二级确认,物理删除不可恢复)。</li>
     <li>「打开DW」任务的软件路径在配置目录的 <code>Automation_Config.json</code> 配置(缺失时自动按默认值补建,可直接编辑);该任务执行前会强制保存当前工程。</li>
@@ -1304,26 +1306,27 @@ body.ds{ font-size:15px; }
     <li>「编码器」行有 <strong>ⓘ</strong> 按钮:悬停/点击查看当前实际生效的 ffmpeg/ffprobe 路径(查找有降级序,显示即所用)。</li>
     <li>可选自动把输出序列设置到选中相机的 Background Image。</li>
     <li>相机分辨率显示与编辑:选中相机后显示其分辨率,宽/高两个输入框直接改写(1~5 位整数校验),「预设」下拉一键填入 1280×720~4096×2160 共 7 档,「确定」写回相机;相机行「匹配素材分辨率」按钮一键把相机分辨率对齐当前素材(防背景拉伸)。</li>
-    <li>转换前自动扫描输出目录中的同名旧序列并询问是否清除,防止新旧帧混杂。</li>
+    <li>转换前扫描输出目录中的同前缀旧序列,询问后改名 <code>.bak</code> 让位——转换成功才真正删除,取消/失败原样还原,防止新旧帧混杂。</li>
     <li>提取可随时取消(探测与转换阶段均可),取消时提示已写入帧数。</li>
   </ul>
-  <div class="note">ffmpeg 优先使用 Houdini 自带的 <code>$HFS/bin/hffmpeg</code>,<strong>无需单独安装</strong>;如需指定版本,把 <code>ffmpeg.exe</code> 放到 HouTools 配置目录(包清单里 <code>HOUTOOLS_FFMPEG</code> 变量指向的位置,默认 <code>$HOUDINI_USER_PREF_DIR/../HouTools</code>,即设置目录的上级)即可优先使用。</div></div>
+  <div class="note">ffmpeg 优先使用 Houdini 自带的 <code>$HFS/bin/hffmpeg</code>,<strong>无需单独安装</strong>;如需指定版本,把 <code>ffmpeg.exe</code> 放到 <code>Documents/HouTools/</code>(配置目录 <code>Documents/HouTools/settings</code> 的上级,即包清单 <code>HouTools.json</code> 里 <code>HOUTOOLS_FFMPEG</code> 的默认值 <code>$HOUDINI_USER_PREF_DIR/../HouTools</code>)即可优先使用,该变量也可改成 exe 完整路径或其他目录。ffprobe 无需单独配置:优先借用 ffmpeg 同目录配套的 ffprobe,缺失时回退 PATH / <code>$HFS/bin/hffprobe</code>。</div></div>
 </section>
 <section id="package-project" class="ds-sec">
   <h2>Package Project<span class="zh">打包工程</span><a class="h2-anchor" href="#package-project" aria-label="链接到此节">#</a></h2>
   <div class="ds-sec-body"><p class="entry">入口:<code>HouTools → Package Project</code>(主菜单与网络编辑器菜单均有)</p>
   <p>把工程收成可搬走的一包,对应渲染农场提交前的整理:收文件 → 改相对路径 → 保存 → 打 zip。</p>
   <ul>
-    <li><strong>手动引用就收</strong>:<code>file</code> / <code>fileName</code> / 贴图路径这类输入参数只要填了值就列出来,文件不存在也列(标「缺失」,打包时跳过);<strong><code>$HFS</code> / <code>$HH</code> 里的引用也会列出</strong>(是否打包由勾选决定),只过滤真正不是文件的值(空值、节点路径、目录、<code>shfs:</code>/<code>op:</code> 协议、<code>$HIP/galleries</code>、<code>$HIP/backup</code>)。</li>
-    <li><strong>filecache 缓存按真实路径整段收</strong>:它的 <code>file</code> 参数(<code>$HIP/geo/$HIPNAME.$OS.$F.bgeo.sc</code>)不是实际文件,工具按 <code>sopoutput</code> 求值拿首帧、glob 出整段帧,并把改写目标定为 <code>basedir</code>——下游 <code>chs("…/sopoutput")</code> 引用会自动跟着走。其它输出参数默认只收已落盘的,勾「含空输出路径」才列未生成的。</li>
-    <li><strong>全部复制进一个文件夹</strong>:<code>&lt;包根&gt;/&lt;包名&gt;/assets/…</code>。<code>$HIP</code> 内素材保留相对目录(<code>$HIP/geo/x.bgeo.sc</code> → <code>assets/geo/x.bgeo.sc</code>),包外才展平目录。参数写法按生成方式区分:另存到包目录 → <code>$HIP/assets/…</code>(hip 就住在包目录里);覆盖当前工程 → <code>$HIP/&lt;包名&gt;/assets/…</code> 或 <code>$JOB/&lt;包名&gt;/assets/…</code>。包根可选 <code>$HIP</code>(默认)或 <code>$JOB</code>,<code>$JOB</code> 未设置时自动禁用。</li>
-    <li><strong>只列用户改过的路径</strong>:参数处于默认值(<code>isAtDefault</code>)的内置路径(如 <code>karma/hoseksolarmap.rat</code>)不会列出;filecache 的 <code>basedir</code> 例外(它代表实际缓存目录)。</li>
+    <li><strong>只扫启用节点、只列用户改过的路径</strong>:<code>file</code> / <code>fileName</code> / 贴图路径这类输入参数只要填了值就列出来,文件不存在也列(标「缺失」,打包时跳过);参数处于默认值(<code>isAtDefault</code>)的内置路径(如 <code>karma/hoseksolarmap.rat</code>)不会列出,filecache 的 <code>basedir</code> 例外(它代表实际缓存目录)。<strong><code>$HFS</code> / <code>$HH</code> 里的引用也会列出</strong>(是否打包由勾选决定),只过滤真正不是文件的值(空值、节点路径、目录、<code>shfs:</code>/<code>op:</code> 协议、<code>$HIP/galleries</code>、<code>$HIP/backup</code>)。</li>
+    <li><strong>filecache 缓存按真实路径整段收</strong>:它的 <code>file</code> 参数(<code>$HIP/geo/$HIPNAME.$OS.$F.bgeo.sc</code>)不是实际文件,工具按 <code>sopoutput</code> 求值拿首帧、glob 出整段帧,并把改写目标定为 <code>basedir</code>——下游 <code>chs("…/sopoutput")</code> 引用会自动跟着走。其它输出参数只收已落盘的,未落盘的只作缺失行列出、不复制不改写(「含空输出路径」勾选已移除)。</li>
+    <li><strong>按文件类型归入官方工程目录</strong>:包内不再有统一 <code>assets/</code> 层,顶层直接是 Houdini 官方 New Project 目录 <code>geo / hda / sim / abc / tex / render / flip / scripts / other</code>,解压后即可当工程用。<code>$HIP/geo/x.bgeo.sc</code> → <code>geo/x.bgeo.sc</code>(类型与首段同名不重复前缀),包外素材才展平目录(<code>D:\proj\tex</code> → <code>tex/D_proj_tex</code>),避免同名覆盖。</li>
+    <li><strong>参数写法按生成方式区分</strong>:另存到包目录 → <code>$HIP/&lt;类型&gt;/…</code>(hip 就住在包目录里,<code>$HIP</code> = 包目录);覆盖当前工程 → <code>$HIP/&lt;包名&gt;/&lt;类型&gt;/…</code>、<code>$JOB/&lt;包名&gt;/&lt;类型&gt;/…</code> 或 <code>&lt;自定义根&gt;/&lt;包名&gt;/&lt;类型&gt;/…</code>。包根可选 <code>$HIP</code>(默认)、<code>$JOB</code>(未设置自动禁用)或自定义绝对路径;另存模式无论包根选哪个,前缀都是 <code>$HIP/&lt;类型&gt;/…</code>。</li>
     <li><strong>表达式驱动的参数不改写</strong>:<code>chs()</code> 链接 / 表达式 / 关键帧驱动的参数自动跳过——对它写静态值等于把表达式冻成常数(同 File Cache 转绝对的拒绝语义),并计入执行结果的跳过统计;filecache 的 <code>basedir</code> 同查(其 <code>file</code>/<code>basename</code> 只是拼路径的片段,本就不单独收)。</li>
-    <li><strong>两种生成方式</strong>:另存到包目录(默认,原工程不动)或覆盖当前工程。包名默认 <code>ht_package</code>,可在窗口里改(输入会净化,Windows 禁用符与 <code>..</code> 被收敛,防止写出包目录之外)。</li>
+    <li><strong>两种生成方式</strong>:另存到包目录(默认,生成 <code>&lt;包名&gt;/&lt;hip&gt;_packed.hip</code>,原工程不动)或覆盖当前工程。包名默认「工程名 + <code>-pack</code>」(未保存工程回落 <code>ht_package</code>),可在窗口里改(输入会净化,Windows 禁用符与 <code>..</code> 被收敛,防止写出包目录之外)。</li>
+    <li>表格 6 列(勾选 / 节点 / 参数 / <strong>参数现值</strong> / <strong>打包后参数值</strong> / 状态),类型信息并入状态列;数据列列宽可拖,<code>Ctrl+滚轮</code> 缩放表格字号(7–24pt)。扫描期间有全窗口等待遮罩,取消勾选实时联动待复制数/体积,切换工程自动清空上一工程的扫描结果。</li>
     <li>帧模板 <code>foo.$F4.exr</code> 原样保留,现有帧整段收进包里;参数改写在一个 undo 组里,<strong>Ctrl+Z 可整体撤销</strong>。复制/zip 在后台线程执行,运行中关闭窗口即协作取消——复制停在当前文件边界(取消后不进行参数改写与保存),zip 半成品(<code>.part</code>)不落盘。</li>
     <li><strong>执行结果面板</strong>:完成 / 失败两态,逐条列出复制失败(源路径 + 原因)、改写失败(节点:参数 + 原因)、保存失败与跳过计数,并显示扫描统计。</li>
-    <li><strong>双击某行跳转到该节点</strong>;<strong>右键</strong>只有两项:「跳转到节点」「在资源管理器中打开原路径」(Shell API 定位并选中,序列取第一帧)。</li>
-    <li>「生成 zip」把包目录整体压成 <code>&lt;包根&gt;/&lt;包名&gt;.zip</code>。</li>
+    <li><strong>双击某行跳转到该节点</strong>(网络编辑器定位并居中;跳转前自动切 Manual 更新模式,避免 Auto Update / OnMouseUp 下跳重节点当场重烤卡死,恢复在播放条手动选回);<strong>右键</strong>只有两项:「跳转到节点」「在资源管理器中打开原路径」(Shell API 定位并选中,序列取第一帧)。</li>
+    <li>「生成 zip」把包目录整体压成 <code>&lt;包根&gt;/&lt;包名&gt;.zip</code>,并在 <code>&lt;包根&gt;/&lt;包名&gt;/package_log.txt</code> 写逐条打包明细(随 zip 归档)。</li>
   </ul></div>
 </section>
 <section id="hdr-library" class="ds-sec">
@@ -1337,7 +1340,7 @@ body.ds{ font-size:15px; }
   </ul>
   <h3 id="hdr-library-h3-1">缩略图与贴图<a class="h3-anchor" href="#hdr-library-h3-1" aria-label="链接到此小节">#</a></h3>
   <ul>
-    <li>缩略图由后台线程池调 Houdini 自带 <code>hoiiotool</code> 按需生成(无需安装),缓存在库目录 <code>.thumb_cache/</code>;窗口显示时自动扫描比对补图(隐藏后重开也会重扫,库文件被外部增删后即时跟上;可暂停/停止),之后秒开;HDR 文件更新后旧缩略图自动失效重生成。</li>
+    <li>缩略图由后台线程池调 Houdini 自带 <code>hoiiotool</code> 按需生成(无需安装),缓存在库目录 <code>.thumb_cache/</code>;扫描结果落配置目录的快照 <code>hdr_scan_index.json</code>,下次打开先比对目录修改时间——库没动就直接出网格不重扫,库有增删才重扫跟上(可暂停/停止);HDR 被原地同名覆盖更新时按文件状态等值检出、旧缩略图自动重生成,可疑情形用「刷新」按钮强制全量重扫兜底。</li>
     <li>选中一个或多个灯光后<strong>双击缩略图</strong>,HDR 路径批量写入灯光环境贴图参数——支持 OBJ <code>envlight</code>(Karma,自动关 skymap 程序化天空)、RenderMan dome 灯、LOP <code>domelight</code> 全家族(Solaris);其余灯型给出友好提示;赋值成功/失败有状态栏闪烁反馈,同一贴图 1.2 秒内的重复赋值自动去重(防双击连发重复写参)。</li>
     <li>右键缩略图:收藏 / 复制路径 / 打开所在文件夹;收藏项右上角带角标并计入侧栏计数。</li>
   </ul>
@@ -1434,7 +1437,7 @@ body.ds{ font-size:15px; }
 <section id="install" class="ds-sec">
   <h2>安装<span class="zh"></span><a class="h2-anchor" href="#install" aria-label="链接到此节">#</a></h2>
   <div class="ds-sec-body"><ol>
-    <li>下载 HouTools.zip,整个解压到 <code>Documents/houdini21.0/packages/</code>(H21)或 <code>Documents/houdini22.0/packages/</code>(H22),解压后该目录下即有 <code>HouTools</code> 文件夹与 <code>HouTools.json</code>;</li>
+    <li>点首屏「下载最新版」下载 <code>HouTools.zip</code>(GitCode Releases),整个解压到 <code>Documents/houdini21.0/packages/</code>(H21)或 <code>Documents/houdini22.0/packages/</code>(H22)——<strong>同一个包直装两版</strong>;解压后该目录下即有 <code>HouTools</code> 文件夹与 <code>HouTools.json</code>;</li>
     <li>启动 Houdini,顶部菜单即出现 <strong>HouTools</strong>。</li>
   </ol>
   <div class="note">若需把 HouTools 文件夹放到其他位置,修改 <code>packages/HouTools.json</code> 里 <code>$HOUDINI_PACKAGE_PATH/HouTools</code> 的路径即可。仅支持 Windows:Automation 的窗口置顶用 Win32 API,部分工具的「打开所在文件夹」依赖 explorer。</div></div>
@@ -1708,7 +1711,7 @@ body.ds{ font-size:15px; }
     imgs[1].setAttribute('width', dw.toFixed(1));
     imgs[1].setAttribute('height', rimH);
     /* 仓库玻璃卡副本：hero 背景图映射到卡片自身坐标系（卡片悬浮于 hero 之上，
-       副本与卡片后的真实背景逐像素对齐，折射才连续）；折射层双向压缩（0.9/0.5） */
+       副本与卡片后的真实背景逐像素对齐，折射才连续）；折射层双向压缩（0.85/0.4） */
     if (boxImgs.length) {
       var r = box.getBoundingClientRect();
       var bx0 = ix - r.left, by0 = iy - r.top;
