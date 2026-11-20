@@ -175,8 +175,8 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
 `C:\Users\zhouhaibin\cccc-pack`，参数写成 `$JOB/cccc-pack/…`——包仍落到
 C 盘用户名下，上一版「自动回退 `$HIP`」没有生效。
 
-**根因**：本机没有显式设置 JOB 环境变量（`houdini.env` 为空、用户/系统/进程
-三级都没有）。Houdini 未设 JOB 时 `$JOB` 的展开值**随启动方式变**：GUI 里
+**根因（三轮实测当时的现场）**：本机没有显式设置 JOB 环境变量（用户配置
+`houdini.env` 当时为空、用户/系统/进程三级都没有）。Houdini 未设 JOB 时 `$JOB` 的展开值**随启动方式变**：GUI 里
 多为 `$HOME`，本机 hython 实测是**当前工作目录**（CWD），也可能等于 `$HIP`。
 上一版靠比较 `$JOB` 与 `$HOME`/`$HIP` 猜「未设置」再自动回退，在 GUI 里没
 命中，于是 `fallback=False`，包根仍是 `$HOME`，`$JOB/…` 被解析回用户主目录。
@@ -197,11 +197,13 @@ C 盘用户名下，上一版「自动回退 `$HIP`」没有生效。
   本次会话指定的路径（窗口 Reload 重建后由**模块级 `_JOB_OVERRIDE`**（NameError
   守卫活过热重载，同 `_LIVE_WORKERS`）兜底——否则 JOB 目录恰好等于 `$HIP`
   时会被重新判成「未设置」而重复弹窗）；`_check_job()` tooltip、确认弹窗与结果日志都提示
-  「仅本次 Houdini 会话有效，重启前请在 `houdini.env` 写 `JOB = <路径>`」
+  「仅本次 Houdini 会话有效，持久化走用户配置 `houdini.env` 或 Package
+  `.json`（措辞见后文《JOB 持久化》节）」
   ——**工具不擅自改用户的配置文件**。
 - **物理约束**：参数写 `$JOB/<包名>/…` 的前提是会话 `$JOB` 真的指向包根；
   只把文件放到别的目录而不 `putenv`，打包后参数会解析到 `$HOME`，路径失效。
-- **若用户后续显式设置了 JOB**（`houdini.env` 里 `JOB = D:/projects/main`），
+- **若用户后续显式设置了 JOB**（用户配置 `houdini.env` 或 Package `.json`
+  里 `JOB = D:/projects/main`），
   会话首次打包仍会弹一次确认（见下一节），点「使用当前 $JOB」后本会话
   不再打扰，包根与参数都按 `$JOB/<包名>/…`。
 - **缓存目录行色**（同轮第二项反馈，真机已确认生效）：`_fill_table()` 的
@@ -239,6 +241,33 @@ C 盘用户名下，上一版「自动回退 `$HIP`」没有生效。
   相对路径」，避免用户看不出变量实际解析到哪里。
 - 冒烟固化三条回归：env 注入默认值仍判 `needs=True`、会话首次即使
   `needs=False` 也弹确认、「使用当前」后二次打包不再弹。
+
+## JOB 持久化：三种文件不要混（2026-11-20 23:58 用户纠正）
+
+| 文件 | 用途 | Houdini 是否读取 |
+|---|---|---|
+| 项目根目录 `.env` | 项目自身配置（Node/Python 工具链常用） | **不会**默认读取；在这里写 `JOB = ...` 对 Houdini 无效 |
+| 用户配置目录 `houdini.env` | Houdini 官方环境变量配置文件，每用户一份，**仅启动时读取** | ✅ |
+| Houdini Package `.json` | 官方插件及项目环境配置方式，在 `env` 块里设变量 | ✅ |
+
+- **本机有两份 `houdini.env`，别写错**：GUI（`houdinifx.exe`）用
+  `C:/Users/zhouhaibin/Documents/houdini22.0/houdini.env`（`.pref` /
+  `file.history` 等随 GUI 启动更新）；hython / 无头用
+  `C:/Users/zhouhaibin/houdini22.0/houdini.env`（实测
+  `hou.getenv("HOUDINI_USER_PREF_DIR")` 返回该目录）。代码 `_job_pref_env_file()`
+  动态取 `HOUDINI_USER_PREF_DIR` 拼出实际路径，提示里给真实值，不硬编码。
+- 本机 `packages/HouTools.json` 的 `env` 块当前只有 `HOUDINI_PATH` /
+  `HOUTOOLS_SETTINGS_DIR` / `HOUTOOLS_FFMPEG` 三项，**没有 JOB**。
+  既有拍板（AGENTS.md「热加载机制」条）：`HOUTOOLS_DEV` 这类每用户开关
+  **只走 `houdini.env`，严禁写进随包分发的 `HouTools.json`**；这条只针对
+  每用户开关，不否定 Package `.json` 配项目/插件级变量的官方地位。
+  若要把 JOB 走 Package 方式，写用户自己的 package json，别污染随包清单。
+- 工具行为不变：`hou.putenv("JOB", path)` 只改当前会话；弹窗 / tooltip /
+  结果日志统一由 `_job_persist_hint()` 给出上面两种官方持久化方式，并明确
+  项目根 `.env` 无效、别写进 `HouTools.json`。**工具不擅自改任何配置文件。**
+- `tests/smoke_test.py` 固化 `package JOB persist hint OK`：提示必须同时出现
+  `houdini.env`、Package `.json`/`env 块`、「.env 不会被 Houdini 读取」、
+  `HouTools.json` 与用户指定的路径。
 
 **坑：包根下拉项的 userData 不能被提示文字覆盖。** `setItemData(index, text)`
 默认写 `Qt.UserRole`，会把 `addItem("$JOB", "JOB")` 存的 `"JOB"` 换成提示文字，
@@ -360,8 +389,9 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
   `<UVTILE>`（u1_v1）暂不支持。
 - 选 `$JOB` 打包时**每个会话首次都会弹窗确认实际目录**；落在默认目录则
   必须指定/创建（工具临时 `hou.putenv`）。该设置**只对当前 Houdini 会话
-  有效**，重启后需在 `houdini.env` 写 `JOB = <路径>`，否则已打包的
-  `$JOB/…` 参数会解析回 `$HOME`。工具不自动改 `houdini.env`。
+  有效**，重启后需按《JOB 持久化：三种文件不要混》在用户配置
+  `houdini.env` 或 Package `.json` 里持久化 JOB，否则已打包的
+  `$JOB/…` 参数会解析回 `$HOME`。工具不自动改任何配置文件。
 
 ## 测试
 

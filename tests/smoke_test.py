@@ -5718,6 +5718,18 @@ def main():
             sys.modules["hou"] = _job_saved
     print("package JOB setup OK")
 
+    # 2026-11-20 23:58 用户纠正：项目根 .env / 用户配置 houdini.env /
+    # Houdini Package .json 三者不是一回事，提示必须说清区别。
+    _hint = pkg_window._job_persist_hint("D:/VFX/job")
+    assert "houdini.env" in _hint
+    assert "Package .json" in _hint and "env 块" in _hint
+    assert ".env 不会被 Houdini 读取" in _hint
+    assert "HouTools.json" in _hint
+    assert "D:/VFX/job" in _hint
+    _short_hint = pkg_window._job_persist_hint(short=True)
+    assert "houdini.env" in _short_hint and "packages/*.json" in _short_hint
+    print("package JOB persist hint OK")
+
     # 恢复成 2 条 fixture，供下面多选/切场景断言使用
     _pkg_win._refs = [pkg_collect.Ref(
         kind="input", node_path="/obj/a", parm_name="file",

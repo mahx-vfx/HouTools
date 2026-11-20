@@ -69,6 +69,45 @@ try:
 except NameError:
     _JOB_CONFIRMED = False
 
+
+def _job_pref_env_file():
+    """当前 Houdini 实际读取的用户配置 ``houdini.env`` 路径（动态取）。
+
+    Windows 上 GUI 与 hython 的用户配置目录可能不同（本机 GUI =
+    ``Documents/houdini22.0``，hython = ``$HOME/houdini22.0``），提示里
+    必须给实际路径，不能硬编码，更不能笼统写成项目根的 ``.env``。
+    """
+    try:
+        import hou
+        pref = hou.getenv("HOUDINI_USER_PREF_DIR") or ""
+    except Exception:
+        pref = ""
+    if pref:
+        return os.path.join(pref, "houdini.env").replace("\\", "/")
+    return "$HOUDINI_USER_PREF_DIR/houdini.env"
+
+
+def _job_persist_hint(path="<路径>", short=False):
+    """JOB 持久化的官方方式说明——别把项目根 ``.env`` 当成 Houdini 配置。
+
+    用户纠正（2026-11-20 23:58）：项目根目录的 ``.env`` 属于项目配置，
+    **Houdini 不会默认读取**；官方支持的是「用户配置目录的
+    ``houdini.env``」与「Houdini Package ``.json`` 的 env 块」两种。
+    既有约定：``HOUTOOLS_DEV`` 等每用户开关只走 ``houdini.env``，且
+    **严禁**写进随包分发的 ``HouTools.json``（AGENTS.md 热加载机制条）。
+    """
+    env_file = _job_pref_env_file()
+    if short:
+        return ("持久化：{0} 或 packages/*.json 的 env 块"
+                "（项目根 .env 不会被 Houdini 读取）".format(env_file))
+    return (
+        "持久化（本次会话设置重启后失效，请二选一）："
+        "① 用户配置 {0} 里写 JOB = {1}；"
+        "② 自己的 Houdini Package .json 的 env 块加 JOB。"
+        "项目根目录的 .env 不会被 Houdini 读取；"
+        "别写进随包分发的 HouTools.json。".format(env_file, path))
+
+
 _COL_CHECK = 0
 _COL_NODE = 1
 _COL_PARM = 2
@@ -789,8 +828,8 @@ class PackageProjectWindow(QDialog):
             tip = ("未显式设置 $JOB（当前展开为 {0}）；点「打包」时会要求"
                    "指定 JOB 目录".format(job))
         elif override:
-            tip = ("$JOB = {0}（本次会话指定；重启 Houdini 前请在 "
-                   "houdini.env 写入 JOB = {0}）".format(override))
+            tip = ("$JOB = {0}（本次会话指定；{1}）".format(
+                override, _job_persist_hint(override, short=True)))
         else:
             tip = ("$JOB = {}；点「打包」时会先确认这个目录"
                    .format(actual or job))
@@ -819,8 +858,10 @@ class PackageProjectWindow(QDialog):
         - 指定目录后 ``hou.putenv("JOB", path)`` 让会话变量真的指过去，
           参数继续写 ``$JOB/<包名>/…``，包根与前缀同源。
 
-        仅当前会话生效，弹窗与日志都提示重启前要写 houdini.env（工具
-        不擅自改用户的配置文件）。
+        仅当前会话生效，弹窗与日志都给出官方持久化方式（用户配置目录的
+        ``houdini.env`` / Package ``.json`` 的 env 块，见
+        ``_job_persist_hint``），并明确项目根 ``.env`` 无效；工具不擅自
+        改任何配置文件。
         """
         if self._root_var() != "JOB":
             return True
@@ -840,8 +881,8 @@ class PackageProjectWindow(QDialog):
                 "· 选择已有目录：用现有文件夹作为 JOB 根\n"
                 "· 创建 JOB 目录：手输绝对路径，工具创建它\n"
                 "· 取消：中止打包\n\n"
-                "指定后仅对当前 Houdini 会话生效；重启前请在 houdini.env "
-                "写入 JOB = <该路径>。".format(job_now),
+                "指定后仅对当前 Houdini 会话生效。\n{1}".format(
+                    job_now, _job_persist_hint()),
                 ["选择已有目录…", "创建 JOB 目录…", "取消"])
             if pick == 2:
                 return False
@@ -853,8 +894,8 @@ class PackageProjectWindow(QDialog):
                 "包会复制到 {0}/<包名>/… ，参数也会写成 $JOB 下的相对路径。\n"
                 "确认无误请点第一项；要换目录可选「选择已有目录」或"
                 "「创建 JOB 目录」。\n\n"
-                "指定后仅对当前 Houdini 会话生效；重启前请在 houdini.env "
-                "写入 JOB = <该路径>。".format(job_now),
+                "指定后仅对当前 Houdini 会话生效。\n{1}".format(
+                    job_now, _job_persist_hint()),
                 ["使用当前 $JOB", "选择已有目录…", "创建 JOB 目录…", "取消"])
             if pick == 3:
                 return False
@@ -898,7 +939,7 @@ class PackageProjectWindow(QDialog):
         _JOB_CONFIRMED = True
         self._log("[信息] 已指定 JOB 目录：{}".format(path))
         self._log("[信息] 会话 $JOB 已设为该目录；仅本次 Houdini 会话有效，"
-                  "重启前请在 houdini.env 写入 JOB = {}".format(path))
+                  + _job_persist_hint(path))
         self._check_job()
         self._on_targets_changed()
         return True
@@ -1425,9 +1466,10 @@ class PackageProjectWindow(QDialog):
             # 时，用户看不出变量其实解析到了 C 盘用户名目录（三次实测）。
             job_note = "\n$JOB 当前 = {}".format(base)
             if job_override:
-                job_note += ("\n会话 $JOB = {}（仅本次 Houdini 会话有效；"
-                             "重启前请在 houdini.env 写入 JOB = {}）".format(
-                                 job_override, job_override))
+                job_note += ("\n会话 $JOB = {}（仅本次 Houdini 会话有效；{}）"
+                             .format(job_override,
+                                     _job_persist_hint(job_override,
+                                                       short=True)))
         if not dialogs.question(
                 self, "打包工程",
                 "将把 {} 个文件复制到\n{}\n\n并按文件类型归入官方工程目录"

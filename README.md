@@ -52,8 +52,8 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings.
 `Reload Modules (Dev)` 是开发期功能，**发行版安装点击只会提示、不执行任何操作**。是否可用自动判定：
 
 - 插件目录带 `.git`（git 仓库安装）→ 自动可用；
-- 仓库目录被拷贝安装（丢失 `.git`）时需手动开启：编辑 `Documents\houdiniXX.X\houdini.env`，加一行 `HOUTOOLS_DEV = 1`，**重启 Houdini 生效**（该文件仅启动时读取；H21/H22 各有一份，按需分别设置）。删除该行或设 `0` 即恢复按 `.git` 判定；
-- 开关唯一入口是 `houdini.env`：不支持 Windows 用户环境变量，也**不要**写进随包分发的 `HouTools.json`（那样所有用户都会被判定为开发环境，闸门失效）。
+- 仓库目录被拷贝安装（丢失 `.git`）时需手动开启：编辑**用户配置目录**的 `Documents\houdiniXX.X\houdini.env`，加一行 `HOUTOOLS_DEV = 1`，**重启 Houdini 生效**（该文件仅启动时读取；H21/H22 各有一份，按需分别设置；实际目录以 `$HOUDINI_USER_PREF_DIR` 为准，GUI 与 hython 可能不同）。删除该行或设 `0` 即恢复按 `.git` 判定；
+- 开关唯一入口是用户配置的 `houdini.env`：不支持 Windows 用户环境变量，也**不要**写进随包分发的 `HouTools.json`（那样所有用户都会被判定为开发环境，闸门失效）。**项目根目录的 `.env` 不会被 Houdini 读取**，别写错文件；插件/项目级变量请用 Houdini Package `.json` 的 `env` 块。
 
 已知开发期边界：Automation 任务执行中 Reload 会使剩余任务误判为"未知类型"（日志可见、重跑即可），请在引擎空闲时 Reload。
 
