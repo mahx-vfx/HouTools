@@ -5730,6 +5730,36 @@ def main():
     assert "houdini.env" in _short_hint and "packages/*.json" in _short_hint
     print("package JOB persist hint OK")
 
+    # 2026-11-21 四次实测：用户按提示写进 Documents/houdini22.0/houdini.env
+    # 并重启，GUI 会话 $JOB 仍是 C 盘用户名目录 —— 只按 PREF_DIR 拼路径会
+    # 指错文件。候选必须覆盖 $HOME 与 USERPROFILE 两份，并能诊断
+    #「文件里写了但会话没生效」。
+    _cands = pkg_paths.houdini_env_candidates(
+        "C:/Users/zhouhaibin/Documents/houdini22.0",
+        "C:/Users/zhouhaibin", "C:/Users/zhouhaibin", "houdini22.0")
+    assert len(_cands) == 2, _cands
+    assert any("Documents/houdini22.0/houdini.env" in p for p in _cands)
+    assert any(p.endswith("Users/zhouhaibin/houdini22.0/houdini.env")
+               for p in _cands), _cands
+    _probe = tempfile.NamedTemporaryFile(
+        "w", suffix=".env", delete=False, encoding="utf-8")
+    _probe.write("# comment\nJOB = D:/VFX/My_Houdini_Project\n")
+    _probe.close()
+    assert pkg_paths.job_entry_in_env_file(_probe.name) == \
+        "D:/VFX/My_Houdini_Project"
+    _diag = pkg_paths.job_env_diagnosis(
+        [_probe.name] + _cands, "C:/Users/zhouhaibin", True,
+        "$HOME = C:/Users/zhouhaibin")
+    assert "[诊断]" in _diag and "重启 Houdini" in _diag
+    assert "D:/VFX/My_Houdini_Project" in _diag
+    assert "另一份" not in _diag  # 文案用「把同一行也写进」列举候选
+    assert "把同一行也写进" in _diag and "houdini22.0" in _diag
+    assert "选择已有目录" in _diag
+    assert pkg_paths.job_env_diagnosis(
+        [_probe.name], "D:/VFX/My_Houdini_Project", False) == ""
+    os.unlink(_probe.name)
+    print("package JOB env diagnosis OK")
+
     # 恢复成 2 条 fixture，供下面多选/切场景断言使用
     _pkg_win._refs = [pkg_collect.Ref(
         kind="input", node_path="/obj/a", parm_name="file",

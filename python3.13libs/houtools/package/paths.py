@@ -276,6 +276,100 @@ def resolve_job_root(job_value, hip_value, home_value="", cwd_value="",
     return (job_value or "").strip().strip('"'), False, ""
 
 
+def houdini_env_candidates(pref_dir="", home="", userprofile="",
+                           version_dir="houdini22.0"):
+    """本机可能被 Houdini 读取的 ``houdini.env`` 路径（去重、保序）。
+
+    2026-11-21 四次实测：GUI 里 ``$HOUDINI_USER_PREF_DIR`` 指向
+    ``<USERPROFILE>/Documents/houdini22.0``，但未设置时 ``$JOB`` 回退到
+    ``<USERPROFILE>``；用户在前者的 ``houdini.env`` 写了 ``JOB = ...`` 并重启，
+    会话里仍未生效。而 hython 从 Git Bash 启动（外部 ``HOME=<USERPROFILE>``）
+    时读取的是 ``<USERPROFILE>/houdini22.0/houdini.env``。**只按 PREF_DIR 拼
+    路径会指错文件**，所以把全部可能目录列出来，由窗口逐一检测内容。
+
+    纯函数：不 import hou、不读磁盘，只拼接路径并去重。
+    """
+    version_dir = (version_dir or "houdini22.0").strip()
+    roots, seen = [], set()
+
+    def add(directory):
+        if not directory:
+            return
+        value = os.path.normpath(str(directory).strip().strip('"'))
+        if not value:
+            return
+        base = os.path.basename(value).lower()
+        # 已指向版本目录（如 .../houdini22.0）就直接用，否则补一层版本号
+        env_dir = value if (base.startswith("houdini") and
+                            re.search(r"\d", base)) else \
+            os.path.join(value, version_dir)
+        env_dir = env_dir.replace("\\", "/")
+        key = os.path.normcase(env_dir).lower()
+        if key not in seen:
+            seen.add(key)
+            roots.append(env_dir)
+
+    add(pref_dir)
+    add(home)
+    add(userprofile)
+    if userprofile:
+        add(os.path.join(str(userprofile).strip('"'), "Documents"))
+    return [os.path.join(directory, "houdini.env").replace("\\", "/")
+            for directory in roots]
+
+
+def job_entry_in_env_file(path):
+    """读取一份 ``houdini.env`` 里生效的 ``JOB = ...`` 值；没有/不可读返回 ""。
+
+    只读、不修改用户配置文件。兼容 CRLF、UTF-8 BOM、无末尾换行、值的引号；
+    注释行（``#``）与空行跳过。
+    """
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
+            for line in handle:
+                text = line.strip()
+                if not text or text.startswith("#"):
+                    continue
+                match = re.match(r"^JOB\s*=\s*(.*)$", text, re.IGNORECASE)
+                if match:
+                    return match.group(1).strip().strip('"').strip("'").strip()
+    except (OSError, ValueError):
+        pass
+    return ""
+
+
+def job_env_diagnosis(candidates, job_now="", needs=True, context=""):
+    """「文件里写了 JOB，但当前会话没生效」的诊断文字；没问题返回 ""。
+
+    与其继续猜 Houdini 到底读哪份 ``houdini.env``，不如把候选都扫一遍，如实
+    告诉用户「哪份已经写了」「写入后需完全重启」「另一份也补一行」，并给出
+    本次会话立即生效的替代操作（选已有目录）。
+    """
+    if not needs:
+        return ""
+    found = []
+    for path in candidates or ():
+        value = job_entry_in_env_file(path)
+        if value:
+            found.append((path, value))
+    if not found:
+        return ""
+    written = "；".join(
+        "{} 里已写 JOB = {}".format(path, value) for path, value in found)
+    written_paths = [item[0] for item in found]
+    others = [p for p in (candidates or ()) if p not in written_paths]
+    text = "[诊断] 检测到 {}，但当前会话 $JOB 仍是 {}。".format(
+        written, job_now or "默认目录")
+    if context:
+        text += "当前会话环境：{}。".format(context)
+    text += "houdini.env 只在 Houdini 启动时读取：请完全退出并重启 Houdini；"
+    if others:
+        text += "若重启后仍无效，把同一行也写进 {}。".format(" 或 ".join(others))
+    text += "本次会话可直接选「选择已有目录…」指定 {} 立即生效。".format(
+        found[0][1])
+    return text
+
+
 def scene_signature(hip_path, is_new_file):
     """场景指纹（未保存 / 已保存的具体 hip 路径）——用于 new/open 后清空日志。
 

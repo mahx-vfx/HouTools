@@ -70,21 +70,36 @@ except NameError:
     _JOB_CONFIRMED = False
 
 
-def _job_pref_env_file():
-    """当前 Houdini 实际读取的用户配置 ``houdini.env`` 路径（动态取）。
+def _job_env_candidates():
+    """当前 Houdini **可能读取**的 ``houdini.env`` 路径（去重后的绝对路径）。
 
-    Windows 上 GUI 与 hython 的用户配置目录可能不同（本机 GUI =
-    ``Documents/houdini22.0``，hython = ``$HOME/houdini22.0``），提示里
-    必须给实际路径，不能硬编码，更不能笼统写成项目根的 ``.env``。
+    2026-11-21 四次实测：GUI 的 ``$HOUDINI_USER_PREF_DIR`` 指向
+    ``<USERPROFILE>/Documents/houdini22.0``，而未设置时 ``$JOB`` 回退到
+    ``<USERPROFILE>``；用户按旧提示写进前者并重启，会话里仍旧没生效。
+    hython（外部 HOME）又会落到 ``<USERPROFILE>/houdini22.0``。**只按
+    PREF_DIR 拼路径会指错文件**，因此把 $HOME / USERPROFILE（含 Documents
+    子目录）一并交给 ``paths.houdini_env_candidates`` 去重，再由窗口逐一
+    检测内容。
     """
     try:
         import hou
         pref = hou.getenv("HOUDINI_USER_PREF_DIR") or ""
+        home = hou.getenv("HOME") or ""
+        profile = os.environ.get("USERPROFILE", "")
+        try:
+            major, minor, _build = hou.applicationVersion()
+            version_dir = "houdini{}.{}".format(major, minor)
+        except Exception:
+            version_dir = "houdini22.0"
     except Exception:
-        pref = ""
-    if pref:
-        return os.path.join(pref, "houdini.env").replace("\\", "/")
-    return "$HOUDINI_USER_PREF_DIR/houdini.env"
+        pref, home, profile, version_dir = "", "", "", "houdini22.0"
+    return paths.houdini_env_candidates(pref, home, profile, version_dir)
+
+
+def _job_pref_env_file():
+    """主候选（保留旧名字供兼容）；诊断与提示一律用完整候选列表。"""
+    files = _job_env_candidates()
+    return files[0] if files else "$HOUDINI_USER_PREF_DIR/houdini.env"
 
 
 def _job_persist_hint(path="<路径>", short=False):
@@ -95,17 +110,24 @@ def _job_persist_hint(path="<路径>", short=False):
     ``houdini.env``」与「Houdini Package ``.json`` 的 env 块」两种。
     既有约定：``HOUTOOLS_DEV`` 等每用户开关只走 ``houdini.env``，且
     **严禁**写进随包分发的 ``HouTools.json``（AGENTS.md 热加载机制条）。
+
+    2026-11-21：本机两份 ``houdini.env`` 都可能被读到，提示列出全部候选，
+    并注明「只在启动时读取，写入后需完全退出并重启 Houdini」。
     """
-    env_file = _job_pref_env_file()
+    env_files = " 或 ".join(_job_env_candidates()) or \
+        "$HOUDINI_USER_PREF_DIR/houdini.env"
     if short:
-        return ("持久化：{0} 或 packages/*.json 的 env 块"
-                "（项目根 .env 不会被 Houdini 读取）".format(env_file))
+        return ("持久化：用户配置 houdini.env（{0}）或 packages/*.json 的 "
+                "env 块（项目根 .env 不会被 Houdini 读取；写入后需重启 "
+                "Houdini）".format(env_files))
     return (
         "持久化（本次会话设置重启后失效，请二选一）："
-        "① 用户配置 {0} 里写 JOB = {1}；"
+        "① 在用户配置 houdini.env 里写 JOB = {1}"
+        "（本机候选：{0}；该文件只在 Houdini 启动时读取，"
+        "写入后需完全退出并重启）；"
         "② 自己的 Houdini Package .json 的 env 块加 JOB。"
         "项目根目录的 .env 不会被 Houdini 读取；"
-        "别写进随包分发的 HouTools.json。".format(env_file, path))
+        "别写进随包分发的 HouTools.json。".format(env_files, path))
 
 
 _COL_CHECK = 0
@@ -842,6 +864,27 @@ class PackageProjectWindow(QDialog):
             value = value[1:-1].strip()
         return value
 
+    def _job_env_diagnosis(self):
+        """候选 ``houdini.env`` 里已写 JOB、但当前会话没生效 → 诊断文字。
+
+        四次实测（2026-11-21）：用户照提示写进
+        ``Documents/houdini22.0/houdini.env`` 并重启，弹窗里 ``$JOB`` 仍是
+        ``C:/Users/zhouhaibin``。工具不再猜 Houdini 读哪份，而是把两份都
+        扫一遍，把「哪份已写」「当前会话的 $HOME / 用户配置目录」「写入后
+        需完全重启」「另一份也补一行」如实告诉用户。
+        """
+        import hou
+        _actual, needs, _reason = self._job_state()
+        try:
+            home = hou.getenv("HOME") or ""
+            pref = hou.getenv("HOUDINI_USER_PREF_DIR") or ""
+        except Exception:
+            home = pref = ""
+        context = "$HOME = {}，用户配置目录 = {}".format(
+            home or "?", pref or "?")
+        return paths.job_env_diagnosis(
+            _job_env_candidates(), self._job_value(), needs, context)
+
     def _ensure_job_root(self):
         """选 $JOB 时确认实际落点；**本会话首次必弹**，返回能否继续。
 
@@ -871,6 +914,12 @@ class PackageProjectWindow(QDialog):
         import hou
         _actual, needs, _reason = self._job_state()
         job_now = self._job_value()
+        # 用户配置文件里可能已经写过 JOB（只是当前会话没读到）：如实诊断，
+        # 别再让他反复写同一份文件、反复重启。
+        hint = _job_persist_hint()
+        diagnosis = self._job_env_diagnosis()
+        if diagnosis:
+            hint += "\n\n" + diagnosis
         if needs:
             pick = dialogs.choice(
                 self, "未设置 $JOB",
@@ -882,7 +931,7 @@ class PackageProjectWindow(QDialog):
                 "· 创建 JOB 目录：手输绝对路径，工具创建它\n"
                 "· 取消：中止打包\n\n"
                 "指定后仅对当前 Houdini 会话生效。\n{1}".format(
-                    job_now, _job_persist_hint()),
+                    job_now, hint),
                 ["选择已有目录…", "创建 JOB 目录…", "取消"])
             if pick == 2:
                 return False
@@ -895,7 +944,7 @@ class PackageProjectWindow(QDialog):
                 "确认无误请点第一项；要换目录可选「选择已有目录」或"
                 "「创建 JOB 目录」。\n\n"
                 "指定后仅对当前 Houdini 会话生效。\n{1}".format(
-                    job_now, _job_persist_hint()),
+                    job_now, hint),
                 ["使用当前 $JOB", "选择已有目录…", "创建 JOB 目录…", "取消"])
             if pick == 3:
                 return False

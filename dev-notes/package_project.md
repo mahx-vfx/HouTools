@@ -250,12 +250,14 @@ C 盘用户名下，上一版「自动回退 `$HIP`」没有生效。
 | 用户配置目录 `houdini.env` | Houdini 官方环境变量配置文件，每用户一份，**仅启动时读取** | ✅ |
 | Houdini Package `.json` | 官方插件及项目环境配置方式，在 `env` 块里设变量 | ✅ |
 
-- **本机有两份 `houdini.env`，别写错**：GUI（`houdinifx.exe`）用
-  `C:/Users/zhouhaibin/Documents/houdini22.0/houdini.env`（`.pref` /
-  `file.history` 等随 GUI 启动更新）；hython / 无头用
-  `C:/Users/zhouhaibin/houdini22.0/houdini.env`（实测
-  `hou.getenv("HOUDINI_USER_PREF_DIR")` 返回该目录）。代码 `_job_pref_env_file()`
-  动态取 `HOUDINI_USER_PREF_DIR` 拼出实际路径，提示里给真实值，不硬编码。
+- **本机有两份 `houdini.env`，别写错**：GUI 的
+  `$HOUDINI_USER_PREF_DIR` = `C:/Users/zhouhaibin/Documents/houdini22.0`
+  （`.pref` / `file.history` 随 GUI 启动更新）；hython 从 Git Bash 启动
+  （外部 `HOME=C:/Users/zhouhaibin`）时是
+  `C:/Users/zhouhaibin/houdini22.0`；从无 HOME 的干净环境启动 hython 又落回
+  Documents 那份。**2026-11-21 四次实测证明「只按 PREF_DIR 拼路径」会指错
+  文件**（见下节），所以 `_job_env_candidates()` 把 PREF_DIR / `$HOME` /
+  `USERPROFILE`（含 Documents 子目录）全列出去重，由 `paths` 纯函数生成。
 - 本机 `packages/HouTools.json` 的 `env` 块当前只有 `HOUDINI_PATH` /
   `HOUTOOLS_SETTINGS_DIR` / `HOUTOOLS_FFMPEG` 三项，**没有 JOB**。
   既有拍板（AGENTS.md「热加载机制」条）：`HOUTOOLS_DEV` 这类每用户开关
@@ -268,6 +270,46 @@ C 盘用户名下，上一版「自动回退 `$HIP`」没有生效。
 - `tests/smoke_test.py` 固化 `package JOB persist hint OK`：提示必须同时出现
   `houdini.env`、Package `.json`/`env 块`、「.env 不会被 Houdini 读取」、
   `HouTools.json` 与用户指定的路径。
+
+## 写了 JOB 却仍弹「未设置」（2026-11-21 四次实测）
+
+**现象**：用户按旧提示在 `Documents/houdini22.0/houdini.env` 写了
+`JOB = D:\VFX\My_Houdini_Project`（变量名正确、路径存在、文件 00:12:13 保存），
+00:12:16 完全重启 Houdini（父进程 `explorer.exe`），00:15 重开窗口点「打包」，
+弹窗仍显示 `$JOB 当前展开为 C:/Users/zhouhaibin`。三选一弹窗**本身已正常出现**
+（三次反馈的「会话首次无条件确认」生效），问题只在持久化没被当前会话读到。
+
+**核查**：
+
+- 两份 `houdini.env`：Documents 那份有 JOB 行；`$HOME` 那份
+  (`C:/Users/zhouhaibin/houdini22.0/houdini.env`) 无 JOB 行；用户/系统/进程
+  三级 JOB 环境变量全为空；`packages/*.json` 里没有任何 JOB 条目。
+- `hython` 从干净环境启动（父进程无 HOME）：PREF_DIR = Documents 那份、
+  `$HOME = C:/Users/zhouhaibin/Documents`、`$JOB = D:/VFX/My_Houdini_Project`
+  —— **Documents 那份本身是有效的**，反斜杠也被规范化成正斜杠。
+- `hython` 从 Git Bash 启动（外部 `HOME=C:/Users/zhouhaibin`）：PREF_DIR =
+  `C:/Users/zhouhaibin/houdini22.0`、`$JOB` = CWD —— 读的是另一份。
+- GUI 里 `$JOB` = `C:/Users/zhouhaibin`（USERPROFILE）。到底是按 `$HOME`
+  还是 PREF_DIR 找 env 文件随启动方式变，**继续猜没有价值**。
+
+**修复（不再猜，改为显示事实）**：
+
+- `paths.houdini_env_candidates()` 生成并去重全部候选路径；
+  `paths.job_entry_in_env_file()` 只读扫描文件里生效的 `JOB = ...` 行
+  （兼容 BOM / CRLF / 无末尾换行 / 引号）。
+- `_job_persist_hint()` 列出**全部候选**并注明「只在 Houdini 启动时读取，
+  写入后需完全退出并重启」。
+- `_ensure_job_root()` 弹窗追加 `[诊断]`：`paths.job_env_diagnosis()` 检测到
+  「文件里已写 JOB 但会话 `$JOB` 仍是默认目录」时，输出当前会话的 `$HOME` /
+  用户配置目录、要求重启、提示另一份也补一行，并给出**本次会话立即生效**的
+  替代操作（选「选择已有目录…」指定该目录）。
+- 冒烟新增 `package JOB env diagnosis OK`：候选去重、读取 JOB 行、诊断文案、
+  `needs=False` 时不诊断。
+
+**给用户的操作结论**：本次会话直接选「选择已有目录…」→ 选
+`D:\VFX\My_Houdini_Project` 即刻生效（工具 `hou.putenv`）；要重启后仍生效，
+把 `JOB = D:/VFX/My_Houdini_Project` 同时写进两份 `houdini.env` 后完全退出
+并重启 Houdini，弹窗会显示 `$JOB 当前 = ...` 供核对。工具仍不改任何配置文件。
 
 **坑：包根下拉项的 userData 不能被提示文字覆盖。** `setItemData(index, text)`
 默认写 `Qt.UserRole`，会把 `addItem("$JOB", "JOB")` 存的 `"JOB"` 换成提示文字，
