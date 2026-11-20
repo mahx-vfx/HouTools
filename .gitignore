@@ -14,3 +14,6 @@ settings/
 .zcode/
 .DS_Store
 Thumbs.db
+
+# WorkBuddy 工作区记忆（本地沉淀，不进仓库）
+.workbuddy/memory/
