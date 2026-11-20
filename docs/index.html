@@ -585,16 +585,17 @@ body.ds{ font-size:15px; }
   /* 顶部镜面高光（全宽恒定：屏幕顶缘没有外部内容，环境反光天然均匀） */
   background:linear-gradient(180deg, rgba(255,255,255,.15), rgba(255,255,255,.04) 44%, rgba(255,255,255,0) 62%);
 }
-/* 底部亮边：亮度跟随背景。mask 的 17 个 stop 按 hero.jpg 顶栏背景条带（源图 y116-205）
-   实测亮度生成（暗部 lum14-45→alpha .12-.22，机甲壳亮峰 lum186-231→alpha .93-1，
-   右缘回落 lum14-56→alpha .12-.28）——换 hero 图需重新采样生成。
+/* 底部亮边：亮度跟随背景。mask 的 17 个 stop 按 hero.jpg 顶栏背景条带
+   实测亮度生成；2026-11-20 再换图（1672x941 发光立方体 hero-C，源图 y290-296），
+   以「亮度→alpha」锚点重采样：新图左半（0-50%）纯黑压到 .12，
+   发光 logo 主体偏右，峰值挪到 62.5% / 81.25% / 100%（.4/.44/.69）——换 hero 图必须重采样。
    滚过 hero 后（无 .lg-on）背景全是暗色内容，整条等比减暗（物理：无光源则无亮边）。
    亮边独立成 ::after 层 + 水平 mask 调制，而不是把两层渐变塞进一个 background */
 .ds-top::after{
   content:""; position:absolute; left:0; right:0; bottom:0; height:6px; z-index:1; pointer-events:none;
   background:linear-gradient(0deg, rgba(255,255,255,.45) 0 1px, rgba(255,255,255,.18) 3.5px, rgba(255,255,255,0) 7px);
-  -webkit-mask-image:linear-gradient(90deg, rgba(0,0,0,.12) 0%, rgba(0,0,0,.12) 6.25%, rgba(0,0,0,.17) 12.5%, rgba(0,0,0,.21) 18.75%, rgba(0,0,0,.22) 25%, rgba(0,0,0,.22) 31.25%, rgba(0,0,0,.22) 37.5%, rgba(0,0,0,.28) 43.75%, rgba(0,0,0,.93) 50%, rgba(0,0,0,1) 56.25%, rgba(0,0,0,1) 62.5%, rgba(0,0,0,.78) 68.75%, rgba(0,0,0,.7) 75%, rgba(0,0,0,.53) 81.25%, rgba(0,0,0,.28) 87.5%, rgba(0,0,0,.13) 93.75%, rgba(0,0,0,.12) 100%);
-  mask-image:linear-gradient(90deg, rgba(0,0,0,.12) 0%, rgba(0,0,0,.12) 6.25%, rgba(0,0,0,.17) 12.5%, rgba(0,0,0,.21) 18.75%, rgba(0,0,0,.22) 25%, rgba(0,0,0,.22) 31.25%, rgba(0,0,0,.22) 37.5%, rgba(0,0,0,.28) 43.75%, rgba(0,0,0,.93) 50%, rgba(0,0,0,1) 56.25%, rgba(0,0,0,1) 62.5%, rgba(0,0,0,.78) 68.75%, rgba(0,0,0,.7) 75%, rgba(0,0,0,.53) 81.25%, rgba(0,0,0,.28) 87.5%, rgba(0,0,0,.13) 93.75%, rgba(0,0,0,.12) 100%);
+  -webkit-mask-image:linear-gradient(90deg, rgba(0,0,0,.12) 0%, rgba(0,0,0,.12) 6.25%, rgba(0,0,0,.12) 12.5%, rgba(0,0,0,.12) 18.75%, rgba(0,0,0,.12) 25%, rgba(0,0,0,.12) 31.25%, rgba(0,0,0,.12) 37.5%, rgba(0,0,0,.12) 43.75%, rgba(0,0,0,.12) 50%, rgba(0,0,0,.14) 56.25%, rgba(0,0,0,.4) 62.5%, rgba(0,0,0,.29) 68.75%, rgba(0,0,0,.21) 75%, rgba(0,0,0,.44) 81.25%, rgba(0,0,0,.26) 87.5%, rgba(0,0,0,.21) 93.75%, rgba(0,0,0,.69) 100%);
+  mask-image:linear-gradient(90deg, rgba(0,0,0,.12) 0%, rgba(0,0,0,.12) 6.25%, rgba(0,0,0,.12) 12.5%, rgba(0,0,0,.12) 18.75%, rgba(0,0,0,.12) 25%, rgba(0,0,0,.12) 31.25%, rgba(0,0,0,.12) 37.5%, rgba(0,0,0,.12) 43.75%, rgba(0,0,0,.12) 50%, rgba(0,0,0,.14) 56.25%, rgba(0,0,0,.4) 62.5%, rgba(0,0,0,.29) 68.75%, rgba(0,0,0,.21) 75%, rgba(0,0,0,.44) 81.25%, rgba(0,0,0,.26) 87.5%, rgba(0,0,0,.21) 93.75%, rgba(0,0,0,.69) 100%);
 }
 .ds-top:not(.lg-on)::after{
   -webkit-mask-image:linear-gradient(90deg, rgba(0,0,0,.18), rgba(0,0,0,.18));
@@ -623,7 +624,7 @@ body.ds{ font-size:15px; }
 .ds-btn svg{width:14px;height:14px}
 
 .ds-hero{border-bottom:1px solid var(--line);
-  /* 主视觉背景（assets/hero.jpg，2208x960 / 2.3:1 / q85 ≈274KB）：墨黑底 + 品牌橙机甲壳。
+  /* 主视觉背景（assets/hero.jpg，1672x941 / 1.78:1 / q4 ≈247KB）：墨黑底 + 品牌橙机甲环 + 发光立方体 logo。
      图体零雾化叠加——右半（画面主体）保持原图干净；
      仅两处结构性渐变：横向左缘护字（文字列内实暗、47% 归零）、
      纵向底边窄渐隐（78% 起才介入，收掉橙轮廓灯与正文的硬切缝） */
@@ -655,8 +656,8 @@ body.ds{ font-size:15px; }
     inset -1px 0 0 rgba(255,255,255,.12);
   /* 亮边亮度跟随背景（与顶栏 ::after 同逻辑）：卡片背后左暗右亮，
      水平 mask 把左缘亮边压暗到 .25 倍、向右渐亮 */
-  -webkit-mask-image:linear-gradient(90deg, rgba(0,0,0,.25) 0%, rgba(0,0,0,.25) 45%, #000 80%, #000 100%);
-  mask-image:linear-gradient(90deg, rgba(0,0,0,.25) 0%, rgba(0,0,0,.25) 45%, #000 80%, #000 100%)}
+  -webkit-mask-image:linear-gradient(90deg, rgba(0,0,0,.25) 0%, rgba(0,0,0,.25) 45%, rgba(0,0,0,1) 80%, rgba(0,0,0,1) 100%);
+  mask-image:linear-gradient(90deg, rgba(0,0,0,.25) 0%, rgba(0,0,0,.25) 45%, rgba(0,0,0,1) 80%, rgba(0,0,0,1) 100%)}
 .lg-replica-box{position:absolute;inset:0;z-index:-1;width:100%;height:100%;pointer-events:none}
 
 .ds-layout{display:grid;grid-template-columns:236px minmax(0,1fr) 180px;align-items:start;
@@ -1682,7 +1683,7 @@ body.ds{ font-size:15px; }
   var box = document.querySelector('.repo-glass');
   var boxImgs = document.querySelectorAll('.lg-replica-box image');
   if (!bar || !rep || !imgs || !imgs.length || !hero) return;
-  var IW = 2208, IH = 960;                     /* hero.jpg 原始像素 */
+  var IW = 1672, IH = 941;                     /* hero.jpg 原始像素（换图须同步） */
   function sync() {
     var vw = window.innerWidth;
     var s = window.scrollY || window.pageYOffset || 0;
