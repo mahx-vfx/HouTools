@@ -70,7 +70,7 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings.
 | 粘贴边界框 | 节点右键 `Paste Bounding Box [HT]` | Ctrl+C 复制源节点后，右键带三分量 `size`/`t` 参数的目标节点（如 box），把源节点包围盒尺寸/中心粘贴到其 `size`/`t`——绝对值或 `bbox()`/`centroid()` 表达式（同网络相对路径、跨层级绝对路径）两种模式 |
 | 粘贴中心 | 节点右键 `Paste Center [HT]` | Ctrl+C 复制源节点后右键任意目标节点，在其下方创建 transform 并启用（接管显示/渲染）：枢轴=目标中心、平移=源中心−目标中心（目标内容对齐到源中心）——绝对值或 `centroid()` 表达式两种模式 |
 | 视频转序列图 | `HouTools → Video to Sequence` | ffmpeg 提取视频为 JPG 序列（帧级进度，质量/起始帧/位数/前缀可调），EXR/PNG/TIF 静帧序列同样支持（浏览时同一序列折叠为一个选项，EXR 自动转 sRGB），相机支持在 Houdini 节点选择器中直接选取 + 一键跳转定位，相机行「匹配素材分辨率」一键把相机分辨率对齐素材（防背景拉伸），分辨率可读取/编辑（宽/高双框 + 预设），「编码器」行 ⓘ 按钮悬停/点击查看实际生效的 ffmpeg/ffprobe，可选自动设置相机 Background Image；同前缀旧序列转换前询问后改名 `.bak` 让位（成功才清理、取消/失败还原） |
-| Package Project | `HouTools → Package Project`（主菜单与网络编辑器菜单） | 打包工程：只扫**启用节点**上用户填过的路径（默认值不收），filecache 按 `sopoutput` 求值整段收帧、改写目标为 `basedir`；素材按文件类型归入 Houdini 官方 New Project 目录 `geo/hda/sim/abc/tex/render/flip/scripts/other`（不再有统一 `assets/` 层），参数按包根写成 `$HIP/<类型>/…` 或 `$JOB/<包名>/<类型>/…`；**包根只 `$HIP` / `$JOB` 两项**，两者都可在共用的「输出目录」输入框指定任意绝对目录（留空 = 当前工程目录），只改变打包产物落点、不改参数写法；选 `$JOB` 时额外用 `hou.putenv` 把本次会话 `$JOB` 指向该目录，不读也不改任何环境变量配置；帧模板 `$F4` 原样保留、表达式驱动参数跳过不改写；**生成方式固定「另存到包目录」**：生成 `<包名>/<hip>_packed.hip`（原工程不动，包名默认「工程名 + `-pack`」），包目录整体压成 `<包根>/<包名>.zip`（包内附 `package_log.txt` 明细）上传渲染农场 |
+| Package Project | `HouTools → Package Project`（主菜单与网络编辑器菜单） | 打包工程：只扫**启用节点**上用户填过的路径（默认值不收），filecache 按 `sopoutput` 求值整段收帧、改写目标为 `basedir`；素材按文件类型归入 Houdini 官方 New Project 目录 `geo/hda/sim/abc/tex/render/flip/scripts/other`（不再有统一 `assets/` 层），参数按包根写成 `$HIP/<类型>/…` 或 `$JOB/<包名>/<类型>/…`；**包根只 `$HIP` / `$JOB` 两项**，两者都可在共用的「输出目录」输入框指定任意绝对目录（留空 = 当前工程目录），只改变打包产物落点、不改参数写法；选 `$JOB` 时额外用 `hou.putenv` 把本次会话 `$JOB` 指向该目录，不读也不改任何环境变量配置；帧模板 `$F4` 原样保留、表达式驱动参数跳过不改写；**生成方式固定「另存到包目录」**：生成 `<包名>/<hip>_packed.hip`（原工程不动，包名默认「工程名 + `-pack`」）；底部「打包」只做复制/改写/另存，「打包+zip」在打包成功后自动压缩成 `<包根>/<包名>.zip`（包内附 `package_log.txt` 明细）上传渲染农场；扫描旁的「重置」可随时清空列表 |
 | HDR Library | `HouTools → HDR Library` | HDR 环境贴图库浏览器：缩略图网格（后台生成）、子文件夹分类 + 收藏，选中灯光后双击即贴图 |
 | Recipe Library | `HouTools → Recipe Library` | recipes 资产库浏览器：官方 recipes 卡片网格浏览（缩略图/标签/主题色），树形侧栏过滤，双击/拖拽应用到网络，VEX/Python 代码块卡片（双击追加到选中节点），Markdown 文档，数据导入/导出 |
 | HouTools Settings | `HouTools → HouTools Settings...` | 设置窗口：配置目录展示（含修改方法）+ 快捷键设置（Paste as Object Merge / Copy Output Path，捕获式改键，会话即时生效） |
@@ -213,7 +213,9 @@ File > Import > Alembic Scene... / File > Import > Filmbox FBX...）：
 
 把当前工程收成"可搬走"的一包（独立窗口，进任务栏），对应渲染农场提交前的整理：
 
-- **只收启用的节点**：bypass 掉的节点、locked HDA 内部都不扫。
+- **只收启用的节点**：bypass 掉的节点、locked HDA 内部都不扫
+  （窗口扫描按钮旁标有「未启用节点将不被扫描」；扫描后的列表可用旁边的
+  「重置」按钮随时清空，等同切换新工程时的自动清理）。
 - **只收用户填过的路径**：`file` / `fileName` / 贴图路径这类输入参数，只要**你改过**
   （不是参数默认值）就进列表；文件不存在时标「缺失」并写进执行结果（打包时跳过，
   不复制不改写）。Houdini 自带默认值（如 `karma/hoseksolarmap.rat`）不会被列出。
@@ -264,8 +266,14 @@ File > Import > Alembic Scene... / File > Import > Filmbox FBX...）：
   文件边界（取消后不进行参数改写与保存），zip 半成品（`.part`）不落盘。
 - **执行结果面板**：完成 / 失败两态，逐条列出复制失败（源路径 + 原因）、
   改写失败（节点:参数 + 原因）、保存失败与跳过计数，并显示扫描统计。
-- **生成 zip**：把包目录整体压成 `<包根>/<包名>.zip`（若当前 hip 不在包目录内，另附一份 hip），
-  并在 `<包根>/<包名>/package_log.txt` 写逐条打包明细（随 zip 归档）。
+- **两个打包按钮**：
+  - 「打包」：复制 + 改写参数 + 另存 hip，不压缩；
+  - 「打包+zip」：执行同一套打包，成功后**自动**把包目录压成
+    `<包根>/<包名>.zip`（若当前 hip 不在包目录内，另附一份 hip），无需再点一次；
+    确认弹窗会注明「完成后自动生成 <包名>.zip」。
+  压缩在后台线程、先写 `.part` 再原子替换；打包明细
+  `<包根>/<包名>/package_log.txt` 先落盘，因此也会随 zip 归档。
+  打包失败或取消时不会压缩。
 - **行操作**：**双击某行跳转到该节点**（网络编辑器定位并居中；跳转前自动把会话切到
   Manual 更新模式，避免 Auto Update / OnMouseUp 下跳到重节点当场重烤卡死，恢复在播放条
   手动选回）；**右键**只有两项——「跳转到节点」「在资源管理器中打开原路径」

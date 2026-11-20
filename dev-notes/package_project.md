@@ -133,9 +133,15 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
   Reload / 窗口销毁后会残留对已删除 Qt 对象的引用（RuntimeError 崩溃），
   QTimer 的 parent 是本窗口、随之销毁，零生命周期风险。
 - **坑：另存到包目录的 save-as 会改 hipFile.path()**，会被误判成"用户切换
-  工程"，导致刚打包完列表被清空、`_pack_session` 作废、「生成 zip」不可用。
+  工程"，导致刚打包完列表被清空、`_pack_session` 作废、「打包+zip」自动压缩不可用。
   `_save_scene()` 保存成功后立即把 `_scene_sig` 同步到新指纹来抑制。
 - 切换后日志打印两条：旧工程 → 新工程路径、清空了多少条引用 + zip 已失效提示。
+- **「重置」按钮（2026-11-21 三次反馈）**：扫描完成后也能手动清空列表。
+  `_on_reset()` 调 `_clear_results()`，与 `_sync_scene()` 换工程清理**共用**同一套
+  状态复位（refs/targets/plan/notes/conflicts/checked/pack_session/
+  zip_after_apply/hip_dir + `setRowCount(0)` + 清日志 + 复位包名/状态/hint），
+  但**不动 `_scene_sig`**（不是换工程）；worker 运行中拒绝清空并给提示。
+  扫描按钮旁的 muted 注释「未启用节点将不被扫描」是同一轮加的提示。
 - 待复制文件数/体积由 `collect.selection_summary()` 按当前勾选实时重算，
   取消勾选某项后立即减少（用户反馈该项曾不更新）。
 - `flatten_dir()` 只对包外素材使用（按源目录分文件夹，不丢可读性）。
@@ -314,7 +320,15 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
 - 保存失败单独记一条，不影响已复制的文件与已改写的参数（undo 组仍可整体撤销）。
 - 扫描排除统计按原因分列（目录/记账路径、未落盘输出、表达式驱动）。
 
-## zip
+## 打包 / 打包+zip
+
+两个平级按钮（2026-11-21 三次反馈）：**「打包」**只做复制 + 改写 + 另存；
+**「打包+zip」**走同一套打包链路，成功后自动压缩，无需再点一次。后者不再是
+独立的「生成 zip」按钮：`_zip_btn` 仍叫这个名字，但启用条件与「打包」相同
+（有勾选引用且布局无冲突），点击连 `_on_apply(True)`（lambda 固定实参，防
+`clicked` 的 checked 误传）。确认后 `_zip_after_apply=True`；`_on_copy_done()`
+在 `package_log.txt` 落盘之后调 `_maybe_auto_zip(ok)`，只在整条链路成功且
+`_pack_session` 有效时自动 `_on_zip()`，失败 / 取消 / 普通打包都清标志。
 
 `<包根>/<包名>.zip`，内容 = 包目录整体（按类型分类的 `geo/ tex/ render/ …`
 + 另存的 `<hip>_packed.hip`）。若当前 hip 不在包目录内（用户打包后又手动
@@ -329,6 +343,7 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
 **会话校验**（2026-11-19 修复）：zip 只认「上一次完整成功打包」的会话
 （base/pkg/package_dir/源 hip/保存后 hip）；换 hip 后 `_on_scan` 清掉旧会话，
 `_on_zip` 再校验当前 hip 是否属于该会话，不属于就拒绝并提示重新打包。
+「打包+zip」的自动压缩走的是同一个 `_on_zip()`，因此同样受这份校验保护。
 
 ## 已知边界
 
@@ -359,6 +374,10 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
   `$JOB` 自定义目录与 `putenv` 同源；相对路径在两种包根下都判不可用；
   确认弹窗分别核对 `$HIP` / `$JOB` 文案且不含「生成方式 / $JOB 当前 /
   环境变量 / houdini.env」；`paths` 里 7 个环境变量检测函数已删除。
+- 2026-11-21 三次反馈新增回归：`package reset button OK`（重置清空列表 /
+  勾选 / 计划 / 会话且按钮复位）、`package auto zip OK`（成功才自动压缩、
+  失败 / 无会话跳过、标志一律清掉）、窗口注释与两个按钮文案、确认弹窗
+  「自动生成」文案。
 - 2026-11-20 用户反馈新增：缓存目录行按 `in_hip` 弱化（`TEXT_3`）并标
   「$HIP 内 · 」前缀，两种分支的文案与前景色都有断言。
 - 2026-11-19 审查修复新增回归：目标唯一性（build_layout 碰撞加 `_2`）、
@@ -447,8 +466,9 @@ WorkBuddy 的「类型分类 + 8 项体验改进」提交整体复核通过：
 
 - refs/targets 索引对齐正确（`_on_package` 里 `targets = [all_targets[i] for i in selected]`
   与所选 refs 一一对应，日志逐条目标不串行）；
-- `package_log.txt` 在 `_on_copy_done` 落盘，zip 是独立按钮、走
-  `_pack_session` 校验，日志必然先于归档写入、随 zip 带走；
+- `package_log.txt` 在 `_on_copy_done` 落盘，自动压缩在其之后由
+  `_maybe_auto_zip()` 触发并走 `_pack_session` 校验，日志必然先于归档写入、
+  随 zip 带走；
 - 分类去重（raw 首段 == category 不重复前缀）、UDIM 与 `$F` 混合模板拒绝、
   `selection_summary` normcase 匹配等均与既有回归断言一致。
 
@@ -544,6 +564,7 @@ Automation 甚至是手写单选），因此按用户要求参考 Windows 资源
 - **点表头勾选列** = 全选/全不选（对应 Windows 详细信息视图表头复选框）。
 - 批量改 `setCheckState` 一律用 `_filling` 标志包住，避免 `itemChanged`
   逐行回灌；复用 `_set_rows_checked()` / `_invert_rows()`。
-- 原有「全选 / 清空」按钮保留（作用于全部行，与表头等价）。
+- 原有「全选 / 清空」按钮保留（作用于**勾选状态**，与表头等价）；
+  顶部新增的「重置」是清**整个列表与结果**，两者语义不同，不要合并。
 - 表格级 tooltip 仍不设（用户反馈空白区弹 tooltip 干扰视线），交互说明
   挂在「全选」按钮 tooltip 上。

@@ -5,6 +5,8 @@
 1. **扫描**：遍历已启用节点上的文件参数，收外部引用 / 节点缓存 /
    `$HIP` 内相对引用——凡是场景真正用到的、磁盘上存在的文件；
 2. **预览**：逐行「节点 / 参数 / 参数现值 / 打包后参数值 / 状态」，可勾选；
+   「重置」按钮可随时清空列表（与切换工程时的自动清理同一套逻辑），
+   扫描旁标注「未启用节点将不被扫描」；
 3. **打包**：后台线程把勾选的文件复制到 `<包根>/<包名>/<类型>/…`，
    完成后主线程按**所选包根**改写参数（$HIP / $JOB，见 `_target_prefix`；
    帧模板 `$F4` 原样保留）。两个包根共用「输出目录」输入框（留空 =
@@ -14,7 +16,9 @@
 4. **生成方式**：固定「另存到包目录（原工程不动）」——改写后另存为
    `<包名>/<hip>_packed.hip`，磁盘上的原工程不动（2026-11-21 用户拍板
    删除「覆盖当前工程」）；
-5. **生成 zip**：后台线程把包目录整体压成 `<包根>/<包名>.zip`；
+5. **打包 / 打包+zip**：「打包」只复制+改写+另存；「打包+zip」在打包成功
+   且 `package_log.txt` 落盘后自动后台压缩成 `<包根>/<包名>.zip`
+   （先写 `.part` 再原子替换），无需再点一次；
 6. **结果面板**：完成/失败 + 复制、改写、保存的逐条失败原因。
 
 线程模型：复制/压缩是纯文件 IO，放 `_CopyWorker`/`_ZipWorker`（QThread，
@@ -366,6 +370,8 @@ class PackageProjectWindow(QDialog):
         # 打包会话记录：只有"复制+改写+保存"全部成功才登记，zip 只认它
         # （防止换 hip 后沿用上一个工程的快照，报告 P1-02）
         self._pack_session = None
+        # 「打包+zip」：本次打包成功后自动压缩（确认后才置位，取消无副作用）
+        self._zip_after_apply = False
         # 扫描/复制/压缩 worker（QThread）：None = 空闲；_apply_ctx 是复制
         # 完成后主线程继续改写/保存所需的上下文
         self._scan_worker = None
@@ -408,6 +414,44 @@ class PackageProjectWindow(QDialog):
             is_new, path = True, ""
         return paths.scene_signature(path, is_new)
 
+    def _clear_results(self, headline=None):
+        """清空扫描结果 / 表格 / 勾选 / 打包会话（重置按钮与切换工程共用）。
+
+        worker 运行中一律不动：此时清空会让在跑的复制/改写与界面错位。
+        返回清掉的引用条数；被 worker 挡住时返回 -1。
+        """
+        if self._active_worker() is not None:
+            return -1
+        dropped = len(self._refs)
+        self._refs = []
+        self._targets = []
+        self._plan = {}
+        self._layout_notes = []
+        self._conflicts = []
+        self._checked = set()
+        self._pack_session = None
+        self._zip_after_apply = False
+        self._hip_dir = ""
+        self._filling = True
+        self._table.setRowCount(0)
+        self._filling = False
+        self._set_default_package_name()
+        self._log_view.clear()
+        self._update_status()
+        self._set_status("—")
+        self._set_hint(headline or
+                       "已重置：点「扫描」重新收集当前工程用到的文件。")
+        return dropped
+
+    def _on_reset(self):
+        """「重置」按钮：清空列表，等同切换工程时的自动清理。"""
+        if self._active_worker() is not None:
+            self._set_hint("正在扫描或打包，等完成后再重置。", error=True)
+            return
+        dropped = self._clear_results()
+        self._log("[信息] 已重置：清空 {} 条引用、复制计划、勾选、打包会话"
+                  "与包目录路径；zip 已失效，请重新点「扫描」。".format(dropped))
+
     def _sync_scene(self):
         """场景切换检测：工程切换完成后清空上一工程的表格/日志/扫描结果。
 
@@ -415,7 +459,7 @@ class PackageProjectWindow(QDialog):
         后仍看到上一工程的引用列表与路径（2026-11-20 用户实测反馈）。
         触发时机：显示时、点扫描时、以及 `_scene_poll` 定时轮询（切工程
         完成时窗口仍开着，光靠前两者不够）。worker 运行中不复位，避免打断
-        正在进行的复制/改写。
+        正在进行的复制/改写。清空逻辑与「重置」按钮共用 `_clear_results()`。
         """
         if self._active_worker() is not None:
             return
@@ -427,24 +471,8 @@ class PackageProjectWindow(QDialog):
             return
         previous = self._scene_sig
         self._scene_sig = sig
-        dropped = len(self._refs)
-        self._refs = []
-        self._targets = []
-        self._plan = {}
-        self._layout_notes = []
-        self._conflicts = []
-        self._checked = set()
-        self._pack_session = None
-        self._hip_dir = ""
-        # 真正清掉表格里的旧行——之前只清了内部状态，界面仍显示上一工程
-        # 的「参数现值 / 打包后参数值」（用户反馈的根因）。
-        self._filling = True
-        self._table.setRowCount(0)
-        self._filling = False
-        self._set_default_package_name()
-        self._log_view.clear()
-        self._set_hint("已切换工程：点「扫描」收集当前工程用到的文件。")
-        self._set_status("—")
+        dropped = self._clear_results(
+            "已切换工程：点「扫描」收集当前工程用到的文件。")
         self._log("[信息] 检测到工程切换：{} → {}".format(
             self._scene_label(previous), self._scene_label(sig)))
         self._log("[信息] 已清空上一工程的 {} 条引用、复制计划、打包会话"
@@ -538,11 +566,22 @@ class PackageProjectWindow(QDialog):
         top.addWidget(self._pkg_edit)
         top.addStretch()
         top.addSpacing(8)
+        self._scan_note = QLabel("未启用节点将不被扫描")
+        self._scan_note.setProperty("htTextRole", "muted")
+        self._scan_note.setToolTip(
+            "只扫启用节点上用户改过的路径；bypass 的节点与锁定 HDA 内部都不扫")
+        top.addWidget(self._scan_note)
         self._scan_btn = QPushButton("扫描")
         self._scan_btn.setToolTip("收集用户手动填过的文件引用与已落盘的缓存，"
                                   "缺失的也会列出来")
         self._scan_btn.clicked.connect(self._on_scan)
         top.addWidget(self._scan_btn)
+        self._reset_btn = QPushButton("重置")
+        self._reset_btn.setToolTip(
+            "清空扫描列表、勾选、复制计划、执行结果与打包会话"
+            "（等同切换工程时的自动清理），之后重新点「扫描」即可")
+        self._reset_btn.clicked.connect(self._on_reset)
+        top.addWidget(self._reset_btn)
         layout.addLayout(top)
 
         # 生成方式固定「另存到包目录（原工程不动）」——2026-11-21 用户拍板
@@ -641,13 +680,19 @@ class PackageProjectWindow(QDialog):
         self._apply_btn = components.PrimaryButton("打包")
         self._apply_btn.setEnabled(False)
         self._apply_btn.setToolTip(
-            "把勾选的文件复制到包目录，改写参数，并按所选方式保存 hip")
-        self._apply_btn.clicked.connect(self._on_apply)
+            "把勾选的文件复制到包目录，改写参数并另存 hip；不生成 zip")
+        # 用 lambda 固定实参：QPushButton.clicked 会把 checked(bool) 传给槽，
+        # 直接连 _on_apply 会把 False 当 with_zip 传进来。
+        self._apply_btn.clicked.connect(lambda: self._on_apply(False))
         btn_row.addWidget(self._apply_btn)
-        self._zip_btn = QPushButton("生成 zip")
+        # 「打包+zip」不再是独立的「生成 zip」按钮：它自己走完整打包链路，
+        # 成功后由 _on_copy_done 自动压缩（属性名沿用 _zip_btn，历史引用多）。
+        self._zip_btn = QPushButton("打包+zip")
         self._zip_btn.setEnabled(False)
-        self._zip_btn.setToolTip("把包目录整体压成 <包根>/<包名>.zip")
-        self._zip_btn.clicked.connect(self._on_zip)
+        self._zip_btn.setToolTip(
+            "执行打包，并在成功后自动把包目录压成 <包根>/<包名>.zip"
+            "（无需再点一次）")
+        self._zip_btn.clicked.connect(lambda: self._on_apply(True))
         btn_row.addWidget(self._zip_btn)
         btn_row.addStretch()
         close_btn = QPushButton("关闭")
@@ -1044,12 +1089,12 @@ class PackageProjectWindow(QDialog):
             parts.append("布局冲突 {} 处（禁止打包）".format(len(self._conflicts)))
         self._set_hint(" · ".join(parts), error=bool(self._conflicts))
         self._apply_btn.setEnabled(bool(refs) and not self._conflicts)
-        # zip 只对"本次成功打包"的会话开放（换 hip / 没打包过都不行）
-        self._zip_btn.setEnabled(self._pack_session is not None)
+        # 「打包」/「打包+zip」是两个平级选项：只要勾选了引用且布局无冲突
+        # 就都可用；后者不需要先单独打包一次（自动压缩在打包成功后触发）。
+        self._zip_btn.setEnabled(bool(refs) and not self._conflicts)
         self._zip_btn.setToolTip(
-            "把包目录整体压成 <包根>/<包名>.zip"
-            if self._pack_session is not None
-            else "先完成一次打包，才能生成 zip")
+            "执行打包，并在成功后自动把包目录压成 <包根>/<包名>.zip"
+            "（无需再点一次）")
 
     # ------------------------------------------------------------------
     # 行操作
@@ -1188,7 +1233,7 @@ class PackageProjectWindow(QDialog):
     # ------------------------------------------------------------------
     # 打包（复制在后台线程；改写/保存回主线程）
     # ------------------------------------------------------------------
-    def _on_apply(self):
+    def _on_apply(self, with_zip=False):
         import hou
 
         if self._active_worker() is not None:
@@ -1244,12 +1289,17 @@ class PackageProjectWindow(QDialog):
             # $HIP 自定义输出目录：只改产物落点，参数写法不变（另存 hip 后
             # 会话 $HIP 自动指向包目录）。写进弹窗，避免用户误以为前缀会变。
             path_text += "（另存 hip 后 $HIP 会指向该包目录）"
+        zip_text = ("，完成后自动生成 {}".format(pkg + ".zip")
+                    if with_zip else "")
         if not dialogs.question(
                 self, "打包工程",
                 "将把 {} 个文件复制到\n{}\n\n并按文件类型归入官方工程目录"
-                "（geo/tex/render/…），{}。".format(
-                    len(plan), package_dir, path_text)):
+                "（geo/tex/render/…），{}{}。".format(
+                    len(plan), package_dir, path_text, zip_text)):
+            self._zip_after_apply = False
             return
+        # 用户确认后才记住「打包完自动压缩」：取消打包不留任何副作用
+        self._zip_after_apply = bool(with_zip)
         self._log_view.clear()
         # 用户确认后才改会话变量：取消打包不留下任何副作用。放在 clear
         # 之后，成功/失败的 [信息] 日志才会留在结果面板里。
@@ -1259,6 +1309,8 @@ class PackageProjectWindow(QDialog):
             self._log("[信息] $HIP 输出目录 = {}（另存后会话 $HIP 指向包目录，"
                       "参数仍写 $HIP/…）".format(base))
         self._log("[开始] 包目录：{}".format(package_dir))
+        if self._zip_after_apply:
+            self._log("[信息] 打包+zip：打包完成后将自动压缩，无需再点一次。")
         missing = [ref for ref in refs if ref.missing]
         for ref in missing:
             self._log("[失败] 缺失 {}:{} → {}（手动引用了但文件不存在，"
@@ -1299,6 +1351,7 @@ class PackageProjectWindow(QDialog):
         self._update_status()
 
         if worker is not None and worker.cancelled:
+            self._zip_after_apply = False
             self._set_status("已取消", ok=False)
             self._log("[失败] 已取消：复制 {}/{}".format(copied, total))
             notify.info("打包已取消")
@@ -1354,6 +1407,23 @@ class PackageProjectWindow(QDialog):
         if save_error:
             all_failures.append("保存工程：" + save_error)
         self._write_package_log(ctx, refs, targets, summary, all_failures)
+        # package_log.txt 已落盘，此时压缩才能把它一并归档
+        self._maybe_auto_zip(ok)
+
+    def _maybe_auto_zip(self, ok):
+        """「打包+zip」：打包成功后自动压缩（在日志落盘之后调用）。
+
+        只在用户点了「打包+zip」且整条链路成功时触发；失败/取消都清标志，
+        避免下一次普通「打包」被连带压缩。
+        """
+        if not self._zip_after_apply:
+            return
+        self._zip_after_apply = False
+        if not ok or self._pack_session is None:
+            self._log("[信息] 打包未完成，已跳过自动压缩。")
+            return
+        self._log("[信息] 打包完成，开始自动压缩…")
+        self._on_zip()
 
     def _write_package_log(self, ctx, refs, targets, summary, failures):
         """把打包明细写到包目录内的 package_log.txt（失败不影响打包结果）。
@@ -1413,7 +1483,7 @@ class PackageProjectWindow(QDialog):
         另存会把会话切到 `<包>/<hip>_packed.hip`（hipFile.path 变化），
         必须同步 `_scene_sig`：否则 `_scene_poll` 会把这次打包内部产生的
         save-as 误判成「用户切换工程」，清空列表 + 作废 `_pack_session`，
-        导致紧接着的「生成 zip」不可用。
+        导致紧接着的「打包+zip」自动压缩不可用。
         """
         import hou
 
@@ -1502,9 +1572,9 @@ class PackageProjectWindow(QDialog):
     def _set_busy(self, busy):
         """复制/压缩进行中锁界面：计划已固定，中途改勾选/包根/输出目录会
         与在跑的复制错位。解锁后由调用方 _update_status 恢复按钮态。"""
-        for widget in (self._scan_btn, self._apply_btn, self._zip_btn,
-                       self._select_all_btn, self._clear_btn, self._table,
-                       self._root_combo, self._pkg_edit):
+        for widget in (self._scan_btn, self._reset_btn, self._apply_btn,
+                       self._zip_btn, self._select_all_btn, self._clear_btn,
+                       self._table, self._root_combo, self._pkg_edit):
             widget.setEnabled(not busy)
         # 包根输出目录控件对 $HIP / $JOB 都可用；busy 时一律禁用
         root_path_enabled = not busy

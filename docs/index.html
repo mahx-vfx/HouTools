@@ -1333,7 +1333,8 @@ body.ds{ font-size:15px; }
     <li>帧模板 <code>foo.$F4.exr</code> 原样保留,现有帧整段收进包里;参数改写在一个 undo 组里,<strong>Ctrl+Z 可整体撤销</strong>。复制/zip 在后台线程执行,运行中关闭窗口即协作取消——复制停在当前文件边界(取消后不进行参数改写与保存),zip 半成品(<code>.part</code>)不落盘。</li>
     <li><strong>执行结果面板</strong>:完成 / 失败两态,逐条列出复制失败(源路径 + 原因)、改写失败(节点:参数 + 原因)、保存失败与跳过计数,并显示扫描统计。</li>
     <li><strong>双击某行跳转到该节点</strong>(网络编辑器定位并居中;跳转前自动切 Manual 更新模式,避免 Auto Update / OnMouseUp 下跳重节点当场重烤卡死,恢复在播放条手动选回);<strong>右键</strong>只有两项:「跳转到节点」「在资源管理器中打开原路径」(Shell API 定位并选中,序列取第一帧)。</li>
-    <li>「生成 zip」把包目录整体压成 <code>&lt;包根&gt;/&lt;包名&gt;.zip</code>,并在 <code>&lt;包根&gt;/&lt;包名&gt;/package_log.txt</code> 写逐条打包明细(随 zip 归档)。</li>
+    <li><strong>两个按钮:「打包」与「打包+zip」</strong>:「打包」只复制 + 改写 + 另存 hip,不压缩;「打包+zip」执行同一套打包并在成功后<strong>自动</strong>把包目录压成 <code>&lt;包根&gt;/&lt;包名&gt;.zip</code>(确认弹窗会注明「完成后自动生成」),无需再点一次。逐条明细写在 <code>&lt;包根&gt;/&lt;包名&gt;/package_log.txt</code>,先落盘、随 zip 归档;打包失败或取消时不压缩。</li>
+    <li>扫描按钮旁标有「未启用节点将不被扫描」(bypass 节点与锁定 HDA 内部都不扫),旁边的<strong>「重置」</strong>按钮可随时清空列表 / 勾选 / 执行结果 / 打包会话,等同切换新工程时的自动清理;处理进行中不可用。</li>
   </ul></div>
 </section>
 <section id="hdr-library" class="ds-sec">

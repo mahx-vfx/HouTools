@@ -5549,6 +5549,13 @@ def main():
     app.processEvents()
     assert _pkg_win._table.rowCount() == 0
     assert _pkg_win._apply_btn.isEnabled() is False
+    # 2026-11-21 三次反馈：扫描旁注释 + 重置按钮 + 打包/打包+zip 两个选项
+    assert _pkg_win._scan_note.text() == "未启用节点将不被扫描"
+    assert _pkg_win._reset_btn.text() == "重置"
+    assert _pkg_win._apply_btn.text() == "打包"
+    assert _pkg_win._zip_btn.text() == "打包+zip"
+    assert _pkg_win._zip_btn.isEnabled() is False   # 没勾选引用时两个都禁用
+    assert _pkg_win._zip_after_apply is False
     assert _pkg_win._status_label.text() == "—"
     assert _pkg_win.objectName() == "htWindow"
     assert _pkg_win.is_close_deferred() is False
@@ -5745,6 +5752,12 @@ def main():
             assert "改写 1 个参数为 $JOB 下的相对路径" in _dlg_text, \
                 _dlg_text
 
+            # 「打包+zip」：确认弹窗注明自动压缩；用户取消时标志必须清掉
+            _pkg_win._zip_after_apply = True
+            _pkg_win._on_apply(True)
+            assert "自动生成" in _captured[-1][1], _captured[-1][1]
+            assert _pkg_win._zip_after_apply is False
+
             # $HIP 自定义输出目录：确认弹窗仍按 $HIP 打包，落点已改，
             # 并注明另存后 $HIP 会指向包目录（参数写法不变）
             _pkg_win._root_combo.setCurrentIndex(0)
@@ -5816,6 +5829,50 @@ def main():
         and "new.hip" in _scene_log and "2 条引用" in _scene_log, _scene_log
     assert _pkg_win._scene_poll.isActive(), "场景轮询定时器未启动"
     print("package scene switch reset OK")
+
+    # ⑤ 重置按钮：与切换工程共用 _clear_results()，扫描完成后也能清空列表
+    _pkg_win._refs = [pkg_collect.Ref(
+        kind="input", node_path="/obj/a", parm_name="file",
+        raw="a.jpg", abs_path="D:/p/a.jpg", files=["D:/p/a.jpg"],
+        in_hip=False)]
+    _pkg_win._checked = {0}
+    _pkg_win._plan = {"D:/p/a.jpg": "D:/out/a.jpg"}
+    _pkg_win._pack_session = {"base": "D:/proj/shot"}
+    _pkg_win._hip_dir = "D:/proj/shot"
+    _pkg_win._on_reset()
+    assert _pkg_win._refs == [] and _pkg_win._checked == set()
+    assert _pkg_win._table.rowCount() == 0
+    assert _pkg_win._plan == {} and _pkg_win._conflicts == []
+    assert _pkg_win._pack_session is None and _pkg_win._hip_dir == ""
+    assert _pkg_win._apply_btn.isEnabled() is False
+    assert _pkg_win._zip_btn.isEnabled() is False
+    assert "已重置" in _pkg_win._log_view.toPlainText()
+    print("package reset button OK")
+
+    # ⑥ 打包+zip：成功后自动压缩，失败/无会话则跳过，标志一律清掉
+    _auto_calls = []
+    _pkg_win._on_zip = lambda: _auto_calls.append(1)
+    try:
+        _pkg_win._pack_session = {"base": "D:/proj/shot"}
+        _pkg_win._zip_after_apply = True
+        _pkg_win._maybe_auto_zip(True)
+        assert _auto_calls == [1] and _pkg_win._zip_after_apply is False
+        _pkg_win._zip_after_apply = True
+        _pkg_win._maybe_auto_zip(False)
+        assert _auto_calls == [1] and _pkg_win._zip_after_apply is False
+        _pkg_win._zip_after_apply = True
+        _pkg_win._pack_session = None
+        _pkg_win._maybe_auto_zip(True)
+        assert _auto_calls == [1] and _pkg_win._zip_after_apply is False
+        # 普通「打包」不置标志时不会被连带压缩
+        _pkg_win._zip_after_apply = False
+        _pkg_win._maybe_auto_zip(True)
+        assert _auto_calls == [1]
+    finally:
+        del _pkg_win.__dict__["_on_zip"]     # 恢复类方法
+        _pkg_win._pack_session = None
+        _pkg_win._zip_after_apply = False
+    print("package auto zip OK")
 
     _pkg_win._refs = []
     _pkg_win._targets = []
