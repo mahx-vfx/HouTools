@@ -92,8 +92,9 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
   的自动加 `_2/_3`，复制目标和参数改写目标共用这份映射——不会再静默覆盖。
 
 - **包根**：`$HIP`（默认）、`$JOB`、**自定义绝对路径**。
-  **`$JOB` 未设置时回退 `$HIP`**（2026-11-20 用户实测反馈，详见下节），
-  不再禁用选项、不再弹"仍要打到默认路径吗"的窗。
+  **`$JOB` 未显式设置时，打包前弹窗要求指定/创建 JOB 目录**（2026-11-20
+  二次反馈，详见下节），不再静默回退 `$HIP`；指定后用 `hou.putenv` 把会话
+  `$JOB` 指向该目录，参数仍写 `$JOB/<包名>/…`。
 - **包名**：默认取 **工程名 + `-pack`**（如 `shot_v001-pack`，无 hou/未保存时
   回落 `ht_package`），可改；**用户输入必须过 `paths.sanitize_pkg_name`**——
   包名直接进 `os.path.join(base, pkg, ...)`，不净化的话 `..`、含 `/` 的输入会
@@ -167,35 +168,43 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
 「另存模式一律 `$HIP`」已废弃）：包根 `$JOB` → `$JOB/<包>/…`，
 自定义路径 → `<路径>/<包>/…`，`$HIP` + 另存 → `$HIP/…`（不带包名）。
 
-## $JOB 未设置时回退 $HIP（2026-11-20 用户实测反馈）
+## $JOB 未设置时由用户指定路径（2026-11-20 二次反馈，推翻回退方案）
 
-**现象**：包根选 `$JOB`、包名 `aaa`，包却打到了
-`C:\Users\zhouhaibin\aaa`（C 盘用户名下），而不是当前工程所在文件夹。
+**现象**：包根选 `$JOB`、包名 `cccc-pack`，确认弹窗显示包要复制到
+`C:\Users\zhouhaibin\cccc-pack`，参数写成 `$JOB/cccc-pack/…`——包仍落到
+C 盘用户名下，上一版「自动回退 `$HIP`」没有生效。
 
-**根因**：这台机器没有设置 `JOB` 环境变量（`houdini.env` 为空、用户/系统/进程
-三级都没有）。Houdini 在 JOB 未设置时，`hou.text.expandString("$JOB")`
-**不会**返回字面 `$JOB`，而是回退到 `$HOME`（`C:\Users\zhouhaibin`）。
-旧 `paths.job_is_default()` 只判断「空 / 字面 `$JOB` / 等于 `$HIP`」三种，
-`$JOB == $HOME` 既非空、非字面、也不等于 `$HIP`，所以**连默认提醒都没弹**，
-`_base_dir()` 直接把用户主目录当成项目根。
+**根因**：本机没有显式设置 JOB 环境变量（`houdini.env` 为空、用户/系统/进程
+三级都没有）。Houdini 未设 JOB 时 `$JOB` 的展开值**随启动方式变**：GUI 里
+多为 `$HOME`，本机 hython 实测是**当前工作目录**（CWD），也可能等于 `$HIP`。
+上一版靠比较 `$JOB` 与 `$HOME`/`$HIP` 猜「未设置」再自动回退，在 GUI 里没
+命中，于是 `fallback=False`，包根仍是 `$HOME`，`$JOB/…` 被解析回用户主目录。
+靠猜默认值不可靠，必须改成显式指定。
 
-**修复**（用户拍板「job 和 hip 都打包到当前工程所在文件夹」）：
+**新方案**（用户拍板）：点「打包」先弹三选一——
+「选择已有目录… / 创建 JOB 目录… / 取消打包」。
 
-- `paths.job_is_default(job, hip, home)` 增加 `$HOME` 判定；新增
-  `resolve_job_root(job, hip, home)` 返回 `(实际包根, 是否回退, 回退原因)`。
-- 窗口 `_job_state()` 集中取 `$JOB/$HIP/$HOME`；`_base_dir()` 在回退时用
-  `$HIP`（**当前工程所在文件夹**）作实际包根。
-- **`_target_prefix()` 回退时同步按 `$HIP` 写**：否则参数写成
-  `$JOB/<包名>/…` 会被 Houdini 解析到 `$HOME`（C 盘用户名下），而文件实际在
-  工程目录里，打包后路径直接失效。两者必须同源。
-- `_check_job()` 不再禁用 `$JOB` 选项（回退后仍可用），只在 tooltip 说明
-  「未设置 $JOB，打包将回退到 $HIP：当前工程所在文件夹」。
-- `_warn_job_if_default()` 不再弹「仍要打包到默认路径吗」——回退后是正确
-  且安全的行为，没有理由打断用户；改由 `_on_apply` 在结果面板日志打印
-  回退原因 + 实际前缀。
-- **若用户后续真的设置了 JOB 环境变量**（`houdini.env` 里
-  `JOB = D:/projects/main`），`resolve_job_root` 判定不回退，包根与参数前缀
-  都按 `$JOB/<包名>/…` 走，行为与之前一致。
+- 选「创建」时由用户**手输绝对路径**（工具不替用户决定位置），工具只负责
+  `os.makedirs(path, exist_ok=True)` 建目录；选「选择」走目录选择框。
+- 确定后 `hou.putenv("JOB", path)` 让**会话** `$JOB` 真正指向该目录，参数
+  继续写 `$JOB/<包名>/…`，包根与前缀同源；取消则中止打包，不复制不改写。
+- 判定：`paths.job_is_default(job, hip, home, cwd, env)` 把 `$HIP`/`$HOME`/
+  CWD 一起纳入比较；`os.environ["JOB"]` 非空且绝对时视为用户显式设置、
+  直接信任。`resolve_job_root()` 未设置时返回 `(空串, True, 原因)`，
+  **不再返回 `$HIP`**。
+- 窗口：`_ensure_job_root()` 在 `_on_apply` 开头调用；`_job_override` 记住
+  本次会话指定的路径（窗口 Reload 重建后该字段为空，靠 `hou.getenv` 的
+  展开值兜底识别）；`_check_job()` tooltip、确认弹窗与结果日志都提示
+  「仅本次 Houdini 会话有效，重启前请在 `houdini.env` 写 `JOB = <路径>`」
+  ——**工具不擅自改用户的配置文件**。
+- **物理约束**：参数写 `$JOB/<包名>/…` 的前提是会话 `$JOB` 真的指向包根；
+  只把文件放到别的目录而不 `putenv`，打包后参数会解析到 `$HOME`，路径失效。
+- **若用户后续显式设置了 JOB**（`houdini.env` 里 `JOB = D:/projects/main`），
+  `os.environ` 有值 → 直接信任，不再弹窗，包根与参数都按 `$JOB/<包名>/…`。
+- **缓存目录行色**（同轮第二项反馈）：`_fill_table()` 的 `rewrite_dir`
+  分支此前恒用 `TEXT`，让 `$HIP/geo` 的 basedir 行和包外素材一样亮；现按
+  `in_hip` 弱化（`TEXT_3`）并在状态列加「$HIP 内 · 」前缀，冒烟固化两种
+  分支的文案与前景色。
 
 **坑：包根下拉项的 userData 不能被提示文字覆盖。** `setItemData(index, text)`
 默认写 `Qt.UserRole`，会把 `addItem("$JOB", "JOB")` 存的 `"JOB"` 换成提示文字，
@@ -315,7 +324,10 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
 - 不做贴图转码/降分辨率；不处理 unlocked HDA 内部参数的导出问题。
 - `$F` 之外的帧写法（`%04d`）不识别；UDIM 只识别 `<UDIM>`（4 位 Tile），
   `<UVTILE>`（u1_v1）暂不支持。
-- `$JOB` 必须在会话环境里存在（`houdini.env` 或系统环境变量），否则包根选项禁用。
+- `$JOB` 若未显式设置，打包前会弹窗要求指定/创建目录并临时 `hou.putenv`；
+  该设置**只对当前 Houdini 会话有效**，重启后需在 `houdini.env` 写
+  `JOB = <路径>`，否则已打包的 `$JOB/…` 参数会解析回 `$HOME`。工具不自动改
+  `houdini.env`。
 
 ## 测试
 
@@ -327,6 +339,9 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
   `copy_plan` 去重、`_is_noise` 节点路径 vs POSIX 文件、菜单接线、窗口可
   实例化（htWindow / is_close_deferred / worker 可构造）、`reveal` 缺失路径
   必须抛 OSError；另跑 `test_theme_tokens.py`（窗口不得写裸 hex）。
+- 2026-11-20 二次反馈新增：`job_is_default` 的 CWD / 显式 env 判定、
+  `resolve_job_root` 未设置返回空串、窗口 `_job_needs_setup()` /
+  `_job_override` 与 `$JOB` 前缀、缓存目录行 in_hip 与包外两种文案/前景色。
 - 2026-11-19 审查修复新增回归：目标唯一性（build_layout 碰撞加 `_2`）、
   UDIM 枚举（只收 1001/1002，不收 backup）、严格帧 glob（不收
   `sim.backup.bgeo.sc`）、Windows 保留包名（CON → pkg_CON）、非法 UTF-8
@@ -486,7 +501,9 @@ WorkBuddy 的「类型分类 + 8 项体验改进」提交整体复核通过：
   UDIM N 块」（此前状态列把 UDIM 误写成「序列 N 帧」，顺手修正）；
   序列 → 「`$HIP` 内|包外 · 序列 N 帧」；散文件 → 「`$HIP` 内|包外 ·
   N 个文件」。
-- 行色逻辑不变：缺失红、缓存目录全亮、`$HIP` 内弱化（TEXT_3）。
+- 行色：缺失红；普通行 `$HIP` 内弱化（TEXT_3）、包外用 TEXT。**缓存目录行
+  （rewrite_dir）此前恒亮，2026-11-20 二次反馈后同样按 in_hip 弱化 + 状态列
+  加「$HIP 内 · 」前缀**——`$HIP/geo` 的 basedir 与序列行一样本就可移植。
 
 ### ⑦ 勾选改为 Windows 文件夹式多选（2026-11-20 用户拍板）
 

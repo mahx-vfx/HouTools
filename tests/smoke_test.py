@@ -5592,6 +5592,31 @@ def main():
     assert _pkg_win._table.item(1, 5).text() == "缓存缺失", \
         _pkg_win._table.item(1, 5).text()
 
+    # 缓存目录行（rewrite_dir）同样按 in_hip 弱化 + 标「$HIP 内」
+    # （2026-11-20 用户反馈：basedir=$HIP/geo 的第 2/3/4 行恒亮）
+    from PySide6.QtGui import QColor as _QColor
+    from houtools.ui import theme as _theme
+    _pkg_win._refs = [pkg_collect.Ref(
+        kind="output", node_path="/obj/cache1", parm_name="basedir",
+        raw="$HIP/geo", abs_path="D:/p/geo/a.$F4.bgeo.sc",
+        files=["D:/p/geo/a.0001.bgeo.sc"], rewrite_dir=True,
+        basedir="D:/p/geo", in_hip=True),
+        pkg_collect.Ref(
+        kind="output", node_path="/obj/cache2", parm_name="basedir",
+        raw="D:/ext/geo", abs_path="D:/ext/geo/b.$F4.bgeo.sc",
+        files=["D:/ext/geo/b.0001.bgeo.sc"], rewrite_dir=True,
+        basedir="D:/ext/geo", in_hip=False)]
+    _pkg_win._targets = ["$HIP/geo/a.$F4.bgeo.sc", "$HIP/geo/b.$F4.bgeo.sc"]
+    _pkg_win._fill_table()
+    app.processEvents()
+    _cache0 = _pkg_win._table.item(0, 5)
+    assert _cache0.text() == "$HIP 内 · 缓存目录 · 1 帧", _cache0.text()
+    assert _cache0.foreground().color() == _QColor(_theme.color("TEXT_3"))
+    _cache1 = _pkg_win._table.item(1, 5)
+    assert _cache1.text() == "缓存目录 · 1 帧", _cache1.text()
+    assert _cache1.foreground().color() == _QColor(_theme.color("TEXT"))
+    print("package cache row color OK")
+
     # 内置引用（$HH/$HFS）状态列标「内置」，仍可勾选、仍显示原始写法
     _pkg_win._refs = [pkg_collect.Ref(
         kind="input", node_path="/obj/ocean/geo1", parm_name="geometrydef",
@@ -5608,7 +5633,8 @@ def main():
         _pkg_win._hint_label.text()
     print("package builtin ref label OK")
 
-    # $JOB 未设置（展开成 $HOME）→ 包根与参数前缀都回退到 $HIP
+    # $JOB 未设置 → 不再回退 $HIP：判定 needs_setup，打包前由
+    # _ensure_job_root() 弹窗指定/创建目录并 hou.putenv，参数仍写 $JOB/…
     class _JobHouText:
         _map = {"$JOB": "C:/Users/zhouhaibin", "$HIP": "D:/proj/shot",
                 "$HOME": "C:/Users/zhouhaibin"}
@@ -5624,20 +5650,23 @@ def main():
     sys.modules["hou"] = _JobHou
     try:
         _pkg_win._root_combo.setCurrentIndex(1)     # $JOB
-        assert _pkg_win._base_dir() == os.path.normpath("D:/proj/shot"), \
-            _pkg_win._base_dir()
-        assert _pkg_win._job_fallback()[0] is True
-        assert _pkg_win._target_prefix().startswith("$HIP"), \
+        assert _pkg_win._base_dir() == "", _pkg_win._base_dir()
+        assert _pkg_win._job_needs_setup()[0] is True
+        assert _pkg_win._target_prefix().startswith("$JOB"), \
             _pkg_win._target_prefix()
-        assert not _pkg_win._target_prefix().startswith("$JOB"), \
-            "回退后参数前缀必须同步按 $HIP，否则包内路径失效"
+        # 指定 JOB 目录后包根与参数前缀同源（putenv 由对话框流程负责）
+        _pkg_win._job_override = "D:/myjob"
+        assert _pkg_win._base_dir() == os.path.normpath("D:/myjob")
+        assert _pkg_win._job_needs_setup()[0] is False
+        assert _pkg_win._target_prefix().startswith("$JOB/")
+        _pkg_win._job_override = ""
         _pkg_win._root_combo.setCurrentIndex(0)      # 还原 $HIP
     finally:
         if _job_saved is None:
             sys.modules.pop("hou", None)
         else:
             sys.modules["hou"] = _job_saved
-    print("package JOB fallback OK")
+    print("package JOB setup OK")
 
     # 恢复成 2 条 fixture，供下面多选/切场景断言使用
     _pkg_win._refs = [pkg_collect.Ref(
@@ -5965,23 +5994,29 @@ def main():
     assert pkg_paths.default_package_name("") == "ht_package"
     print("package default name OK")
 
-    # $JOB 默认值检测（2026-11-20 补：未设置时 Houdini 展开成 $HOME，
-    # 旧版漏判导致选 $JOB 却把包打到 C 盘用户名下）
+    # $JOB 未显式设置检测（2026-11-20 二次反馈）：展开值随启动方式变
+    # （GUI=$HOME / hython=CWD / 也可能=$HIP），三者都要认；os.environ 里
+    # 显式设置过就信任，不再打扰。
     assert pkg_paths.job_is_default("", "C:/hip")
     assert pkg_paths.job_is_default("$JOB", "C:/hip")
     assert pkg_paths.job_is_default("C:/hip", "C:/hip")
     assert pkg_paths.job_is_default(
         "C:/Users/zhouhaibin", "D:/proj/shot", home_value="C:/Users/zhouhaibin")
+    assert pkg_paths.job_is_default(
+        "C:/cwd", "D:/proj/shot", "C:/Users/zhouhaibin", cwd_value="C:/cwd")
+    assert not pkg_paths.job_is_default(
+        "C:/Users/zhouhaibin", "D:/proj/shot",
+        home_value="C:/Users/zhouhaibin", env_value="C:/Users/zhouhaibin")
     assert not pkg_paths.job_is_default(
         "D:/projects/main", "C:/hip", home_value="C:/Users/zhouhaibin")
-    # 回退：未设置 → 用 $HIP（当前工程所在文件夹）
-    _actual, _fallback, _reason = pkg_paths.resolve_job_root(
+    # 未设置 → 返回空串，由窗口弹窗指定 JOB 目录（不再静默回退 $HIP）
+    _actual, _needs, _reason = pkg_paths.resolve_job_root(
         "C:/Users/zhouhaibin", "D:/proj/shot", "C:/Users/zhouhaibin")
-    assert _actual == "D:/proj/shot" and _fallback is True
-    assert "回退" in _reason
-    _actual2, _fallback2, _ = pkg_paths.resolve_job_root(
+    assert _actual == "" and _needs is True
+    assert "指定" in _reason
+    _actual2, _needs2, _ = pkg_paths.resolve_job_root(
         "D:/projects/main", "C:/hip", "C:/Users/zhouhaibin")
-    assert _actual2 == "D:/projects/main" and _fallback2 is False
+    assert _actual2 == "D:/projects/main" and _needs2 is False
     # 内置引用识别（$HH/$HFS = Houdini 安装目录，非工程素材）
     assert pkg_paths.is_builtin_ref("$HH/geo/defgeo.bgeo")
     assert pkg_paths.is_builtin_ref("${HFS}/houdini/geo/x.bgeo")
