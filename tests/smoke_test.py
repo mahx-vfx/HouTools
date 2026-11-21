@@ -1543,9 +1543,9 @@ def main():
     assert _rtasks[3]["params"]["node_path"] == "/obj/geo1", \
         "未知类型透传不动"
 
-    # ④ 配置改写链（盘面端到端 + 观察者协议）：_handle_rename/_handle_delete
-    #    不依赖 hou，FakeNode 直喂整链；监听注册的 HOM 交互在对账里，
-    #    无头 reconcile 直返（只验不抛）
+    # ④ 配置改写链（盘面端到端 + 观察者协议）：_handle_rename 不依赖
+    #    hou，FakeNode 直喂整链；删除不订阅（掉链接对齐原生）；
+    #    监听注册的 HOM 交互在对账里，无头 reconcile 直返（只验不抛）
     _pt_base = tempfile.mkdtemp(prefix="houtools_ptrack.")
     atexit.register(lambda: shutil.rmtree(_pt_base, ignore_errors=True))
     with patch.object(_adm_cls, "_hip_base", lambda *a: _pt_base):
@@ -1581,21 +1581,20 @@ def main():
             assert all(v is not None for v in _ev["revs"].values()), \
                 "写盘成功 rev 必须带回"
             assert _adm_cls.read_config_rev("CfgA") >= 2, "rev 推进"
-            # 登记键随改名改写（簿记；无 hou 不做真实注册）
-            _pt._REGISTERED["/obj/geo2"] = object()
-            _pt._REGISTERED["/obj/geo2/deep"] = object()
+            # 登记键随改名改写（簿记；无 hou 不做真实注册；条目值=(桥,sid)
+            # —— sid 校验盲重绑防「删除+同名重建」漏挂）
+            _pt._REGISTERED["/obj/geo2"] = (_pt._node_event_bridge, 111)
+            _pt._REGISTERED["/obj/geo2/deep"] = (_pt._node_event_bridge, 222)
             _pt._handle_rename(_FakeNode("/obj/geo9"), "geo2")
             assert "/obj/geo9" in _pt._REGISTERED
+            assert _pt._REGISTERED["/obj/geo9"][1] == 111, "改键保留 sid"
             assert "/obj/geo9/deep" in _pt._REGISTERED
             assert "/obj/geo2" not in _pt._REGISTERED
-            # 删除：摘登记含后代前缀条目；JSON 路径保留（undo/同名复现）
-            _pt._handle_delete(_FakeNode("/obj/geo9"))
-            assert "/obj/geo9" not in _pt._REGISTERED
-            assert "/obj/geo9/deep" not in _pt._REGISTERED
-            assert _adm_cls.load("CfgA")[0]["params"]["node_path"] == \
-                "/obj/geo9", "删除不改 JSON（路径保留待复现）"
-            assert _seen[-1]["kind"] == "deleted"
-            assert _seen[-1]["paths"] == ("/obj/geo9",)
+            # 删除不订阅（2026-11-22 用户拍板「删除掉链接就掉了，与原生
+            # 死链行为一致」）：_handle_delete 已移除——删除场景零 Python
+            # 介入；断链可视化走交互间隙评估（装载/落盘/showEvent）
+            assert not hasattr(_pt, "_handle_delete"), \
+                "删除订阅已移除，不得回归"
         finally:
             _pt.remove_observer(_seen.append)
             _pt.reset_all()

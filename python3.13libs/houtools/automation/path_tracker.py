@@ -8,8 +8,8 @@ BUTTON_CLICK 任务的 ``params.node_path`` 存在工程外部 JSON（$HIP 配�
 
 机制（全部行为经 H22.0.429 / H21.0.440 hython 无头探针实测）：
 
-- **监听源**：对每个被引用节点及其祖先网络链注册 ``NameChanged`` /
-  ``BeingDeleted`` 节点事件。事件在改名调用的**同一同步调用栈内**
+- **监听源**：对每个被引用节点及其祖先网络链注册 ``NameChanged``
+  节点事件（**只订改名**）。事件在改名调用的**同一同步调用栈内**
   触发（无事件循环依赖，无头可用）；父级改名只在父节点上发事件，
   子节点无感知——祖先链必须一并注册。
 - **改名处理**：由事件 kwargs（``node``=新路径 + ``old_name``）反推
@@ -17,10 +17,16 @@ BUTTON_CLICK 任务的 ``params.node_path`` 存在工程外部 JSON（$HIP 配�
   并原子落盘，随后同步通知观察者（面板把新文本程序化填回槽位输入框）。
 - **注册时机**：``bootstrap()``（uiready 引导，GUI 会话一次）挂
   ``hou.hipFile`` 订阅并对当前工程立即注册；此后 ``reconcile()`` 在
-  面板装载/落盘/Start 后对账（reload 代际换装、死条目清理、任务增删
-  后的增减注册全部收敛在对账一处）。
-- **删除处理**：``BeingDeleted``（先于销毁、路径仍可读）只摘登记
-  不改 JSON——路径保留，undo 恢复或同名重建后按路径可复现。
+  面板装载/落盘/Start 后对账（**sid 校验盲重绑**——无删除事件后登记
+  可能因「节点删除 + 同名重建」过期，节点 sid 与登记不一致即摘旧挂
+  新；reload 代际换装、死条目清理、任务增删后的增减注册全部收敛在
+  对账一处）。
+- **删除不订阅**（2026-11-22 用户拍板「删除掉链接就掉了，与原生
+  死链行为一致」）：被引用节点被删后 JSON 路径保留为死链，丢失由
+  面板红边框在交互间隙（切回面板/装载/落盘）现形。**删除场景零
+  Python 介入——删 30 个节点与纯净 Houdini 逐比特一致**（稳定性
+  第一优先级的最终形态；此前 BeingDeleted 回调内做重活曾致批量
+  删除卡顿/崩溃，事件面收窄后该场景构造上不存在）。
 
 **单写者语义**：节点改名引发的配置写盘**只由 tracker 完成**（读盘上
 最新内容 → 只改命中的 node_path → ``expect_rev`` 原子写，冲突有限
@@ -41,8 +47,8 @@ flush 会因 tracker 推进的盘上 rev 撞 ``ConfigConflictError`` 弹窗。
 统一换装当前壳。
 
 日常改名的绝大多数与任务无关：改写入口先按配置逐文件做命中检查，
-不命中零 IO 零反馈（用户拍板：控制台零 tracker 提示——改名/删除
-反馈走左下角 toast，仅 GUI 会话，无头静默）。
+不命中零 IO 零反馈（用户拍板：控制台零 tracker 提示——改名反馈
+走左下角 toast，仅 GUI 会话，无头静默）。
 """
 
 from houtools.automation.data_manager import (
@@ -58,10 +64,12 @@ logger = get_logger("automation.path_tracker")
 _SAVE_RETRIES = 3
 
 # ── 模块级登记表（必须活过热重载，NameError 守卫见项目 Anti-Patterns） ──
-# _REGISTERED: {节点路径 str: 注册时使用的桥接壳函数}
+# _REGISTERED: {节点路径 str: (注册时使用的桥接壳函数, 注册时的 sessionId)}
 #   键 = 注册时节点的绝对路径（改名事件会同步改写键——监听挂在节点
-#   对象上跟随节点，键只是簿记）；值 = addEventCallback 时传入的壳，
-#   reconcile 对账摘除时要用同一对象。
+#   对象上跟随节点，键只是簿记）；值 = 壳引用（reconcile 摘除时要同一
+#   对象）+ 注册时的节点 sessionId——**无删除事件后，节点可能已销毁
+#   （回调随节点消亡）而登记仍在，同名重建的新节点 sid 必然不同，
+#   reconcile 据此判定「登记已过期」并盲重绑，防漏挂**。
 try:
     _REGISTERED
 except NameError:
@@ -252,7 +260,8 @@ def _toast(level: str, message: str) -> None:
 
 def _on_node_event_impl(*args, **kwargs):
     """节点事件分发入口（壳转发目标）。回调签名按 kwargs 收：
-    ``node``（事件源节点，路径已是新值）、``event_type``、``old_name``。"""
+    ``node``（事件源节点，路径已是新值）、``event_type``、``old_name``。
+    只处理改名——删除不订阅（见模块头「删除不订阅」）。"""
     try:
         import hou
     except ImportError:
@@ -260,8 +269,6 @@ def _on_node_event_impl(*args, **kwargs):
     event_type = kwargs.get("event_type")
     if event_type is hou.nodeEventType.NameChanged:
         _handle_rename(kwargs.get("node"), kwargs.get("old_name"))
-    elif event_type is hou.nodeEventType.BeingDeleted:
-        _handle_delete(kwargs.get("node"))
 
 
 def _handle_rename(node, old_name) -> None:
@@ -290,23 +297,6 @@ def _handle_rename(node, old_name) -> None:
     })
 
 
-def _handle_delete(node) -> None:
-    """删除：摘登记（含后代前缀条目），JSON 不动——路径保留，undo
-    恢复 / 同名重建后按路径可复现（下次 reconcile 重新注册）。"""
-    try:
-        path = node.path() if node is not None else ""
-    except Exception:
-        return
-    if not path:
-        return
-    removed = _purge_registered_subtree(path)
-    if removed:
-        # 级联删除天然去重：祖先事件先清整棵子树（removed=True，提示
-        # 一次），后代随后到达的事件零摘除（removed=False）不再提示
-        _toast("warning", "引用节点已删除，任务路径丢失：%s" % path)
-    _notify({"kind": "deleted", "paths": (path,)})
-
-
 def _rekey_registered(old_path: str, new_path: str) -> None:
     """登记表键随改名改写（整段匹配，与配置改写同一套纯逻辑）。"""
     for key in list(_REGISTERED):
@@ -317,24 +307,30 @@ def _rekey_registered(old_path: str, new_path: str) -> None:
 
 # ── 注册簿记 ────────────────────────────────────────────────
 
-def _node_event_types():
-    """返回订阅的事件类型元组。
+def _event_types():
+    """返回订阅的事件类型元组：**只含 NameChanged**。
 
+    删除不订阅（2026-11-22 用户拍板「删除掉链接就掉了，与原生死链
+    行为一致」）——删除场景零 Python 介入，删 30 个节点与纯净
+    Houdini 逐比特一致；断链可视化由面板在交互间隙评估
+    （window._refresh_missing_states，挂装载/落盘/showEvent）。
     元组必须全是 ``hou.nodeEventType`` 枚举成员——SWIG 生成对象的
     ``dir()`` 带有 ``thisown`` 等非枚举属性，动态拼元组会 TypeError
-    （探针实测），这里写死两个成员。"""
+    （探针实测），这里写死。"""
     import hou
-    return (hou.nodeEventType.NameChanged, hou.nodeEventType.BeingDeleted)
+    return (hou.nodeEventType.NameChanged,)
 
 
 def _register_path(path: str) -> bool:
-    """对路径节点及其祖先链注册事件桥，返回是否发生了新注册。
+    """对路径节点及其祖先链注册改名事件桥，返回是否发生了新注册。
 
-    已在岗（条目存在且壳对象与当前模块的桥相同）→ 跳过——重复注册
-    会让同一事件触发多次回调。reload 后条目里存的是旧代壳 → 摘旧
-    挂新（换装）。祖先链 parent() 逐级上溯到根（父级改名只在父节点
-    上发事件，子节点无感知——实测）。
-    """
+    登记 = (壳, 注册时的 sessionId)。**sid 校验防漏挂**：无删除事件
+    后，被引用节点可能已销毁而登记仍在——同名重建的新节点 sid 必然
+    不同，判定「登记过期」摘旧挂新；sid 一致且壳是当前桥 = 同一个
+    节点、回调必然仍在岗（跳过，稳定态零 HOM 写操作）。重复注册会让
+    同一事件触发多次回调，此判定同时防重。reload 后条目里存的是旧代
+    壳 → 同样走摘旧挂新换装。祖先链 parent() 逐级上溯（父级改名只在
+    父节点上发事件，子节点无感知——实测）。"""
     try:
         import hou
     except ImportError:
@@ -342,7 +338,7 @@ def _register_path(path: str) -> bool:
     node = hou.node(path)
     if node is None:
         return False
-    types = _node_event_types()
+    types = _event_types()
     registered = False
     chain = [node]
     parent = node.parent()
@@ -352,34 +348,39 @@ def _register_path(path: str) -> bool:
     for member in chain:
         try:
             member_path = member.path()
+            member_sid = member.sessionId()
         except Exception:
             continue
-        existing = _REGISTERED.get(member_path)
-        if existing is _node_event_bridge:
-            continue  # 已在岗（同代桥）
-        if existing is not None:
-            # 旧代壳（reload 前）：摘旧挂新；摘除失败（节点销毁竞态）
-            # 不阻塞重挂
+        entry = _REGISTERED.get(member_path)
+        if entry is not None and entry[0] is _node_event_bridge \
+                and entry[1] == member_sid:
+            continue  # 同节点同桥：回调必然仍在岗，零操作
+        if entry is not None:
+            # 登记过期（节点销毁重建 sid 变了 / reload 旧代壳）：摘旧
+            # 挂新；旧回调已随旧节点消亡时摘除失败——静默后重挂
             try:
-                member.removeEventCallback(types, existing)
-            except Exception as exc:
-                logger.debug("path_tracker: 摘旧壳失败 %s: %s",
-                             member_path, exc)
+                member.removeEventCallback(types, entry[0])
+            except Exception:
+                pass
         try:
             member.addEventCallback(types, _node_event_bridge)
         except Exception as exc:
             logger.warning("path_tracker: 注册事件失败 %s: %s",
                            member_path, exc)
             continue
-        _REGISTERED[member_path] = _node_event_bridge
+        _REGISTERED[member_path] = (_node_event_bridge, member_sid)
         registered = True
     return registered
 
 
 def _unregister_path(path: str) -> None:
-    """摘除单条注册。节点已销毁时回调随节点失效，登记条目直接清。"""
-    cb = _REGISTERED.pop(path, None)
-    if cb is None:
+    """摘除单条登记（reconcile 清死条目/不再引用条目用）。
+
+    节点仍存活才调 removeEventCallback（条目可能是过期登记——旧回调
+    已随销毁节点消亡，摘除自然失败，一律 try 容错）；节点已销毁时
+    回调随节点消亡，登记条目直接清即可。"""
+    entry = _REGISTERED.pop(path, None)
+    if entry is None:
         return
     try:
         import hou
@@ -389,19 +390,9 @@ def _unregister_path(path: str) -> None:
     if node is None:
         return
     try:
-        node.removeEventCallback(_node_event_types(), cb)
+        node.removeEventCallback(_event_types(), entry[0])
     except Exception as exc:
         logger.debug("path_tracker: 摘除事件失败 %s: %s", path, exc)
-
-
-def _purge_registered_subtree(path: str) -> bool:
-    """摘除 path 及其全部后代前缀条目（祖先被删时后代一并失效）。"""
-    removed = False
-    for key in list(_REGISTERED):
-        if key == path or key.startswith(path + "/"):
-            _unregister_path(key)
-            removed = True
-    return removed
 
 
 def reset_all() -> None:
@@ -449,9 +440,9 @@ def reconcile() -> None:
     """对账：登记表 ↔ 配置引用路径集。
 
     - 期望集之外的条目（任务被删）→ 摘除；
-    - 死条目（节点已销毁）→ 摘除（hou.node(path) 为 None 时
-      _register_path 自然跳过；条目残留会让同名重建的新节点被误判
-      已注册而漏挂，删除事件/对账都负责清）；
+    - 死条目（节点已销毁）→ 摘除——无删除事件后登记可能因「删除 +
+      同名重建」过期，``_register_path`` 的 sid 校验会对过期条目盲
+      重绑（正确性保障），对账清掉条目只是卫生；
     - 新引用 → 注册（含祖先链）；
     - reload 换代条目 → 摘旧壳挂当前壳。
 
@@ -464,11 +455,19 @@ def reconcile() -> None:
         return
     want = _expected_paths()
     for key in list(_REGISTERED):
-        if key in want:
+        try:
+            alive = hou.node(key) is not None
+        except Exception:
+            alive = False
+        if not alive:
+            # 死条目（节点已销毁）：回调随节点消亡，登记直接清——
+            # 无删除事件后这是过期登记唯一的清理通道（配置仍引用死
+            # 路径时 key in want 挡不住，必须按节点存活判定）
+            _unregister_path(key)
             continue
-        if _is_ancestor_of_any(key, want):
-            continue  # 祖先链条目：仍服务于现存引用，保留
-        _unregister_path(key)
+        if key in want or _is_ancestor_of_any(key, want):
+            continue  # 活引用/祖先链条目：仍服务于现存引用，保留
+        _unregister_path(key)  # 活节点但已不被任何配置引用 → 摘除
     for path in sorted(want):
         _register_path(path)
 

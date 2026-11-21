@@ -68,8 +68,9 @@ BUTTON_CLICK 任务的 `params.node_path` 存工程外部 JSON，节点改名后
 
 ### 机制（全部经 H22.0.429 / H21.0.440 hython 无头探针实测）
 
-- **事件事实**：`NameChanged` 在 `setName` **同一同步调用栈内**触发（无事件循环依赖、无头可用）；kwargs 只给 `node`（新路径）+ `old_name`，旧绝对路径由 `compute_old_path` 反推。**父级改名只在父节点上发事件，子节点零事件**——祖先链（`parent()` 上溯到根）必须一并注册。
-- **注册元组必须全是 EnumValue**：SWIG 对象 `dir()` 带 `thisown` 等非枚举属性，动态拼 `nodeEventType` 元组会 TypeError（实测）——`_node_event_types()` 写死两个成员。
+- **只跟随改名，删除不订阅（2026-11-22 用户拍板）**：原节点被删 → 链接变死链保留（与原生 `chs()` 死链行为一致——「删除掉链接就掉了」）。`BeingDeleted` 全面移除——**删除场景零 Python 介入，批量删除与纯净 Houdini 逐比特一致**（此前 BeingDeleted 回调内做重活曾致删 30 节点卡顿数秒/崩溃，收窄后该场景构造上不存在）。事件面 = 每被引用节点 + 祖先链的 `NameChanged`。
+- **事件事实**：`NameChanged` 在 `setName` **同一同步调用栈内**触发（无事件循环依赖、无头可用）；kwargs 只给 `node`（新路径）+ `old_name`，旧绝对路径由 `compute_old_path` 反推。**父级改名只在父节点上发事件，子节点零事件**——祖先链（`parent()` 上溯，`/` 根除外）必须一并注册。
+- **注册元组必须全是 EnumValue**：SWIG 对象 `dir()` 带 `thisown` 等非枚举属性，动态拼 `nodeEventType` 元组会 TypeError（实测）——`_event_types()` 写死单个成员（NameChanged）。
 - **hipFile 订阅签名与 Node 版不同**：`hou.hipFile.addEventCallback(callback)` 只收**一个**参数（Node 版是 `(types, callback)`），事件类型在回调参数里过滤；`AfterLoad` 每次开工程触发。`AfterLoad`/`AfterMerge` → `reset_all()` + `reconcile()`；`AfterClear` → 只清登记。
 - **回调不进 hip**：实测保存前改名触发、重载后改名零触发、hip 二进制无任何回调/插件痕迹——工程可移植性零污染（无插件机器打开完全干净，行为与从未装过一致）。
 - **复制节点不带回调**（实测）——回调是节点对象上的会话状态。语义正确：任务引用原节点，复制件不该接管引用；`copyTo` 会在父网络发 `ChildCreated`（二期重绑可用）。
@@ -83,15 +84,15 @@ BUTTON_CLICK 任务的 `params.node_path` 存工程外部 JSON，节点改名后
 - **写盘成功后通知面板刷新 `_config_rev`**：tracker 写盘推进盘上 rev，面板不重读基线的话下次 flush 撞 `ConfigConflictError` 弹窗（用户面前凭空弹冲突=体验灾难）。
 - **面板观察者 `_on_paths_changed` 只做展示层**：命中槽 `parmPath` 程序化 setText **必须 `blockSignals`**——否则程序化 setText 触发 textChanged → `_mark_dirty` → 防抖全量写盘（内容与 tracker 刚写相同，冗余且在装载期会与基线错配）。装载期（`_dirty_loading > 0`）setText 照常执行（槽文本对齐盘上新值，信号被屏蔽零写盘）。
 - **面板编辑挂起的 600ms 窗口内发生改名**：tracker surgical 写盘（只动 node_path）+ 面板槽文本同步 + rev 刷新——面板 flush 全量写时槽文本已含新路径，无冲突无丢失。多机器真并发（A 机改名 B 机编辑）仍走既有 rev 三选弹窗，属既定行为。
-- **观察者协议**：`{"kind": "renamed", "changes": ((old,new),), "configs": (受影响配置名), "revs": {配置名: rev 或 None}}` / `{"kind": "deleted", "paths": (...)}`。多面板共存各自注册，destroyed 摘除（pane 收不到 closeEvent，观察者摘除挂 destroyed，与 stdout/日志/引擎取消同一兜底模式）。
+- **观察者协议**：`{"kind": "renamed", "changes": ((old,new),), "configs": (受影响配置名), "revs": {配置名: rev 或 None}}`（只有 renamed 一种——删除不订阅）。多面板共存各自注册，destroyed 摘除（pane 收不到 closeEvent，观察者摘除挂 destroyed，与 stdout/日志/引擎取消同一兜底模式）。
 
 ### 簿记与 reload
 
-- **登记表 `_REGISTERED`（路径 → 注册时的壳函数）NameError 守卫活过 reload**（项目惯例）。**向 hou 注册的回调是"桥接壳"**：壳体只 `from houtools.automation import path_tracker as _current; _current._impl(...)`——reload 重跑模块体后旧壳依旧按属性转发到最新实现，功能恒新；reconcile 对账时统一摘旧壳挂当前壳（removeEventCallback 需要注册时的同一对象，登记表存引用）。
-- **reconcile 是唯一对账点**（bootstrap/AfterLoad/AfterMerge/面板装载/flush 成功/`_save_data` 成功后调用）：期望集=**全部**配置文件（不只面板当前配置）的 BUTTON_CLICK node_path；摘除=不在期望集且非祖先条目（祖先条目 `key + "/"` 前缀保护）、死条目（`hou.node(path)` None）；新增=注册节点+祖先链。**死条目必须清**：节点删除时 `BeingDeleted` 摘条目，但条目残留会让同名重建的新节点被误判已注册而漏挂。
-- **删除不改 JSON**：`BeingDeleted`（先于销毁、路径仍可读）只摘登记——路径保留，undo 恢复/同名重建后 `reconcile` 按路径复现重绑（对齐原生引用行为）。
-- **控制台零 tracker 提示，反馈走左下角 toast（2026-11 用户拍板）**：改名命中=info「任务路径已跟随改名：旧 → 新」、删除=warning「引用节点已删除，任务路径丢失：路径」、**启动零提示**；`_toast` 带 `isUIAvailable` 闸门仅 GUI 会话发（无头静默——notify 的无头降级 logger 也进控制台，不能裸调，否则 smoke/e2e 输出重新出现 tracker 行）；通知失败静默吞（显式用户指令覆盖「异常至少 log.warning」反模式——toast 渲染失败无后果）；失败路径（订阅/注册/落盘失败等）保留 logger.warning（罕见且是真实故障）；删除 toast 以 purge 实摘为条件——祖先级联删除时祖先事件先清子树（提示一次），后代随后到达的事件零摘除零重复提示。
-- `_handle_rename`/`_handle_delete`/纯函数**无 hou 依赖**，smoke 用 FakeNode 直喂整链；`reconcile`/注册无头 `import hou` ImportError 直返（smoke 实例化窗口安全）。
+- **登记表 `_REGISTERED`（路径 → (壳函数, 注册时 sessionId)）NameError 守卫活过 reload**（项目惯例）。**向 hou 注册的回调是"桥接壳"**：壳体只 `from houtools.automation import path_tracker as _current; _current._impl(...)`——reload 重跑模块体后旧壳依旧按属性转发到最新实现，功能恒新；reconcile 对账时统一摘旧壳挂当前壳（removeEventCallback 需要注册时的同一对象，登记表存引用）。
+- **reconcile 是唯一对账点**（bootstrap/AfterLoad/AfterMerge/面板装载/flush 成功/`_save_data` 成功后调用）：期望集=**全部**配置文件（不只面板当前配置）的 BUTTON_CLICK node_path；清理=**按「节点存活」判定而非「路径是否在期望集」**（`hou.node(key)` None → 死条目直接清——配置仍引用死路径时 `key in want` 挡不住死条目，e2e 抓过；活节点不在期望集且非祖先条目 → 摘除）；新增=注册节点+祖先链。
+- **sid 校验盲重绑防漏挂**：登记条目带注册时的 sessionId——`_register_path` 发现 sid 与当前节点不一致（**删除+同名重建**，旧回调已随旧节点消亡而登记仍在）或壳换代 → 摘旧（容错）挂新；sid 一致且壳相同 = 同一节点回调必然在岗，零操作。**无删除事件后这是「重建节点恢复跟随」的唯一通道**（触发点=各 reconcile）。
+- **控制台零 tracker 提示，反馈走左下角 toast（2026-11 用户拍板）**：改名命中=info「任务路径已跟随改名：旧 → 新」（未命中任务的改名零反馈）**、启动零提示**；`_toast` 带 `isUIAvailable` 闸门仅 GUI 会话发（无头静默——notify 的无头降级 logger 也进控制台，不能裸调，否则 smoke/e2e 输出重新出现 tracker 行）；通知失败静默吞（显式用户指令覆盖「异常至少 log.warning」反模式——toast 渲染失败无后果）；失败路径（订阅/注册/落盘失败等）保留 logger.warning（罕见且是真实故障）。
+- `_handle_rename`/纯函数**无 hou 依赖**，smoke 用 FakeNode 直喂整链（并断言 `_handle_delete` 不存在防回归）；`reconcile`/注册无头 `import hou` ImportError 直返（smoke 实例化窗口安全）。
 - **`compute_old_path` 的 `rpartition` 头段坑**：`"/geo2".rpartition("/")` 头段是**空串**不是 `"/"`——根直挂节点旧路径拼回要按空串分支（smoke 抓过）。以 `/` 开头校验放最前。
 
 ### 丢失视觉态（2026-11 用户拍板：断链不自动修，只做可视化）
@@ -101,11 +102,12 @@ BUTTON_CLICK 任务的 `params.node_path` 存工程外部 JSON，节点改名后
 - **勾选框隐藏不销毁**：`_collect_data` 照常读取（findChild 不受可见性影响），用户的启用勾选不丢；路径恢复（重新创建/改回有效路径）自动换回勾选框。
 - 机制：`_set_slot_missing`（幂等：状态未变零操作；unpolish/polish 与 selected 同款动态属性机制）+ `_refresh_missing_states`（逐槽 `hou.node` O(任务数) 解析，无扫描；无头静默跳过）。
 - 评估口径：仅 BUTTON_CLICK（`combo.currentIndex() == 0`——防 Flipbook 槽 stacked 里隐藏的 parmPath 旧文本误评）；**空路径不算丢失**（空槽是待填状态不是断链）；未知类型槽不评估。
-- 时机：装载后（**重开工程时「改名未保存」的断裂在这里现形**——JSON 领先于盘上 hip，`hou.node` 解析失败即红）/ flush 与 `_save_data` 成功后（手输无效路径停手 600ms 防抖后现红、改成有效路径自动摘红，输入过程不闪红）/ tracker renamed+deleted 通知后（删除即刻转红）。
+- 时机：装载后（**重开工程时「改名未保存」的断裂在这里现形**——JSON 领先于盘上 hip，`hou.node` 解析失败即红）/ flush 与 `_save_data` 成功后（手输无效路径停手 600ms 防抖后现红、改成有效路径自动摘红，输入过程不闪红）/ tracker renamed 通知后 / **面板 showEvent**（切回面板即评估——删除导致的断链无事件，这里是零成本现形时机）。
 - smoke：headless 无 hou，评估层走不到——视觉机制用 `_set_slot_missing` 直驱验证（互换显示/幂等/恢复）+ styles 断言带 `missing="true"` 选择器。
 
 ### 已知边界（如实声明）
 
 - 引擎持 Start 时内存快照（既定设计）：运行中改名只影响 JSON/面板，不影响本次 run。
 - 打开时**已**断的路径（上个会话遗留）没有节点可注册——非本次改名造成，执行时按既有「节点不存在」暴露；丢失状态可视化属二期。
-- GUI 会话待验证（hython 无 undo 栈 API 探不了）：交互式改名（网络编辑器回车提交）的事件时序、undo 改名/删除的事件流（预期 NameChanged/ChildCreated 对称）。
+- **删除零即时反馈**（不订阅删除的既定语义）：删除被引用节点后面板红边框要等交互间隙评估（切回面板/编辑落盘/重开工程）才现形；节点删除+同名重建后，跟随要等下次 reconcile（面板交互点）恢复。
+- GUI 会话待验证（hython 无 undo 栈 API 探不了）：交互式改名（网络编辑器回车提交）的事件时序、undo 改名的事件流（预期 NameChanged 对称触发）。

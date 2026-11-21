@@ -1071,6 +1071,10 @@ class AutomationWindow(QWidget):
         super().showEvent(event)
         # 重新可见 = 新的可见周期,收尾落盘失败 toast 的去重位复位
         self._flush_warned = False
+        # 切回面板即评估丢失态：删除导致的断链没有事件（path_tracker
+        # 不订阅删除——用户拍板对齐原生死链），这里是零成本现形时机
+        # （O(任务数) hou.node 查找，交互间隙毫秒级）
+        self._refresh_missing_states()
         app = QApplication.instance()
         if app is not None:
             app.installEventFilter(self)
@@ -1130,11 +1134,6 @@ class AutomationWindow(QWidget):
                     self._current_config_name)
             # 文本已对齐新路径 → 重评估丢失态（新路径有效则摘红）；
             # 当前配置没被改写时 rev 基线不动
-            self._refresh_missing_states()
-        elif kind == "deleted":
-            logger.debug("Automation: 引用节点已删除（配置路径保留）: %s",
-                         ", ".join(event.get("paths") or ()))
-            # 引用节点被删：相关槽立即转红（重开工程后由装载期评估兜底）
             self._refresh_missing_states()
 
     def _detach_path_tracker(self) -> None:
