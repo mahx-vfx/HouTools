@@ -64,7 +64,7 @@ class Ref:
     kind: str                  # "input" / "output"
     node_path: str
     parm_name: str             # 要改写的参数（filecache 是 basedir）
-    raw: str                   # 展示用原始值（filecache 用真实输出路径）
+    raw: str                   # 展示用原始值（filecache 用 basedir 的 $HIP/$JOB 写法）
     abs_path: str = ""         # 具体文件；序列则为模板路径（含帧 token）
     token: str = ""            # 序列模板的帧 token（$F4 / <UDIM> / ...）
     files: list = field(default_factory=list)   # 实际存在的文件（绝对路径）
@@ -72,6 +72,7 @@ class Ref:
     absolute_raw: bool = False  # 参数本身是绝对路径或 $VAR 写法
     rewrite_dir: bool = False  # True = 改的是目录参数（filecache basedir）
     basedir: str = ""          # rewrite_dir 时的目录绝对路径
+    builtin: bool = False      # $HH/$HFS 内置引用（Houdini 安装目录资源）
 
     @property
     def is_sequence(self):
@@ -107,6 +108,7 @@ class Candidate:
     absolute_raw: bool = False
     rewrite_dir: bool = False
     basedir: str = ""
+    builtin: bool = False
 
 
 def _hou():
@@ -317,17 +319,22 @@ def _gather_filecache(node, parm, include_output):
         basedir_raw = parm.unexpandedString()
     except Exception:
         basedir_raw = parm.evalAsString()
+    # 参数现值展示用 basedir 的**原始写法**（`$HIP/geo` / `$JOB/...`），
+    # 不是 sopoutput 展开后的绝对路径——用户看表格「参数现值」列时，
+    # 要能认出自己在 Houdini 里填的写法（2026-11-20 实测反馈）。
+    # 注意：raw 只用于展示；扫描/复制一律走 expanded / abs_path / basedir。
     return Candidate(
         kind="output",
         node_path=node.path(),
         parm_name=parm.name(),
-        raw=produced,
+        raw=basedir_raw or produced,
         expanded=produced,
         abs_path=produced,
         token=token,
         absolute_raw=paths.needs_packaging(basedir_raw),
         rewrite_dir=True,
         basedir=basedir,
+        builtin=paths.is_builtin_ref(basedir_raw),
     ), None
 
 
@@ -415,6 +422,7 @@ def _gather_ref(node, parm, include_output=False):
         abs_path=abs_path,
         token=token,
         absolute_raw=paths.needs_packaging(raw),
+        builtin=paths.is_builtin_ref(raw),
     ), None
 
 
@@ -441,16 +449,21 @@ def gather(hip_dir="", include_output=False):
     return candidates, skip_stats
 
 
-def resolve(candidates, hip_dir, include_output=False, should_cancel=None):
+def resolve(candidates, hip_dir, include_output=False, should_cancel=None,
+             gate=None):
     """文件系统阶段：对候选做 isfile/glob/isdir，返回 (refs, skip_stats)。
 
-    可以在 QThread 里跑（只碰文件系统，不碰 HOM）。
+    可以在 QThread 里跑（只碰文件系统，不碰 HOM）。``gate`` 可选（鸭子类型）：
+    每个候选项前调 ``wait_if_paused()``——暂停时阻塞、返回 True 表示已取消；
+    不传则行为与旧版完全一致（无窗口调用/纯函数测试不受影响）。
     """
     hip = os.path.normpath(hip_dir) if hip_dir else ""
     refs = []
     skip_stats = {}
     for cand in candidates:
         if should_cancel is not None and should_cancel():
+            break
+        if gate is not None and gate.wait_if_paused():
             break
         expanded = cand.expanded
         if _is_noise(expanded, hip):
@@ -479,6 +492,7 @@ def resolve(candidates, hip_dir, include_output=False, should_cancel=None):
             absolute_raw=cand.absolute_raw,
             rewrite_dir=cand.rewrite_dir,
             basedir=cand.basedir if cand.rewrite_dir else "",
+            builtin=cand.builtin,
         ))
     return refs, skip_stats
 
@@ -585,6 +599,10 @@ def build_package_log(refs, plan, targets, stats, package_dir, package_name,
         lines.append("  [{:>3}] {:<8} {}:{}".format(
             index + 1, ref.kind, ref.node_path, ref.parm_name))
         lines.append("         源: {}".format(ref.raw))
+        # filecache 等目录参数：raw 是 `$HIP/geo` 写法，另列实际扫描到的
+        # 绝对路径，便于排查帧序列 glob 是否命中（不影响参数现值展示）。
+        if getattr(ref, "rewrite_dir", False) and getattr(ref, "abs_path", ""):
+            lines.append("         扫描: {}".format(ref.abs_path))
         lines.append("         目标: {}".format(target))
     lines.append("-" * 60)
     lines.append(" 复制计划（共 {} 个文件，按来源目录聚合）:".format(len(plan)))

@@ -5429,6 +5429,12 @@ def main():
         == "$HIP/assets/D_proj_tex/a.jpg"
     assert pkg_paths.zip_path_for("C:/hip/shot.hip").endswith(
         "shot_package.zip")
+    # 2026-11-21 用户拍板：生成方式固定「另存到包目录」，包根只有
+    # $HIP / $JOB 两种。$HIP 不带包名（另存后 $HIP 就是包目录），
+    # $JOB 必须带包名（会话 $JOB 由工具在打包时指向实际项目根）。
+    assert pkg_paths.target_prefix("HIP", "pack") == "$HIP"
+    assert pkg_paths.target_prefix("JOB", "pack") == "$JOB/pack"
+    print("package target prefix OK")
 
     # POSIX 形态绝对路径（Windows 上 os.path.isabs 返 False、Houdini 视为
     # 绝对——同 filecache_abs_path._is_abs 的兼容语义）
@@ -5543,6 +5549,20 @@ def main():
     app.processEvents()
     assert _pkg_win._table.rowCount() == 0
     assert _pkg_win._apply_btn.isEnabled() is False
+    # 2026-11-21 三次反馈：扫描旁注释 + 重置按钮 + 打包/打包+zip 两个选项
+    assert _pkg_win._scan_note.text() == "未启用节点将不被扫描"
+    assert _pkg_win._reset_btn.text() == "重置"
+    assert _pkg_win._apply_btn.text() == "打包"
+    assert _pkg_win._zip_btn.text() == "打包+zip"
+    assert _pkg_win._zip_btn.isEnabled() is False   # 没勾选引用时两个都禁用
+    assert _pkg_win._zip_after_apply is False
+    # 暂停 / 中断：底部与扫描遮罩上各一组（遮罩会吞鼠标事件）
+    assert _pkg_win._pause_btn.text() == "暂停"
+    assert _pkg_win._abort_btn.text() == "中断"
+    assert _pkg_win._pause_btn.isEnabled() is False
+    assert _pkg_win._abort_btn.isEnabled() is False
+    assert _pkg_win._scan_busy.pause_btn.text() == "暂停"
+    assert _pkg_win._scan_busy.abort_btn.text() == "中断"
     assert _pkg_win._status_label.text() == "—"
     assert _pkg_win.objectName() == "htWindow"
     assert _pkg_win.is_close_deferred() is False
@@ -5578,6 +5598,397 @@ def main():
         _pkg_win._table.item(0, 5).text()
     assert _pkg_win._table.item(1, 5).text() == "缓存缺失", \
         _pkg_win._table.item(1, 5).text()
+
+    # 缓存目录行（rewrite_dir）同样按 in_hip 弱化 + 标「$HIP 内」
+    # （2026-11-20 用户反馈：basedir=$HIP/geo 的第 2/3/4 行恒亮）
+    from PySide6.QtGui import QColor as _QColor
+    from houtools.ui import theme as _theme
+    _pkg_win._refs = [pkg_collect.Ref(
+        kind="output", node_path="/obj/cache1", parm_name="basedir",
+        raw="$HIP/geo", abs_path="D:/p/geo/a.$F4.bgeo.sc",
+        files=["D:/p/geo/a.0001.bgeo.sc"], rewrite_dir=True,
+        basedir="D:/p/geo", in_hip=True),
+        pkg_collect.Ref(
+        kind="output", node_path="/obj/cache2", parm_name="basedir",
+        raw="D:/ext/geo", abs_path="D:/ext/geo/b.$F4.bgeo.sc",
+        files=["D:/ext/geo/b.0001.bgeo.sc"], rewrite_dir=True,
+        basedir="D:/ext/geo", in_hip=False)]
+    _pkg_win._targets = ["$HIP/geo/a.$F4.bgeo.sc", "$HIP/geo/b.$F4.bgeo.sc"]
+    _pkg_win._fill_table()
+    app.processEvents()
+    _cache0 = _pkg_win._table.item(0, 5)
+    assert _cache0.text() == "$HIP 内 · 缓存目录 · 1 帧", _cache0.text()
+    assert _cache0.foreground().color() == _QColor(_theme.color("TEXT_3"))
+    _cache1 = _pkg_win._table.item(1, 5)
+    assert _cache1.text() == "缓存目录 · 1 帧", _cache1.text()
+    assert _cache1.foreground().color() == _QColor(_theme.color("TEXT"))
+    print("package cache row color OK")
+
+    # 内置引用（$HH/$HFS）状态列标「内置」，仍可勾选、仍显示原始写法
+    _pkg_win._refs = [pkg_collect.Ref(
+        kind="input", node_path="/obj/ocean/geo1", parm_name="geometrydef",
+        raw="$HH/geo/defgeo.bgeo", abs_path="C:/HFS/houdini/geo/defgeo.bgeo",
+        files=["C:/HFS/houdini/geo/defgeo.bgeo"], builtin=True)]
+    _pkg_win._targets = ["$HIP/geo/defgeo.bgeo"]
+    _pkg_win._fill_table()
+    app.processEvents()
+    assert _pkg_win._table.item(0, 5).text().startswith("内置 · "), \
+        _pkg_win._table.item(0, 5).text()
+    assert _pkg_win._table.item(0, 3).text() == "$HH/geo/defgeo.bgeo"
+    _pkg_win._update_status()
+    assert "内置 1 个" in _pkg_win._hint_label.text(), \
+        _pkg_win._hint_label.text()
+    print("package builtin ref label OK")
+
+    # 2026-11-21 用户拍板：包根只剩 $HIP / $JOB；生成方式固定「另存到
+    # 包目录」，覆盖当前工程、自定义路径选项、以及整套环境变量检测 / 诊断 /
+    # 持久化提示 / 确认弹窗全部删除。两个包根共用「输出目录」输入框。
+    assert _pkg_win._root_combo.count() == 2, _pkg_win._root_combo.count()
+    assert [_pkg_win._root_combo.itemData(_i) for _i in range(2)] == \
+        ["HIP", "JOB"]
+    assert not hasattr(_pkg_win, "_save_copy_radio")
+    assert not hasattr(_pkg_win, "_overwrite_radio")
+    assert not hasattr(_pkg_win, "_ensure_job_root")
+    assert not hasattr(_pkg_win, "_job_override")
+    print("package root options OK")
+
+    class _JobHouText:
+        @staticmethod
+        def expandString(var):
+            return {"$HIP": "D:/proj/shot", "$JOB": "D:/proj/shot"}.get(
+                var, var)
+
+    class _JobHou:
+        text = _JobHouText
+        _env = {}
+
+        @staticmethod
+        def putenv(key, value):
+            _JobHou._env[key] = value
+
+    _job_saved = sys.modules.get("hou")
+    sys.modules["hou"] = _JobHou
+    try:
+        # $HIP：输出目录输入框也可用；留空 = 当前工程目录，前缀不带包名，
+        # 且不动会话 $JOB
+        _pkg_win._root_combo.setCurrentIndex(0)
+        assert _pkg_win._root_path_edit.isEnabled()
+        assert _pkg_win._root_path_btn.isEnabled()
+        assert _pkg_win._root_dir() == os.path.normpath("D:/proj/shot")
+        assert _pkg_win._base_dir() == os.path.normpath("D:/proj/shot")
+        assert _pkg_win._target_prefix() == "$HIP"
+        _JobHou._env.clear()
+        assert _pkg_win._set_session_job() is True
+        assert not _JobHou._env
+
+        # 2026-11-21 二次反馈：$HIP 也能自定义输出目录——只改产物落点，
+        # 参数仍写 $HIP/…（另存 hip 后 $HIP 自动指向包目录），不 putenv
+        _pkg_win._root_path_edit.setText("D:/renderfarm/hipA")
+        assert _pkg_win._root_dir() == os.path.normpath(
+            "D:/renderfarm/hipA")
+        assert _pkg_win._base_dir() == os.path.normpath(
+            "D:/renderfarm/hipA")
+        assert _pkg_win._package_dir() == os.path.normpath(
+            "D:/renderfarm/hipA/" + _pkg_win._pkg_name())
+        assert _pkg_win._root_var_value() == (
+            "$HIP", os.path.normpath("D:/renderfarm/hipA"))
+        assert _pkg_win._target_prefix() == "$HIP"
+        _JobHou._env.clear()
+        assert _pkg_win._set_session_job() is True
+        assert not _JobHou._env
+
+        # 相对路径：$HIP 下 _base_dir 直接判不可用，$JOB 下拒绝 putenv
+        _pkg_win._root_path_edit.setText("relative/hip")
+        assert _pkg_win._base_dir() == ""
+        _pkg_win._root_path_edit.clear()
+
+        # $JOB 留空 = 当前工程目录（用户要的「默认以当前工程路径指定」）
+        _pkg_win._root_combo.setCurrentIndex(1)
+        assert _pkg_win._root_path_edit.isEnabled()
+        assert _pkg_win._root_path_btn.isEnabled()
+        assert _pkg_win._root_dir() == os.path.normpath("D:/proj/shot")
+        assert _pkg_win._base_dir() == os.path.normpath("D:/proj/shot")
+        assert _pkg_win._target_prefix() == "$JOB/{}".format(
+            _pkg_win._pkg_name())
+        _JobHou._env.clear()
+        assert _pkg_win._set_session_job() is True
+        assert _JobHou._env.get("JOB") == "D:/proj/shot"
+
+        # 用户自定义 $JOB 输出目录：包根、putenv、参数前缀同源
+        _pkg_win._root_path_edit.setText("D:/renderfarm/jobA")
+        assert _pkg_win._root_dir() == os.path.normpath("D:/renderfarm/jobA")
+        assert _pkg_win._base_dir() == os.path.normpath("D:/renderfarm/jobA")
+        assert _pkg_win._target_prefix() == "$JOB/{}".format(
+            _pkg_win._pkg_name())
+        _JobHou._env.clear()
+        assert _pkg_win._set_session_job() is True
+        assert _JobHou._env.get("JOB") == "D:/renderfarm/jobA"
+
+        # 相对路径拒绝设置，且不留副作用
+        _pkg_win._root_path_edit.setText("relative/job")
+        _JobHou._env.clear()
+        assert _pkg_win._set_session_job() is False
+        assert not _JobHou._env
+        _pkg_win._root_path_edit.setText("D:/renderfarm/jobA")
+
+        # 确认弹窗：按用户图示去掉「生成方式」「$JOB 当前」「环境变量」
+        # 等文字，只保留落点与参数改写说明。mock question 返回 False
+        # （用户取消），不会真的复制或改会话变量。
+        import houtools.ui.dialogs as _pkg_dlg
+        _saved_question = _pkg_dlg.question
+        _captured = []
+
+        def _fake_question(_parent, title, text):
+            _captured.append((title, text))
+            return False
+
+        _pkg_dlg.question = _fake_question
+        try:
+            _pkg_win._refs = [pkg_collect.Ref(
+                kind="input", node_path="/obj/a", parm_name="file",
+                raw="a.jpg", abs_path="D:/p/a.jpg", files=["D:/p/a.jpg"],
+                in_hip=False)]
+            _pkg_win._checked = {0}
+            _pkg_win._on_apply()
+            assert _captured, "确认弹窗未弹出"
+            _dlg_text = _captured[-1][1]
+            assert "生成方式" not in _dlg_text, _dlg_text
+            assert "$JOB 当前" not in _dlg_text, _dlg_text
+            assert "环境变量" not in _dlg_text, _dlg_text
+            assert "houdini.env" not in _dlg_text, _dlg_text
+            assert "改写 1 个参数为 $JOB 下的相对路径" in _dlg_text, \
+                _dlg_text
+
+            # 「打包+zip」：确认弹窗注明自动压缩；用户取消时标志必须清掉
+            _pkg_win._zip_after_apply = True
+            _pkg_win._on_apply(True)
+            assert "自动生成" in _captured[-1][1], _captured[-1][1]
+            assert _pkg_win._zip_after_apply is False
+
+            # $HIP 自定义输出目录：确认弹窗仍按 $HIP 打包，落点已改，
+            # 并注明另存后 $HIP 会指向包目录（参数写法不变）
+            _pkg_win._root_combo.setCurrentIndex(0)
+            _pkg_win._root_path_edit.setText("D:/renderfarm/hipA")
+            _pkg_win._on_apply()
+            _hip_dlg_text = _captured[-1][1]
+            assert "改写 1 个参数为 $HIP 下的相对路径" in _hip_dlg_text, \
+                _hip_dlg_text
+            assert "另存 hip 后 $HIP 会指向该包目录" in _hip_dlg_text, \
+                _hip_dlg_text
+            assert os.path.normpath("D:/renderfarm/hipA") in _hip_dlg_text, \
+                _hip_dlg_text
+            _pkg_win._root_path_edit.clear()
+        finally:
+            _pkg_dlg.question = _saved_question
+
+        _pkg_win._root_path_edit.clear()
+        _pkg_win._root_combo.setCurrentIndex(0)      # 还原 $HIP
+    finally:
+        if _job_saved is None:
+            sys.modules.pop("hou", None)
+        else:
+            sys.modules["hou"] = _job_saved
+    print("package root output dir OK")
+
+    # 恢复成 2 条 fixture，供下面多选/切场景断言使用
+    _pkg_win._refs = [pkg_collect.Ref(
+        kind="input", node_path="/obj/a", parm_name="file",
+        raw="a.jpg", abs_path="D:/p/a.jpg", files=["D:/p/a.jpg"],
+        in_hip=True),
+        pkg_collect.Ref(kind="output", node_path="/obj/b", parm_name="picture",
+                        raw="b.$F4.exr", abs_path="D:/p/b.$F4.exr", files=[])]
+    _pkg_win._targets = ["$HIP/tex/a.jpg", "$HIP/render/b.$F4.exr"]
+    _pkg_win._fill_table()
+    app.processEvents()
+
+    # ---- 2026-11-20 用户反馈 4 项 ----
+    # ② Windows 文件夹式多选：ExtendedSelection + 批量勾选/取消/反选
+    from PySide6.QtCore import Qt as _PkgQt
+    assert _pkg_win._table.selectionMode() == \
+        _QtW.QAbstractItemView.ExtendedSelection
+    _pkg_win._set_rows_checked({0, 1}, True)
+    assert _pkg_win._checked == {0, 1}
+    assert all(_pkg_win._table.item(r, 0).checkState() == _PkgQt.Checked
+               for r in (0, 1))
+    _pkg_win._set_rows_checked({0}, False)
+    assert _pkg_win._checked == {1}
+    # 空格/表头：选区全勾则整批取消，否则整批勾选
+    _pkg_win._table.selectAll()
+    _pkg_win._toggle_selected_rows()
+    assert _pkg_win._checked == {0, 1}
+    _pkg_win._on_header_clicked(0)       # 全勾 → 全不选
+    assert _pkg_win._checked == set()
+    _pkg_win._on_header_clicked(0)        # 全不选 → 全勾
+    assert _pkg_win._checked == {0, 1}
+    _pkg_win._invert_rows({0})
+    assert _pkg_win._checked == {1}
+    print("package multi-select OK")
+
+    # ④ 切换工程后必须真正清掉表格行，并在日志打印相关信息
+    _pkg_win._scene_sig = ("hip", "d:/old/old.hip")
+    _pkg_win._current_scene_sig = lambda: ("hip", "d:/new/new.hip")
+    _pkg_win._sync_scene()
+    assert _pkg_win._table.rowCount() == 0, "切工程后表格行未清空"
+    assert _pkg_win._refs == [] and _pkg_win._checked == set()
+    assert _pkg_win._pack_session is None and _pkg_win._hip_dir == ""
+    _scene_log = _pkg_win._log_view.toPlainText()
+    assert "工程切换" in _scene_log and "old.hip" in _scene_log \
+        and "new.hip" in _scene_log and "2 条引用" in _scene_log, _scene_log
+    assert _pkg_win._scene_poll.isActive(), "场景轮询定时器未启动"
+    print("package scene switch reset OK")
+
+    # ⑤ 重置按钮：与切换工程共用 _clear_results()，扫描完成后也能清空列表
+    _pkg_win._refs = [pkg_collect.Ref(
+        kind="input", node_path="/obj/a", parm_name="file",
+        raw="a.jpg", abs_path="D:/p/a.jpg", files=["D:/p/a.jpg"],
+        in_hip=False)]
+    _pkg_win._checked = {0}
+    _pkg_win._plan = {"D:/p/a.jpg": "D:/out/a.jpg"}
+    _pkg_win._pack_session = {"base": "D:/proj/shot"}
+    _pkg_win._hip_dir = "D:/proj/shot"
+    _pkg_win._on_reset()
+    assert _pkg_win._refs == [] and _pkg_win._checked == set()
+    assert _pkg_win._table.rowCount() == 0
+    assert _pkg_win._plan == {} and _pkg_win._conflicts == []
+    assert _pkg_win._pack_session is None and _pkg_win._hip_dir == ""
+    assert _pkg_win._apply_btn.isEnabled() is False
+    assert _pkg_win._zip_btn.isEnabled() is False
+    assert "已重置" in _pkg_win._log_view.toPlainText()
+    print("package reset button OK")
+
+    # ⑥ 打包+zip：成功后自动压缩，失败/无会话则跳过，标志一律清掉
+    _auto_calls = []
+    _pkg_win._on_zip = lambda: _auto_calls.append(1)
+    try:
+        _pkg_win._pack_session = {"base": "D:/proj/shot"}
+        _pkg_win._zip_after_apply = True
+        _pkg_win._maybe_auto_zip(True)
+        assert _auto_calls == [1] and _pkg_win._zip_after_apply is False
+        _pkg_win._zip_after_apply = True
+        _pkg_win._maybe_auto_zip(False)
+        assert _auto_calls == [1] and _pkg_win._zip_after_apply is False
+        _pkg_win._zip_after_apply = True
+        _pkg_win._pack_session = None
+        _pkg_win._maybe_auto_zip(True)
+        assert _auto_calls == [1] and _pkg_win._zip_after_apply is False
+        # 普通「打包」不置标志时不会被连带压缩
+        _pkg_win._zip_after_apply = False
+        _pkg_win._maybe_auto_zip(True)
+        assert _auto_calls == [1]
+    finally:
+        del _pkg_win.__dict__["_on_zip"]     # 恢复类方法
+        _pkg_win._pack_session = None
+        _pkg_win._zip_after_apply = False
+    print("package auto zip OK")
+
+    # ⑦ 暂停 / 打断闸门：暂停阻塞、继续放行、取消必须唤醒暂停中的等待
+    import threading as _threading
+    import types as _types
+
+    def _gate_case(cancel_instead):
+        _g = pkg_window._WorkerGate()
+        _entered = _threading.Event()
+        _out = []
+
+        def _wait():
+            _entered.set()
+            _out.append(_g.wait_if_paused())
+
+        _g.pause()
+        _t = _threading.Thread(target=_wait, daemon=True)
+        _t.start()
+        assert _entered.wait(1.0), "gate 等待线程没启动"
+        _t.join(0.25)
+        assert _t.is_alive(), "暂停时 wait_if_paused 没阻塞"
+        if cancel_instead:
+            _g.cancel()          # 关窗 / 中断按钮走这条，必须唤醒
+        else:
+            _g.resume()
+        _t.join(1.0)
+        assert not _t.is_alive(), "等待未被唤醒（延迟关闭会卡死）"
+        return _out, _g
+
+    _out, _g = _gate_case(False)
+    assert _out == [False] and not _g.paused, _out
+    _out2, _g2 = _gate_case(True)
+    assert _out2 == [True] and _g2.cancelled and not _g2.paused, _out2
+
+    # collect.resolve 的 gate 钩子（纯函数，不传 gate 时旧行为不变）
+    class _ResolveGate:
+        def __init__(self, stop):
+            self.stop = stop
+            self.calls = 0
+
+        def wait_if_paused(self):
+            self.calls += 1
+            return self.stop
+
+    _cand = _types.SimpleNamespace(
+        expanded="D:/p/a.jpg", abs_path="D:/p/a.jpg", rewrite_dir=False,
+        token="", kind="input", node_path="/obj/a", parm_name="file",
+        raw="a.jpg", absolute_raw=False, builtin=False, basedir="")
+    _stop_gate = _ResolveGate(True)
+    assert pkg_collect.resolve([_cand], "D:/p", gate=_stop_gate)[0] == []
+    assert _stop_gate.calls == 1, _stop_gate.calls
+    _pass_gate = _ResolveGate(False)
+    pkg_collect.resolve([_cand], "D:/p", gate=_pass_gate)
+    assert _pass_gate.calls == 1, _pass_gate.calls
+
+    # 三个 worker 都有 gate，cancel 会唤醒暂停（closeEvent 依赖这点）
+    for _w in (pkg_window._CopyWorker({}),
+               pkg_window._ScanWorker([], "D:/p", False),
+               pkg_window._ZipWorker("D:/p/a.zip", "D:/p",
+                                     "D:/p/pack", "")):
+        assert isinstance(_w.gate, pkg_window._WorkerGate)
+        _w.gate.pause()
+        _w.cancel()
+        assert _w.cancelled and _w.gate.cancelled and not _w.gate.paused
+        assert _w.gate.wait_if_paused() is True
+
+    # 窗口槽：暂停/继续切换状态，暂停中打断能唤醒且按钮禁用
+    class _FakeWorker:
+        def __init__(self):
+            self.gate = pkg_window._WorkerGate()
+            self.cancelled = False
+            self.cancel_calls = 0
+
+        def isRunning(self):
+            return True
+
+        def cancel(self):
+            self.cancel_calls += 1
+            self.cancelled = True
+            self.gate.cancel()
+
+    _fake = _FakeWorker()
+    _saved_worker = _pkg_win._copy_worker
+    _pkg_win._copy_worker = _fake
+    try:
+        _pkg_win._set_busy(True)
+        assert _pkg_win._pause_btn.isEnabled()
+        assert _pkg_win._abort_btn.isEnabled()
+        _pkg_win._on_pause()
+        assert _pkg_win._paused and _fake.gate.paused
+        assert _pkg_win._pause_btn.text() == "继续"
+        assert _pkg_win._status_label.text() == "已暂停"
+        _pkg_win._on_pause()
+        assert not _pkg_win._paused and not _fake.gate.paused
+        assert _pkg_win._pause_btn.text() == "暂停"
+        _pkg_win._on_pause()          # 再次暂停后打断
+        _pkg_win._on_abort()
+        assert _fake.cancel_calls == 1 and _fake.gate.cancelled
+        assert not _fake.gate.paused and not _pkg_win._paused
+        assert not _pkg_win._pause_btn.isEnabled()
+        assert not _pkg_win._abort_btn.isEnabled()
+        assert "中断" in _pkg_win._log_view.toPlainText()
+    finally:
+        _pkg_win._copy_worker = _saved_worker
+        _pkg_win._set_busy(False)
+        _pkg_win._update_status()
+    assert not _pkg_win._pause_btn.isEnabled()
+    assert not _pkg_win._abort_btn.isEnabled()
+    print("package pause abort OK")
+
     _pkg_win._refs = []
     _pkg_win._targets = []
     # worker 类可无头构造（不 start）：协作式取消标志就位
@@ -5817,7 +6228,7 @@ def main():
     print("zip link boundary OK")
 
     # ------------------------------------------------------------------
-    # Package Project 增强（2026-11-19）：类型分类 / 默认包名 / $JOB 默认值 /
+    # Package Project 增强（2026-11-19）：类型分类 / 默认包名 / 参数前缀 /
     # 场景指纹 / 勾选统计 / 打包日志 / 分类布局——全部纯函数，无头覆盖
     # ------------------------------------------------------------------
     # 按文件类型归入 Houdini 官方 New Project 目录
@@ -5857,12 +6268,21 @@ def main():
     assert pkg_paths.default_package_name("") == "ht_package"
     print("package default name OK")
 
-    # $JOB 默认值检测
-    assert pkg_paths.job_is_default("", "C:/hip")
-    assert pkg_paths.job_is_default("$JOB", "C:/hip")
-    assert pkg_paths.job_is_default("C:/hip", "C:/hip")
-    assert not pkg_paths.job_is_default("D:/projects/main", "C:/hip")
-    print("package job default OK")
+    # 2026-11-21 用户拍板：$JOB 不再由环境变量指定，整套「猜默认值 /
+    # 扫 houdini.env / 诊断」纯函数已删除。参数前缀只按包根选项生成。
+    for _removed in ("job_is_default", "default_job_roots", "resolve_job_root",
+                     "houdini_env_candidates", "job_entry_in_env_file",
+                     "job_env_diagnosis", "_path_key"):
+        assert not hasattr(pkg_paths, _removed), \
+            "环境变量检测残留：" + _removed
+    assert pkg_paths.target_prefix("HIP", "pack") == "$HIP"
+    assert pkg_paths.target_prefix("JOB", "pack") == "$JOB/pack"
+    # 内置引用识别（$HH/$HFS = Houdini 安装目录，非工程素材）
+    assert pkg_paths.is_builtin_ref("$HH/geo/defgeo.bgeo")
+    assert pkg_paths.is_builtin_ref("${HFS}/houdini/geo/x.bgeo")
+    assert not pkg_paths.is_builtin_ref("$HIP/geo/x.bgeo")
+    assert not pkg_paths.is_builtin_ref("D:/proj/geo/x.bgeo")
+    print("package job env removed OK")
 
     # 场景指纹：new/open 后变化，重开同一工程不变
     _sig1 = pkg_paths.scene_signature("C:/p/a.hip", False)
@@ -5923,6 +6343,68 @@ def main():
     assert "已改名" in _log_text and "复制 1/1" in _log_text
     assert "tex/a.jpg" in _log_text
     print("package log text OK")
+
+    # ③ filecache 参数现值：raw 保留 `$HIP/geo` 写法，扫描路径仍用绝对路径
+    # （2026-11-20 用户反馈：明明填的是 $HIP/$JOB，列表却显示绝对路径）
+    class _FCPkgParm:
+        def __init__(self, value, raw):
+            self._value, self._raw = value, raw
+
+        def evalAsString(self):
+            return self._value
+
+        def unexpandedString(self):
+            return self._raw
+
+        def keyframes(self):
+            return ()
+
+        def name(self):
+            return "basedir"
+
+    class _FCPkgNode:
+        def parm(self, name):
+            if name == "sopoutput":
+                return _FCPkgParm("D:/hip/geo/v1/cache.0018.bgeo.sc", "")
+            return _FCPkgParm("$HIP/geo", "$HIP/geo")
+
+        def path(self):
+            return "/obj/geo1/filecache1"
+
+    class _FCPkgHouText:
+        @staticmethod
+        def expandString(value):
+            return value.replace("$HIP", "D:/hip").replace("$JOB", "D:/job")
+
+    class _FCPkgHou:
+        text = _FCPkgHouText
+
+    _fc_saved = sys.modules.get("hou")
+    sys.modules["hou"] = _FCPkgHou
+    try:
+        _fc_cand, _fc_reason = pkg_collect._gather_filecache(
+            _FCPkgNode(), _FCPkgNode().parm("basedir"), False)
+    finally:
+        if _fc_saved is None:
+            sys.modules.pop("hou", None)
+        else:
+            sys.modules["hou"] = _fc_saved
+    assert _fc_reason is None and _fc_cand is not None
+    assert _fc_cand.raw == "$HIP/geo", _fc_cand.raw
+    assert _fc_cand.abs_path.endswith("cache.0018.bgeo.sc"), _fc_cand.abs_path
+    assert _fc_cand.basedir == os.path.normpath("D:/hip/geo"), \
+        _fc_cand.basedir
+    assert _fc_cand.rewrite_dir is True
+    # 日志里同时保留「源($HIP 写法)」与「扫描(绝对路径)」，可排查不丢信息
+    _fc_log = pkg_collect.build_package_log(
+        refs=[pkg_collect.Ref(kind="output", node_path="/obj/geo1/filecache1",
+                              parm_name="basedir", raw="$HIP/geo",
+                              abs_path="D:/hip/geo/v1/cache.0018.bgeo.sc",
+                              rewrite_dir=True)],
+        plan={}, targets=["$HIP/geo"], stats="", package_dir="C:/pkg",
+        package_name="pack", mode_text="", prefix="$HIP")
+    assert "源: $HIP/geo" in _fc_log and "扫描: D:/hip/geo" in _fc_log, _fc_log
+    print("package filecache display raw OK")
 
     # 分类布局：目标进官方目录、无 assets 层、复制与改写目标一致
     _cat_targets, _cat_plan, _cat_notes, _cat_conflicts = \

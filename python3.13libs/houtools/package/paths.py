@@ -7,8 +7,8 @@
   ``os.path.isabs`` 返 False、Houdini 视为绝对，同 filecache_abs_path._is_abs）；
 - 生成包内目标路径，并按**文件类型**归入 Houdini 官方 New Project 目录
   （``geo / hda / sim / abc / tex / render / flip / scripts``）；
-- 包名净化（用户输入直接进 os.path.join，必须收敛）、默认包名、$JOB 默认值
-  检测、场景切换检测、可读大小。
+- 包名净化（用户输入直接进 os.path.join，必须收敛）、默认包名、内置引用
+  识别、场景切换检测、打包参数前缀、可读大小。
 
 本模块不 import hou / PySide6，全部纯函数，可直接无头测试。
 """
@@ -191,21 +191,16 @@ def default_package_name(hip_path, suffix="-pack"):
     return sanitize_pkg_name(stem + suffix) if stem else PACKAGE_DIR
 
 
-def job_is_default(job_value, hip_value):
-    """$JOB 是否处于"默认值"——未设置、展开成自身、或与 $HIP 相同。
+def is_builtin_ref(raw):
+    """参数原始写法是否指向 Houdini 安装目录（``$HH`` / ``$HFS``）。
 
-    Houdini 空工程里 $JOB 常与 $HIP 相同（或没设置时展开成字面 ``$JOB``）。
-    此时把包根目录默认当成项目根是不安全的，窗口据此弹提醒；用户仍可选择
-    继续打包到该默认路径。
+    ``$HH`` = ``$HFS/houdini``，展开后是安装目录里的内置资源
+    （如 ``$HH/geo/defgeo.bgeo`` 默认几何体），**不是用户工程素材**。
+    这类引用按用户要求仍列在打包列表里（可见、由勾选决定是否打包），
+    但状态列要标「内置」，避免把它当成需要搬运的工程文件。
     """
-    job = (job_value or "").strip().strip('"')
-    hip = (hip_value or "").strip().strip('"')
-    if not job or job == "$JOB":
-        return True
-    if hip and os.path.normcase(os.path.normpath(job)) == \
-            os.path.normcase(os.path.normpath(hip)):
-        return True
-    return False
+    value = (raw or "").strip().strip('"').lower()
+    return value.startswith(("$hh/", "${hh}", "$hfs/", "${hfs}"))
 
 
 def scene_signature(hip_path, is_new_file):
@@ -266,11 +261,9 @@ def asset_subdir(abs_path, hip_dir=""):
 def package_target(abs_path, prefix, hip_dir=""):
     """包内目标（Houdini 写法）：``<prefix>/assets/<子目录>/<文件名>``。
 
-    ``prefix`` 由调用方按**生成方式**算（这是最容易写错的地方）：
-
-    - 覆盖当前工程（hip 留在原地）：``$HIP/<包名>``（或 ``$JOB/<包名>``）；
-    - 另存到包目录（hip 存进包目录）：**``$HIP``**——保存后 hip 的 ``$HIP``
-      就是包目录，再带一层包名会多出一级目录、路径直接失效。
+    ``prefix`` 由调用方按**包根选项**算（见 ``target_prefix``）：
+    ``$JOB`` → ``$JOB/<包名>``、``$HIP`` → ``$HIP``。生成方式固定
+    「另存到包目录」，旧版「覆盖当前工程」分支已删除。
     """
     sub = asset_subdir(abs_path, hip_dir)
     tail = "/" + sub if sub else ""
@@ -363,6 +356,25 @@ def sanitize_pkg_name(text, default=PACKAGE_DIR):
     if stem in _RESERVED_NAMES:
         value = "pkg_" + value
     return value
+
+
+def target_prefix(root, package_name):
+    """打包后参数的前缀（Houdini 写法），按**包根选项**生成（纯函数）。
+
+    2026-11-21 用户拍板：生成方式固定「另存到包目录」（删除覆盖当前工程），
+    包根只保留 ``$HIP`` / ``$JOB``；两者共用界面的「输出目录」输入框（留空 =
+    当前工程目录，可填任意绝对目录改变产物落点），参数前缀不随输出目录变化：
+    选 ``$HIP`` 仍写 ``$HIP``（另存 hip 后会话 $HIP 自动指向包目录），选 ``$JOB``
+    由工具用 ``hou.putenv`` 把会话 ``$JOB`` 指向该目录。不读取任何环境变量配置。
+
+    - ``JOB`` → ``$JOB/<包名>``：``$JOB`` 是会话里被固定住的项目根，另存
+      后它不会随 ``$HIP`` 变化，必须带包名才指向包目录；
+    - ``HIP`` → ``$HIP``：hip 另存进 ``<包>/`` 后会话的 ``$HIP`` 就是包目录，
+      **省略包名**，否则多一级目录、路径失效。
+    """
+    if root == "JOB":
+        return "$JOB/{}".format(package_name)
+    return "$HIP"
 
 
 def zip_path_for(hip_path):

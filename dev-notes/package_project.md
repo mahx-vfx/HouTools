@@ -1,7 +1,7 @@
 # Package Project（打包工程）
 
 入口：`HouTools → Package Project`（主菜单 + 网络编辑器菜单各一条）。
-代码：`houtools/package/paths.py`（纯逻辑：路径/分类/包名/默认值/场景指纹）、
+代码：`houtools/package/paths.py`（纯逻辑：路径/分类/包名/参数前缀/场景指纹）、
 `collect.py`（扫描 + 布局 + 统计 + 日志文本）、`window.py`（界面/等待遮罩）、
 `houtools/ui/reveal.py`（资源管理器定位）、`houtools/tools/package_project.py`。
 
@@ -10,7 +10,7 @@
 Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路径满地"的工程不够用；
 渲染农场（Renderbus 这类）提交要求工程自带依赖、路径可移植。
 
-本工具：**收文件 → 统一放进一个包目录 → 改相对路径 → 按选定方式保存 → 打 zip**。
+本工具：**收文件 → 统一放进一个包目录 → 改可移植路径 → 另存到包目录 → 打 zip**。
 
 ## 扫描规则
 
@@ -47,6 +47,14 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
 - **`$HFS` / `$HH` 引用保留在列表**（2026-11 用户要求"满足条件的都要出现"）：
   Houdini 安装目录里的贴图/示例文件也会列出，是否打包进包由用户勾选决定；
   缺失的 `$HFS` 外部路径同样以"缺失"呈现。
+- **内置引用标注**（2026-11-20 用户实测反馈）：`$HH` = `$HFS/houdini`，
+  例如 `$HH/geo/defgeo.bgeo` 是 Houdini 自带默认几何体，展开成
+  `C:/PROGRA~1/SIDEEF~1/HOUDIN~1.466/...` 短路径名，被 `flatten_dir()` 展平后
+  会生成 `C_PROGRA~1_SIDEEF~1_HOU…` 这种目录名。用户明确选择**保留现状**
+  （仍列出、仍可打包），但状态列加「内置 · 」前缀、状态栏显示内置计数、
+  tooltip 说明"非工程素材，取消勾选即可不打包"，避免误认成工程文件。
+  判定用纯函数 `paths.is_builtin_ref()`（匹配 `$HH/`、`${HFS}` 等前缀），
+  经 `Candidate.builtin` → `Ref.builtin` 传递。
 - **反引号表达式不碰**：`` `chs("...")` `` 展开即冻结，改写等于破坏表达式。
 - **表达式驱动参数拒绝**（2026-11 复审补充）：`parm.keyframes()` 非空 → 跳过
   （对齐 filecache_abs_path 的拒绝语义）——`parm.set()` 不覆盖已有表达式
@@ -83,23 +91,25 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
   `D:\proj\foo\bar` 与 `D:\proj_foo\bar` 都得到 `D_proj_foo_bar`）时，后来
   的自动加 `_2/_3`，复制目标和参数改写目标共用这份映射——不会再静默覆盖。
 
-- **包根**：`$HIP`（默认）、`$JOB`（未设置/非绝对时 UI 禁用该选项）、
-  **自定义绝对路径**（新增）。`$JOB` 若与 `$HIP` 相同/为空，点打包时会弹窗
-  提醒，用户确认后可执意打包到该默认路径（每次换包根选项只提醒一次）。
+- **包根**：`$HIP` / `$JOB`，默认都输出到当前工程目录，都可在界面共用
+  的「输出目录」输入框自定义任意绝对目录。详见下节《包根与输出目录规则》。
 - **包名**：默认取 **工程名 + `-pack`**（如 `shot_v001-pack`，无 hou/未保存时
   回落 `ht_package`），可改；**用户输入必须过 `paths.sanitize_pkg_name`**——
   包名直接进 `os.path.join(base, pkg, ...)`，不净化的话 `..`、含 `/` 的输入会
   写出包根之外，Windows 禁用符与保留设备名让复制/zip 报错。非法字符换 `_`、
   剥首尾点、避开 CON/NUL/COM1…，空值回落默认名。
-- **参数改写按生成方式区分**（这是最容易写错的一处）：
+- **参数改写按「包根选项」区分**（纯函数在 `paths.target_prefix(root, pkg)`，
+  窗口 `_target_prefix()` 调它；2026-11-21 起生成方式固定另存）：
 
-  | 生成方式 | 参数前缀 | 原因 |
-  |---|---|---|
-  | 另存到包目录 | `$HIP/<类型>/…` | hip 存进包目录后，`$HIP` **就是包目录**；再带一层包名会多出一级目录、路径直接失效 |
-  | 覆盖当前工程 | `$HIP/<包名>/<类型>/…`、`$JOB/<包名>/<类型>/…` 或 `<自定义>/<包名>/<类型>/…` | hip 留在原地，包目录是它的子目录 |
+  | 包根选项 | 打包后参数前缀 |
+  |---|---|
+  | `$HIP` | `$HIP/<类型>/…`（**不带包名**） |
+  | `$JOB` | `$JOB/<包名>/<类型>/…` |
 
-  帧模板 `$F4` 原样保留；另存模式无论包根是哪个都写 `$HIP/…`（原因是 hip 会
-  被存进包目录，保存后 `$HIP` 即包目录）。
+  `$HIP` 省略包名是因为 hip 另存进 `<原 $HIP>/<包名>/` 后会话的 `$HIP`
+  变成包目录，再带一层包名会得到 `<包目录>/<包名>/…`（多一级、读取不到）。
+  `$JOB` 是工具在打包时用 `putenv` 固定的会话变量，不随另存变化，必须带
+  包名才指向包目录。两种写法都随包可移植。帧模板 `$F4` 原样保留。
 
 ## 打包日志（2026-11-19 新增）
 
@@ -113,32 +123,109 @@ Houdini 自带打包对"贴图散在 D 盘、缓存散在几个盘、绝对路�
 
 - 扫描的文件系统检查阶段（`_ScanWorker`，后台线程）显示 `_ScanBusyOverlay`
   全窗口半透明遮罩 + marquee 进度条，避免"扫描中…"文字太小让人以为卡死。
+  遮罩会吞鼠标事件，底部按钮点不到——2026-11-21 起遮罩上另放「暂停 / 中断」
+  两颗按钮，连到窗口同一组槽（`set_paused` / `set_aborting` / `reset`）。
 - 窗口经 window_manager 跨工程复用；`_sync_scene()` 用
   `paths.scene_signature()` 比对场景指纹，new/open 不同工程后清空上一工程的
-  日志/扫描结果/包名复位，防止残留（用户反馈）。worker 运行中不做，避免打断。
+  **表格行**/日志/扫描结果/包名复位，防止残留（2026-11-20 用户反馈：
+  切换工程后窗口仍保留原工程路径）。
+- **触发时机**（旧版只在「点扫描 / 窗口显示」检查，切工程时窗口开着就漏了）：
+  显示时、点扫描时、以及窗口内 `_scene_poll`（`QTimer`，1.2s）空闲轮询。
+  用窗口内 QTimer 而非 `hou.hipFile.addEventCallback` 全局回调——后者在
+  Reload / 窗口销毁后会残留对已删除 Qt 对象的引用（RuntimeError 崩溃），
+  QTimer 的 parent 是本窗口、随之销毁，零生命周期风险。
+- **坑：另存到包目录的 save-as 会改 hipFile.path()**，会被误判成"用户切换
+  工程"，导致刚打包完列表被清空、`_pack_session` 作废、「打包+zip」自动压缩不可用。
+  `_save_scene()` 保存成功后立即把 `_scene_sig` 同步到新指纹来抑制。
+- 切换后日志打印两条：旧工程 → 新工程路径、清空了多少条引用 + zip 已失效提示。
+- **「重置」按钮（2026-11-21 三次反馈）**：扫描完成后也能手动清空列表。
+  `_on_reset()` 调 `_clear_results()`，与 `_sync_scene()` 换工程清理**共用**同一套
+  状态复位（refs/targets/plan/notes/conflicts/checked/pack_session/
+  zip_after_apply/hip_dir + `setRowCount(0)` + 清日志 + 复位包名/状态/hint），
+  但**不动 `_scene_sig`**（不是换工程）；worker 运行中拒绝清空并给提示。
+  扫描按钮旁的 muted 注释「未启用节点将不被扫描」是同一轮加的提示。
 - 待复制文件数/体积由 `collect.selection_summary()` 按当前勾选实时重算，
   取消勾选某项后立即减少（用户反馈该项曾不更新）。
 - `flatten_dir()` 只对包外素材使用（按源目录分文件夹，不丢可读性）。
-- filecache 改的是**目录参数** `basedir`：`$HIP/geo` → `$HIP/assets/geo`
-  （另存模式）或 `$HIP/<包名>/assets/geo`（覆盖模式），
+- filecache 改的是**目录参数** `basedir`：`$HIP/geo` → `$HIP/geo/<类型>/…`
+  （包根 `$HIP`，不带包名）或 `$JOB/<包名>/geo/<类型>/…`（包根 `$JOB`），
   复制时保持 `geo/<basename>/v1/...` 的相对结构，所以 `sopoutput` 拼接结果
   正好落在新位置。
+- **参数现值展示**（2026-11-20 用户反馈）：`Ref.raw` 只用于表格「参数现值」
+  列与打包日志「源」，filecache 必须填 `basedir` 的 `unexpandedString()`
+  （`$HIP/geo` / `$JOB/...`），不能填 `sopoutput` 展开后的绝对路径——
+  用户要能认出自己在 Houdini 里填的写法。扫描/复制一律走 `expanded` /
+  `abs_path` / `basedir`，与 `raw` 解耦。打包日志对目录参数额外打一行
+  「扫描: <绝对路径>」，保留帧序列 glob 命中的排查信息。
 - 同一个文件被多个参数引用时只复制一次（`copy_plan` 以源绝对路径为键）。
 
-## 生成方式
+## 生成方式（2026-11-21 起固定单一方式）
 
-| 方式 | 行为 | 副作用 |
-|---|---|---|
-| `另存到包目录`（默认） | 另存 `<包名>/<hip>_packed.hip` | **会话切到该文件**，磁盘上的原 hip 不变 |
-| `覆盖当前工程` | `hou.hipFile.save()` 回当前文件 | 原 hip 被改写（素材已进包目录） |
+用户拍板删除「覆盖当前工程」。现在只有 **另存到包目录（原工程不动）**：
+改写后另存 `<包名>/<hip>_packed.hip`，**会话切到该文件**，磁盘上的原 hip
+不变。UI 上不再给可选项，只留一行静态说明；`_save_scene()` 固定走另存，
+`_set_busy()` 不再锁 radio，确认弹窗不再显示「生成方式」行。
 
-**包根与前缀的对应**（另存模式即使包根是 `$JOB`，前缀也是 `$HIP/assets/…`——
-hip 被存进 `<JOB>/<包>/`，保存后 `$HIP` 就是那个目录）：
+**坑：另存 save-as 会改 `hipFile.path()`**，会被 `_scene_poll` 误判成
+「用户切换工程」；`_save_scene()` 保存成功后立即同步 `_scene_sig` 抑制。
 
-| 生成方式 | 包根 `$HIP` | 包根 `$JOB` |
-|---|---|---|
-| 另存到包目录 | `$HIP/assets/…` | `$HIP/assets/…` |
-| 覆盖当前工程 | `$HIP/<包>/assets/…` | `$JOB/<包>/assets/…` |
+## 包根与输出目录规则（2026-11-21 定稿，取代此前所有方案）
+
+用户拍板：**删掉「覆盖当前工程」生成方式，去掉靠环境变量指定 $JOB 的整套
+机制**。此前若干轮围绕「猜 `$JOB` 是否设置 / 扫 `houdini.env` / 诊断 / 持久
+化提示 / 会话首次确认弹窗」的方案全部删除——它们解决的是一个不该存在的
+问题：工具不该去猜 Houdini 的环境变量。
+
+### 现行规则
+
+- **包根下拉只有两项**：`$HIP`（默认，当前工程目录）、`$JOB`。
+  旧「自定义路径」选项并入共用的「输出目录」输入框。
+- **生成方式固定「另存到包目录（原工程不动）」**：改写后另存为
+  `<包名>/<hip>_packed.hip`，原 hip 不动。不再有可选项，UI 上只留一行
+  静态说明；`_save_scene()`、`_set_busy()`、确认弹窗、打包日志都按此固定。
+- **「输出目录」输入框对两个包根都启用**（2026-11-21 二次反馈）：
+  - **留空 = 默认输出到当前工程目录**（`hou.text.expandString("$HIP")`）；
+  - 手输或「浏览…」选任意绝对目录 = **只改变打包产物的落点**，参数写法不变。
+    `_root_dir()` / `_root_var_value()` / `_base_dir()` 共用它，`_on_apply`
+    校验绝对性（相对路径直接判包根不可用），`_set_busy` 两个选项都锁。
+- **`$HIP` 自定义输出目录**：参数仍写 `$HIP/<类型>/…`（不带包名）。hip 另存进
+  `<输出目录>/<包名>/` 后会话 `$HIP` 自动变成包目录，所以前缀无需改动、
+  也不需要 `putenv`；确认弹窗补一句「另存 hip 后 $HIP 会指向该包目录」，
+  结果面板打 `[信息] $HIP 输出目录 = …`。**这是「$HIP 打包完，只是产物输出
+  地址改变」**，不是新增一种包根写法。
+- **`$JOB` 自定义输出目录**：`_set_session_job()` 用
+  `hou.putenv("JOB", 目录)` 把**本次 Houdini 会话**的 $JOB 指向该目录，
+  参数前缀 `$JOB/<包名>/…` 与包根因此同源。只在用户点了确认之后才设置：
+  取消打包不留任何副作用。
+- 工具**不读取也不修改**任何配置文件（`houdini.env` / Package `.json` /
+  项目根 `.env`），也不弹任何 $JOB 确认窗。$JOB 是会话级设置，重启后由
+  Houdini 自行决定；若打包出的工程要长期依赖 `$JOB/…`，由使用者按自己的
+  环境配置方式自行保证。
+- 确认弹窗按用户图示精简：只写「复制到哪 / 改写几个参数为哪种前缀」，
+  不再出现「生成方式」「$JOB 当前 = …」「环境变量 / 持久化」等文字；
+  实际 `$JOB` 值仍写入结果面板日志备查。
+
+### 删除的实现（避免有人再按旧文档找）
+
+`paths.py`：`job_is_default()`、`default_job_roots()`、`resolve_job_root()`、
+`houdini_env_candidates()`、`job_entry_in_env_file()`、`job_env_diagnosis()`、
+`_path_key()` 全部删除；`target_prefix(root, package_name)` 去掉 `save_copy`
+与 `custom_base` 参数，只返回 `$HIP`（HIP）或 `$JOB/<包名>`（JOB）。
+
+`window.py`：模块级 `_JOB_OVERRIDE` / `_JOB_CONFIRMED` / `_job_env_candidates()`
+/ `_job_pref_env_file()` / `_job_persist_hint()`，实例字段 `_job_override`，
+以及 `_job_state()` / `_job_needs_setup()` / `_check_job()` / `_job_value()` /
+`_job_env_diagnosis()` / `_ensure_job_root()` 全部删除；新增
+`_root_path_value()` / `_hip_value()` / `_root_dir()` / `_set_session_job()`；2026-11-21 二次反馈起 `$HIP` / `$JOB` 共用 `_root_path_edit` / `_root_path_btn`（`_on_browse_root()`），输入框恒启用。
+生成方式两个 `QRadioButton` 与 `_EXTRA_QSS` 里的 `QRadioButton` 样式删除。
+
+### 为什么要这样改（历史教训）
+
+`$JOB` 展开值随 Houdini 启动方式变（GUI / hython / 是否带外部 HOME），
+比较 `$HOME` / CWD / `os.environ["JOB"]` 来猜「有没有设置」连续多轮不可靠；
+写进用户配置 `houdini.env` 又可能因 GUI 与无头读取的不是同一份而无效。
+**结论：不猜、不读配置，由工具在打包时直接指定会话变量**，把不确定性
+收敛到一个用户可见、可改的输入框里。
 
 **坑：包根下拉项的 userData 不能被提示文字覆盖。** `setItemData(index, text)`
 默认写 `Qt.UserRole`，会把 `addItem("$JOB", "JOB")` 存的 `"JOB"` 换成提示文字，
@@ -171,11 +258,26 @@ hip 被存进 `<JOB>/<包>/`，保存后 `$HIP` 就是那个目录）：
 守卫活过 Reload，同 videoseq/_LIVE_ENGINES）：Reload 关窗路径会 deleteLater
 窗口，实例属性保不住引用，运行中的 QThread 被 GC 析构即 Qt6 qFatal。
 
+**暂停 / 打断（2026-11-21 四次反馈）**：`_WorkerGate`（`threading.Condition`）
+由 `_ScanWorker` / `_CopyWorker` / `_ZipWorker` 共用，`wait_if_paused()` 在工作项
+边界阻塞（单个 copy2 / zip 条目 / glob 不可打断），`resume()` 放行、`cancel()`
+清暂停并 `notify_all` 唤醒等待——**这是关键约束**：暂停中关窗或点「中断」若
+不唤醒，线程永远等下去，延迟关闭协议轮询不到 done、窗口关不掉。
+`collect.resolve(..., gate=None)` 每个候选前调 `wait_if_paused()`（不传则旧行为
+不变，纯函数测试不受影响）。窗口 `_on_pause()` 切换按钮文案/状态（继续时恢复
+`_run_label`），`_on_abort()` 调 `worker.cancel()` 后**原地**等 done、窗口保持
+打开；复制被中断不改写参数/不保存 hip/不自动 zip，压缩被中断丢弃 `.part`。
+`_set_busy` 对这两颗按钮**反着来**：busy 时启用、空闲禁用并复位；`closeEvent`
+对已 `cancelled` 的 worker 不再重复弹确认。
+已知边界：参数改写 + `hipFile.save` 仍在主线程、很短且不可暂停；单个文件
+复制与单个 zip 条目内部不可打断。
+
 **延迟关闭协议**（window_manager）：worker 运行中 `is_close_deferred()` 返回
 True——closeEvent 先确认（Reload 触发的 close_all 不弹模态，直接取消），然后
 `cancel()` + `hide()` + QTimer 轮询线程退出，最后窗口自行 close + deleteLater
 （close_all 对延迟窗口只持引用不删，收尾必须自删，同 videoseq）。忙态锁界面
-（`_set_busy`）：计划已固定，中途改勾选/包根/生成方式会与在跑的复制错位。
+`（`_set_busy`）：计划已固定，中途改勾选/包根/输出目录会与在跑的复制错位；
+「暂停 / 中断」两颗按钮例外——busy 时才启用。
 
 **失败反馈不打控制台**：复制/改写/保存失败只走结果面板 + notify（面板已含
 节点路径与原因；houtools 日志器 DEBUG 级、任何 log 都刷控制台——同
@@ -183,7 +285,7 @@ copy_output_path 的用户拍板）。collect 的 log.debug 是扫描诊断，�
 
 **样式**：品牌 token 体系——`qss.window_qss(_EXTRA_QSS)`，根
 objectName=`htWindow`，主按钮走 components.PrimaryButton（htRole=primary）；
-表格/单选钮/表头等基础表没有的控件在 `_EXTRA_QSS` 里按 token 补（`.format`
+表格/表头等基础表没有的控件在 `_EXTRA_QSS` 里按 token 补（`.format`
 双花括号写法同 automation/styles）；行状态色走 `QColor(theme.color(...))`，
 提示/状态标签用 `htTextRole` 动态属性 + repolish（不要用裸 hex 内联样式）。
 
@@ -235,10 +337,19 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
 - 保存失败单独记一条，不影响已复制的文件与已改写的参数（undo 组仍可整体撤销）。
 - 扫描排除统计按原因分列（目录/记账路径、未落盘输出、表达式驱动）。
 
-## zip
+## 打包 / 打包+zip
 
-`<包根>/<包名>.zip`，内容 = 包目录整体（`assets/**` + `另存` 模式下的 packed hip）。
-`覆盖当前工程` 模式下 hip 不在包目录里，额外按文件名附上。
+两个平级按钮（2026-11-21 三次反馈）：**「打包」**只做复制 + 改写 + 另存；
+**「打包+zip」**走同一套打包链路，成功后自动压缩，无需再点一次。后者不再是
+独立的「生成 zip」按钮：`_zip_btn` 仍叫这个名字，但启用条件与「打包」相同
+（有勾选引用且布局无冲突），点击连 `_on_apply(True)`（lambda 固定实参，防
+`clicked` 的 checked 误传）。确认后 `_zip_after_apply=True`；`_on_copy_done()`
+在 `package_log.txt` 落盘之后调 `_maybe_auto_zip(ok)`，只在整条链路成功且
+`_pack_session` 有效时自动 `_on_zip()`，失败 / 取消 / 普通打包都清标志。
+
+`<包根>/<包名>.zip`，内容 = 包目录整体（按类型分类的 `geo/ tex/ render/ …`
++ 另存的 `<hip>_packed.hip`）。若当前 hip 不在包目录内（用户打包后又手动
+另存到别处），`_ZipWorker` 额外按文件名附上一份。
 **先写 `.part` 再原子替换**：zip 在 `_ZipWorker` 后台线程写 `<zip>.part`，
 成功后 `os.replace` 到正式名——中断（取消/失败）不留半截 zip（见线程模型）。
 
@@ -249,6 +360,7 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
 **会话校验**（2026-11-19 修复）：zip 只认「上一次完整成功打包」的会话
 （base/pkg/package_dir/源 hip/保存后 hip）；换 hip 后 `_on_scan` 清掉旧会话，
 `_on_zip` 再校验当前 hip 是否属于该会话，不属于就拒绝并提示重新打包。
+「打包+zip」的自动压缩走的是同一个 `_on_zip()`，因此同样受这份校验保护。
 
 ## 已知边界
 
@@ -258,18 +370,42 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
 - 不做贴图转码/降分辨率；不处理 unlocked HDA 内部参数的导出问题。
 - `$F` 之外的帧写法（`%04d`）不识别；UDIM 只识别 `<UDIM>`（4 位 Tile），
   `<UVTILE>`（u1_v1）暂不支持。
-- `$JOB` 必须在会话环境里存在（`houdini.env` 或系统环境变量），否则包根选项禁用。
+- 选 `$JOB` 时工具用 `hou.putenv` 设置的 `$JOB` **只对当前 Houdini 会话
+  有效**。若打包出的工程需要长期依赖 `$JOB/…` 参数，由使用者按自己的环境
+  配置方式保证 `$JOB` 指向正确目录；工具不读写任何配置文件。
+- 暂停只在工作项边界生效：单个 `shutil.copy2`、单个 zip 条目、单次 glob
+  内部不可打断；**参数改写 + 保存 hip 在主线程，这段不可暂停**。
+- 仍无真正的百分比进度条：扫描是 marquee 无限滚动遮罩、复制是
+  「复制 x/y」文字计数、压缩只有「压缩中…」状态（见线程模型）。
 
 ## 测试
 
+- 2026-11-21 四次反馈新增回归：`package pause abort OK`——`_WorkerGate`
+  暂停阻塞 / `resume` 放行 / `cancel` 唤醒暂停中的等待（线程 + 超时保护）、
+  `collect.resolve` 的 gate 钩子、三个 worker 的 gate 与 `cancel()`、
+  窗口底部与遮罩按钮文案、`_on_pause` / `_on_abort` 的状态联动与按钮禁用。
+
 - `tests/smoke_test.py`：`paths` 纯函数（帧模板 / needs_packaging / POSIX
   绝对形态 / flatten_dir / 包名净化）、分类 `category_for` / `_ext_chain` /
-  `category_subdir_for`、默认包名 `default_package_name`、`job_is_default`、
+  `category_subdir_for`、默认包名 `default_package_name`、`target_prefix`、
   `scene_signature`、`selection_summary`（取消勾选联动）、`build_package_log`、
   分类布局 `build_layout(by_category=True)`；`target_for` 的 $HIP/$JOB 两种写法、
   `copy_plan` 去重、`_is_noise` 节点路径 vs POSIX 文件、菜单接线、窗口可
   实例化（htWindow / is_close_deferred / worker 可构造）、`reveal` 缺失路径
   必须抛 OSError；另跑 `test_theme_tokens.py`（窗口不得写裸 hex）。
+- 2026-11-21 定稿新增回归：包根下拉只有 HIP/JOB 两项、不存在生成方式
+  radio 与 `_ensure_job_root` 等旧入口；两个包根共用输出目录输入框（`package
+  root output dir OK`）——`$HIP` / `$JOB` 下输入框都启用、留空 = 当前工程目录、
+  `$HIP` 自定义目录只改 `_package_dir()` 落点而前缀仍 `$HIP` 且不 `putenv`、
+  `$JOB` 自定义目录与 `putenv` 同源；相对路径在两种包根下都判不可用；
+  确认弹窗分别核对 `$HIP` / `$JOB` 文案且不含「生成方式 / $JOB 当前 /
+  环境变量 / houdini.env」；`paths` 里 7 个环境变量检测函数已删除。
+- 2026-11-21 三次反馈新增回归：`package reset button OK`（重置清空列表 /
+  勾选 / 计划 / 会话且按钮复位）、`package auto zip OK`（成功才自动压缩、
+  失败 / 无会话跳过、标志一律清掉）、窗口注释与两个按钮文案、确认弹窗
+  「自动生成」文案。
+- 2026-11-20 用户反馈新增：缓存目录行按 `in_hip` 弱化（`TEXT_3`）并标
+  「$HIP 内 · 」前缀，两种分支的文案与前景色都有断言。
 - 2026-11-19 审查修复新增回归：目标唯一性（build_layout 碰撞加 `_2`）、
   UDIM 枚举（只收 1001/1002，不收 backup）、严格帧 glob（不收
   `sim.backup.bgeo.sc`）、Windows 保留包名（CON → pkg_CON）、非法 UTF-8
@@ -278,10 +414,9 @@ argv 解析，Python 给整段加引号后它看到的是 `"/select,C:\x y\a.jpg
   - 真实工程（`D:\VFX\HoutoolsTest\packagrTerst\untitled.hip`）：扫描出 6 个引用
     （3 张贴图含 1 张 `$HFS` 内置 hdri、filecache 缓存 50 帧、2 个缺失路径），
     缓存目标是 `$HIP/assets/geo`，复制计划 53 个文件；
-  - 合成工程：filecache 缓存 3 帧，另存模式（basedir → `$HIP/assets/geo`、
-    `sopoutput` 保存后能解析到包内文件、zip 含缓存）、覆盖模式
-    （basedir → `$HIP/ht_package/assets/geo`、hip 不另存）、失败路径
-    （模拟复制抛错 → 状态"失败"、日志含源路径与原因）。
+  - 合成工程：filecache 缓存 3 帧，另存到包目录（basedir →
+    `$HIP/geo/<类型>/…`、`sopoutput` 保存后能解析到包内文件、zip 含缓存）、
+    失败路径（模拟复制抛错 → 状态"失败"、日志含源路径与原因）。
 
 ## 2026-11-19 代码审查修复记录
 
@@ -357,14 +492,18 @@ WorkBuddy 的「类型分类 + 8 项体验改进」提交整体复核通过：
 
 - refs/targets 索引对齐正确（`_on_package` 里 `targets = [all_targets[i] for i in selected]`
   与所选 refs 一一对应，日志逐条目标不串行）；
-- `package_log.txt` 在 `_on_copy_done` 落盘，zip 是独立按钮、走
-  `_pack_session` 校验，日志必然先于归档写入、随 zip 带走；
+- `package_log.txt` 在 `_on_copy_done` 落盘，自动压缩在其之后由
+  `_maybe_auto_zip()` 触发并走 `_pack_session` 校验，日志必然先于归档写入、
+  随 zip 带走；
 - 分类去重（raw 首段 == category 不重复前缀）、UDIM 与 `$F` 混合模板拒绝、
   `selection_summary` normcase 匹配等均与既有回归断言一致。
 
-**修正一处**：打包确认弹窗此前对覆盖模式 + 自定义包根也说「改写为相对路径」，
-实际该组合只能写绝对路径（不随包移植）——现按 生成方式 × 包根 区分措辞
-（另存 / $HIP / $JOB → 相对路径；覆盖 + 自定义 → 绝对路径并注明不移植）。
+**修正一处**：打包确认弹窗此前对「覆盖模式 + 自定义包根」也说「改写为
+相对路径」，实际该组合只能写绝对路径（不随包移植）——当时按
+生成方式 × 包根区分措辞。2026-11-21 起覆盖模式与「自定义包根」下拉项均已删除，
+两种现存包根都是变量写法，统一写「改写 N 个参数为 $HIP / $JOB 下的相对路径」；
+自定义绝对目录改由共用的「输出目录」输入框承担，它只改变产物落点、不改变
+参数写法（`$HIP` 仍写 `$HIP/…`）。
 
 ## 2026-11-20 用户实测反馈（H22 真机，pkg-enh 首轮）
 
@@ -397,8 +536,9 @@ WorkBuddy 的「类型分类 + 8 项体验改进」提交整体复核通过：
 - **Ctrl+滚轮** 在表格上缩放字号（7–24pt 夹紧），行高
   `resizeRowsToContents()` 跟随；`_fill_table` 末尾也调一次，重扫后
   新行保持当前字号。
-- 右键「表格字号」菜单 2026-11-20 按用户要求移除——缩放只留 Ctrl+滚轮，
-  右键恢复只有「跳转节点 / 打开原路径」两项。
+- 右键「表格字号」菜单 2026-11-20 按用户要求移除——缩放只留 Ctrl+滚轮。
+  右键菜单后来又加了批量勾选项（见 ⑦），现在是「勾选 / 取消 / 反选所选」
+  + 「跳转节点 / 打开原路径」。
 - 基线字号 `_table_default_pt` 在 tool_fonts.apply 之后取一次；只影响
   本窗口会话，不持久化（窗口复用重建即回默认）。
 
@@ -428,4 +568,29 @@ WorkBuddy 的「类型分类 + 8 项体验改进」提交整体复核通过：
   UDIM N 块」（此前状态列把 UDIM 误写成「序列 N 帧」，顺手修正）；
   序列 → 「`$HIP` 内|包外 · 序列 N 帧」；散文件 → 「`$HIP` 内|包外 ·
   N 个文件」。
-- 行色逻辑不变：缺失红、缓存目录全亮、`$HIP` 内弱化（TEXT_3）。
+- 行色：缺失红；普通行 `$HIP` 内弱化（TEXT_3）、包外用 TEXT。**缓存目录行
+  （rewrite_dir）此前恒亮，2026-11-20 二次反馈后同样按 in_hip 弱化 + 状态列
+  加「$HIP 内 · 」前缀**——`$HIP/geo` 的 basedir 与序列行一样本就可移植。
+
+### ⑦ 勾选改为 Windows 文件夹式多选（2026-11-20 用户拍板）
+
+用户反馈「多选后不可能一起勾选」。调研结论：**全库没有可复用的同类实现**
+（唯一带复选框的表格就是本工具自己；其它列表都是默认 `SingleSelection`，
+Automation 甚至是手写单选），因此按用户要求参考 Windows 资源管理器交互：
+
+- `QAbstractItemView.ExtendedSelection` + `SelectRows`：Ctrl 加选 /
+  Shift 连选 / 拖拽框选；`Ctrl+A` 全选行。
+- **选中多行后点任一行的勾选框 → 整批一起切换**（Windows 语义）。
+  坑：Qt 在点勾选框时会把 selection 收到当前行，等 `itemChanged` 触发时
+  选区已经没了——所以在 `eventFilter` 的 `MouseButtonPress` 里先把选区
+  快照存进 `_check_batch_rows`，`_on_item_changed` 再用它做批量。
+- **空格键**切换选区：全勾则整批取消，否则整批勾选。
+- **右键菜单**：勾选 / 取消勾选 / 反选所选（N 项）+ 原有跳转节点 /
+  资源管理器打开原路径；右键点在未选中的行时先选中该行。
+- **点表头勾选列** = 全选/全不选（对应 Windows 详细信息视图表头复选框）。
+- 批量改 `setCheckState` 一律用 `_filling` 标志包住，避免 `itemChanged`
+  逐行回灌；复用 `_set_rows_checked()` / `_invert_rows()`。
+- 原有「全选 / 清空」按钮保留（作用于**勾选状态**，与表头等价）；
+  顶部新增的「重置」是清**整个列表与结果**，两者语义不同，不要合并。
+- 表格级 tooltip 仍不设（用户反馈空白区弹 tooltip 干扰视线），交互说明
+  挂在「全选」按钮 tooltip 上。
