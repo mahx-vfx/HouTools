@@ -618,25 +618,33 @@ body.ds{ font-size:15px; }
   -webkit-mask-image:linear-gradient(90deg, rgba(0,0,0,.18), rgba(0,0,0,.18));
   mask-image:linear-gradient(90deg, rgba(0,0,0,.18), rgba(0,0,0,.18));
 }
+/* 正文滑入栏下（.lg-live，JS 按副本渐隐进度挂）：hero 实测 stop 是纯背景带的亮度，
+   对真实内容不物理——亮边切回均匀暗态（写在此处压过同特异性的 :not 规则） */
+.ds-top.lg-on.lg-live::after{
+  -webkit-mask-image:linear-gradient(90deg, rgba(0,0,0,.18), rgba(0,0,0,.18));
+  mask-image:linear-gradient(90deg, rgba(0,0,0,.18), rgba(0,0,0,.18));
+}
 .ds-brand{display:flex;align-items:center;gap:10px;text-decoration:none}
 .ds-logo{height:22px;width:auto;display:block}
-/* 顶栏右端快捷导航：每项一枚独立液态玻璃按钮（栏中栏）。栏内 hero 副本已自带毛玻璃，
-   每枚再叠半透明暗面 + 1px 亮边描边 + 顶部镜面高光 + 外投影；backdrop-filter 只补轻度
-   提饱和——嵌套深 blur 采样不可靠，玻璃感主要由材质层承担 */
-.ds-top .ds-nav{display:flex;gap:8px;background:none;border:none;
+/* 顶栏右端快捷导航：纯文字链接（2026-11-22 重设计）。玻璃只属于栏本身——
+   旧版每项叠一层玻璃按钮壳（描边+暗面+镜面高光+投影+backdrop-filter），
+   栏上叠栏、三层描边互相打架，全部拆除。当前章节由 scrollspy 标品牌橙下划线，
+   hover 只轻提亮 + 极淡白洗底，保持文字的安静 */
+.ds-top .ds-nav{display:flex;gap:4px;background:none;border:none;
   border-radius:0;padding:0;margin-bottom:0}
 .ds-top .ds-nav a{position:relative;display:block;margin:0;font-size:13px;color:var(--text-2);
-  text-decoration:none;padding:5px 14px;border:1px solid rgba(255,255,255,.17);border-radius:999px;
-  background-color:rgba(5,5,10,.42);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 -1px 0 rgba(255,255,255,.07),0 4px 14px rgba(0,0,0,.38);
-  backdrop-filter:blur(7px) saturate(1.35);
-  transition:background-color .12s,border-color .12s,color .12s}
-/* 顶部镜面高光：同栏体 ::before 的语言，收在按钮上半渐隐 */
-.ds-top .ds-nav a::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
-  background:linear-gradient(180deg,rgba(255,255,255,.13),rgba(255,255,255,.03) 48%,rgba(255,255,255,0) 68%)}
-/* hover = 玻璃「沾光」：暗面之上叠 9% 白色洗层（不翻转成亮玻璃）+ 描边提亮 */
-.ds-top .ds-nav a:hover{background-image:linear-gradient(rgba(255,255,255,.09),rgba(255,255,255,.09));
-  border-color:rgba(255,255,255,.3);color:var(--text)}
+  text-decoration:none;padding:6px 13px;border-radius:6px;
+  transition:color .12s,background-color .12s}
+.ds-top .ds-nav a:hover{color:var(--text);background:rgba(255,255,255,.06)}
+/* 当前章节指示：品牌橙短下划线（左右收进 padding，2px 圆角条），
+   hover 短条预展 55% 宽度做预告，.on 时落定 */
+.ds-top .ds-nav a::after{content:"";position:absolute;left:13px;right:13px;bottom:1px;height:2px;
+  border-radius:1px;background:var(--accent);
+  opacity:0;transform:scaleX(.55);transform-origin:center;
+  transition:opacity .14s,transform .14s;pointer-events:none}
+.ds-top .ds-nav a:hover::after{opacity:.55}
+.ds-top .ds-nav a.on{color:var(--text)}
+.ds-top .ds-nav a.on::after{opacity:1;transform:scaleX(1)}
 .ds-sp{flex:1}
 .ds-btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;font-size:12.5px;
   color:var(--text-2);text-decoration:none;border:1px solid var(--line);border-radius:4px;
@@ -1508,6 +1516,25 @@ body.ds{ font-size:15px; }
 (function () {
   var secs = [].slice.call(document.querySelectorAll("section[id]"));
   var treeLinks = [].slice.call(document.querySelectorAll(".ds-side a"));
+  /* 顶栏快捷导航的激活区间：按章节序划分——「工具」从 Automation 章起、
+     到「安装」章止（中间各工具章都算工具区），「安装」管到页尾；
+     外链（源码）无锚点，idx=-1 永不激活 */
+  var topNavMarks = [].slice.call(document.querySelectorAll(".ds-nav a[href^='#']")).map(function (a) {
+    var el = document.getElementById(a.getAttribute("href").slice(1));
+    return { a: a, idx: secs.indexOf(el) };
+  });
+  /* 顶栏点击即时命中：点谁谁亮，不等 smooth 滚动落地；飞行途中锁住顶栏激活态
+     （scrollspy 会按中途章节反复改写），落地或滚动停止 180ms 后交还按位置重算 */
+  var navLock = null, navLockTimer = 0;
+  topNavMarks.forEach(function (m) {
+    if (m.idx < 0) return;
+    m.a.addEventListener("click", function () {
+      topNavMarks.forEach(function (n) { n.a.classList.toggle("on", n === m); });
+      navLock = m;
+      clearTimeout(navLockTimer);
+      navLockTimer = setTimeout(function () { navLock = null; tick(); }, 180);
+    });
+  });
   var tocSub = document.getElementById("tocSub");
   var tocCur = document.getElementById("tocCur");
   var tocNone = document.getElementById("tocNone");
@@ -1561,9 +1588,27 @@ body.ds{ font-size:15px; }
     for (var i = 0; i < secs.length; i++) {
       if (secs[i].offsetTop <= y) cur = secs[i]; else break;
     }
+    /* 页底钳制：最后一章的顶边永远够不到 140px 触发线（滚动受页高限制），
+       不钳制的话末章（安装）在任何滚动位置都无法激活——顶栏与侧栏共用此修正 */
+    if (window.scrollY >= document.documentElement.scrollHeight - window.innerHeight - 2) {
+      cur = secs[secs.length - 1];
+    }
     var id = cur.id;
     treeLinks.forEach(function (a) { a.classList.toggle("on", a.getAttribute("href") === "#" + id); });
     secs.forEach(function (x) { x.classList.toggle("on", x === cur); });
+    if (navLock && cur === secs[navLock.idx]) navLock = null;  /* 已滚到点击目标 */
+    if (navLock) {
+      /* 锁定期：飞行途中保留点击命中的亮条；滚动一动就顺延释放计时，
+         停止后 180ms 交还（页底钳制场景：末章顶边够不到触发线，靠这条兜底落定） */
+      clearTimeout(navLockTimer);
+      navLockTimer = setTimeout(function () { navLock = null; tick(); }, 180);
+    } else {
+      var curIdx = secs.indexOf(cur);
+      topNavMarks.forEach(function (m, i) {
+        var next = i + 1 < topNavMarks.length ? topNavMarks[i + 1].idx : secs.length;
+        m.a.classList.toggle("on", m.idx >= 0 && curIdx >= m.idx && curIdx < next);
+      });
+    }
     renderToc(cur);
 
     var list = subBySec[id] || [], curH3 = null;
@@ -1707,7 +1752,9 @@ body.ds{ font-size:15px; }
   var bar = document.querySelector('.ds-top');
   var rep = document.querySelector('.lg-replica');
   var imgs = rep ? rep.querySelectorAll('image') : null;
+  var tint = document.querySelector('.lg-tint');
   var hero = document.querySelector('.hero');
+  var inner = hero ? hero.querySelector('.hero-inner') : null;
   var box = document.querySelector('.repo-glass');
   var boxImgs = document.querySelectorAll('.lg-replica-box image');
   if (!bar || !rep || !imgs || !imgs.length || !hero) return;
@@ -1718,7 +1765,20 @@ body.ds{ font-size:15px; }
     var hh = hero.offsetHeight;
     var on = hh > 0 && s < hh;
     bar.classList.toggle('lg-on', on);
-    if (!on) return;
+    if (!on) { rep.style.opacity = ''; tint.style.opacity = ''; bar.classList.remove('lg-live'); return; }
+    /* 副本渐隐让位：hero 的 DOM 正文（徽章/仓库卡）滑到栏下后，静态 hero.jpg
+       副本就不再是玻璃后的真相——按正文顶边（hero-inner padding-top）计算进入
+       临界点，60px 滚动距内副本渐隐，让位给栏自身的 backdrop-filter 实时毛玻璃，
+       真内容从此透出玻璃（.lg-live 顺带把亮边切回均匀暗态） */
+    var liveTop = 0;
+    if (inner) {
+      var pt = parseFloat(getComputedStyle(inner).paddingTop) || 56;
+      liveTop = inner.getBoundingClientRect().top + s + pt;   /* 正文首行 doc y */
+    }
+    var t = liveTop ? Math.max(0, Math.min(1, (s + bar.offsetHeight - liveTop) / 60)) : 0;
+    rep.style.opacity = (1 - t).toFixed(3);
+    if (tint) tint.style.opacity = (1 - t).toFixed(3);
+    bar.classList.toggle('lg-live', t >= 1);
     /* cover + center 45%：与 .ds-hero 的 background-size/position 严格同几何 */
     var scale = Math.max(vw / IW, hh / IH);
     var dw = IW * scale, dh = IH * scale;
