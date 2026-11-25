@@ -33,12 +33,12 @@ from .task_types import (
     ExternalRunParams,
 )
 
-from houtools.core.constants import SETTINGS_DIR
 from houtools.core.log import get_logger
+from . import app_settings as _aps
 logger = get_logger("automation.data")
 
-# 打开DW 任务的默认可执行文件路径（写入 Automation_Config.json 的初始值）
-DW_EXE_PATH_DEFAULT = "C:/Program Files/Thinkbox/Deadline10/bin/deadlineworker.exe"
+# 出厂默认值定义在统一设置层；此处保留别名兼容既有引用（含 smoke_test）
+DW_EXE_PATH_DEFAULT = _aps.DW_EXE_PATH_DEFAULT
 
 # $HIP 不可用、配置落系统临时目录的告警只发一次:路径计算是高频调用,
 # 每次都告警会刷屏;无头测试等合法场景同样走 fallback
@@ -242,99 +242,37 @@ class AutomationDataManager:
             return 0
         return value
 
-    # ── 应用级配置(Automation_Config.json) ─────────────
+    # ── 应用级配置（统一走 app_settings 的 JsonStore） ───────
 
     @classmethod
     def get_app_config_path(cls) -> str:
-        """返回应用级配置文件路径: ``{配置目录}/Automation_Config.json``。
+        """返回应用级配置文件路径 ``{SETTINGS_DIR}/Automation_Config.json``。
 
-        存放在配置目录（默认 ``Documents/HouTools/settings``，可经
-        HouTools.json 的 HOUTOOLS_SETTINGS_DIR 改；逐机生成），不随
-        $HIP 走 —— DW 软件路径本是机器相关的，每台机器各存各的。
-        意外缺失时由 ``ensure_dw_config`` 按默认值兜底补建。
+        文件中 ``dw_exe_path``（打开DW 软件路径）与 ``apps``（跨应用执行
+        版本列表）两个键共存；读写统一经 ``automation.app_settings`` 的
+        JsonStore（脏键合并 + 跨进程 named mutex），面板补建与设置窗口
+        保存这两个写入方不会互相覆盖。
         """
-        return str(SETTINGS_DIR / "Automation_Config.json")
+        return _aps.config_path()
 
     @classmethod
     def ensure_dw_config(cls) -> dict:
-        """确保应用级配置文件可用,返回其内容 dict。
+        """确保应用级配置文件可用并返回内容（面板打开时兜底补建）。
 
-        配置文件存配置目录（逐机生成）;意外缺失(被删除等)或缺
-        ``dw_exe_path`` 字段时,以默认路径补建。面板打开时调用,兜底
-        保证文件始终可编辑。
+        原来这里手写的一套 tmp+os.replace / 坏文件留底已移除：该文件
+        现在与 ``apps`` 共用一个 ``app_settings`` 的 JsonStore，补建、
+        脏键合并、跨进程互斥都由统一存储层负责。保留方法名是为了不
+        改动面板与引擎的调用点。
         """
-        path = cls.get_app_config_path()
-        data: dict = {}
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if not isinstance(loaded, dict):
-                    raise ValueError(
-                        "顶层必须是对象，实际为 " + type(loaded).__name__)
-                data = loaded
-            except OSError as exc:
-                # 读不了 ≠ 文件坏了（杀软/同步盘瞬时占用等）：不动原文件，
-                # 本次以默认值返回并跳过补写——继续走补写会把可能完好的
-                # 文件 os.replace 覆盖掉，用户的 dw_exe_path 丢回默认
-                # （save()/save_settings 的 OSError 分支同语义）
-                logger.warning(
-                    "读取应用配置失败（文件未动，跳过补写）: %s (%s)",
-                    path, exc)
-                return data
-            except Exception as exc:
-                logger.warning("读取应用配置失败，将按默认值补建: %s (%s)", path, exc)
-                # 与 load() 同语义：先留底再补建，原内容不随覆盖丢失。
-                # 留底失败（权限/占用）时原件还在原位——跳过补写，防唯一
-                # 可抢救副本被默认值冲掉
-                if not cls._backup_corrupt(path):
-                    logger.warning("留底失败，跳过应用配置补写: %s", path)
-                    return data
-
-        # 空字符串/纯空白视同"未配置"——补写默认(与 load_dw_exe_path
-        # 的"空值回默认"同语义)。tmp+os.replace 原子落位（同 save/）：
-        # 裸 open("w") 中途崩溃会留下截断 JSON，下次读失败只能回默认
-        # 值、用户的 dw_exe_path 丢回默认
-        value = data.get("dw_exe_path")
-        if not (isinstance(value, str) and value.strip()):
-            data["dw_exe_path"] = DW_EXE_PATH_DEFAULT
-            tmp_path = path + ".~tmp%d_%d" % (os.getpid(),
-                                              threading.get_ident())
-            try:
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                os.replace(tmp_path, path)
-            except Exception as exc:
-                logger.warning("无法写入应用配置文件: %s (%s)", path, exc)
-                try:
-                    os.unlink(tmp_path)
-                except OSError as exc2:
-                    logger.debug("cannot remove config tmp %s: %s",
-                                 tmp_path, exc2)
-
-        return data
+        return _aps.ensure()
 
     @classmethod
     def load_dw_exe_path(cls) -> str:
-        """返回打开DW 任务使用的软件路径(只读,不修改文件)。
+        """打开DW 软件路径（只读，不修改文件）；缺键/空值回退出厂默认。
 
-        文件不存在 / 字段缺失 / 值为空时返回 ``DW_EXE_PATH_DEFAULT``。
+        每次重读磁盘，手改配置文件后重开或刷新面板即生效。
         """
-        path = cls.get_app_config_path()
-        try:
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                value = data.get("dw_exe_path")
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-        except Exception as exc:
-            # 读失败（权限/占用等）静默回默认路径会让引擎对"用户从未配
-            # 置过的路径"报"路径不存在"，至少留 warning 可检索
-            logger.warning("读取应用配置失败，暂用默认 DW 路径: %s (%s)",
-                           path, exc)
-        return DW_EXE_PATH_DEFAULT
+        return _aps.get_dw_exe_path()
 
     # ── 核心 IO ──────────────────────────────────────────
 

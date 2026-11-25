@@ -1601,11 +1601,16 @@ class AutomationWindow(QWidget):
         ext_row2.setSpacing(3)
         ext_app_combo = _NoWheelComboBox()
         ext_app_combo.setObjectName("externalApp")
-        ext_app_combo.addItems(ext.app_ids())  # 固定 H21 / H22 两项
+        # 版本列表由应用级配置 Automation_Config.json 的 apps 键驱动
+        # （与 dw_exe_path 同一文件、同一 JsonStore）：
+        # itemText = 显示名，itemData = 存进任务 JSON 的 app_id
+        for _app in ext.discover_apps():
+            ext_app_combo.addItem(_app["id"], _app["id"])
         ext_app_combo.setFixedHeight(22)
+        ext_app_combo.setPlaceholderText("请在 Automation_Config.json 配置版本")
         ext_app_combo.setToolTip(
-            "用哪个版本的 Houdini 打开该工程；可执行文件绝对路径在 "
-            "HouTools.json 的 HOUTOOLS_H21_EXE / HOUTOOLS_H22_EXE 中配置")
+            "版本列表来自 {} 的 apps 键（可自行增删改）".format(
+                ext.apps_config_path()))
         ext_cfg_combo = _NoWheelComboBox()
         ext_cfg_combo.setObjectName("externalConfig")
         ext_cfg_combo.setMinimumWidth(36)  # 唯一让位项，窄面板防挤压
@@ -1895,8 +1900,13 @@ class AutomationWindow(QWidget):
             ext_hip_le.setText(hip_path)
             app_id = str(params.get("app_id") or "")
             if app_id:
-                idx = ext_app_combo.findText(app_id)
-                ext_app_combo.setCurrentIndex(idx if idx >= 0 else 0)
+                idx = ext_app_combo.findData(app_id)
+                if idx < 0:
+                    # 版本配置里已删掉该 id：仍显示出来，别悄悄丢数据；
+                    # 执行时会由 resolve_exe 给出明确报错
+                    ext_app_combo.addItem(app_id, app_id)
+                    idx = ext_app_combo.count() - 1
+                ext_app_combo.setCurrentIndex(idx)
             # 装载期显式刷一次：textChanged 的刷新接线在 populate 之后，
             # 此刻还没有信号可用；外部工程的配置不来自当前 $HIP
             _fill_external_configs(
@@ -3047,7 +3057,7 @@ class AutomationWindow(QWidget):
                     task_type=TaskType.EXTERNAL_RUN,
                     params=ExternalRunParams(
                         hip_path=hip_le.text() if hip_le else "",
-                        app_id=app_cb.currentText() if app_cb else "",
+                        app_id=(app_cb.currentData() if app_cb else "") or "",
                         config_name=cfg_cb.currentText() if cfg_cb else "",
                     ),
                     enabled=enabled,

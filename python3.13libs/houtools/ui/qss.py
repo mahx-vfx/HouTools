@@ -356,6 +356,38 @@ def dialog_qss(extra=""):
     return window_qss(extra)
 
 
+def table_qss():
+    """QTableWidget 样式片段（设置窗口的版本列表按需追加）。
+
+    与基础表共用同一套 token，不写裸 hex；``window_qss(extra)`` 的 extra
+    不再过 ``_fmt``，所以这里自己格式化后返回。
+    """
+    return _fmt("""
+QTableWidget {{
+    background-color: {INK_900};
+    color: {TEXT};
+    border: 1px solid {LINE};
+    border-radius: 6px;
+    gridline-color: {LINE};
+    selection-background-color: {ACCENT_SOFT};
+    selection-color: {TEXT};
+}}
+QTableWidget::item {{ padding: 3px 6px; }}
+QTableWidget::item:selected {{
+    background-color: {ACCENT_SOFT};
+    color: {TEXT};
+}}
+QHeaderView::section {{
+    background-color: {INK_850};
+    color: {TEXT_2};
+    border: none;
+    border-right: 1px solid {LINE};
+    border-bottom: 1px solid {LINE};
+    padding: 4px 6px;
+}}
+""")
+
+
 def menu_qss():
     """独立菜单 QSS（QMenu 顶层弹层用）。"""
     return window_qss()

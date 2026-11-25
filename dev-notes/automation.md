@@ -139,7 +139,7 @@ Automation 配置，跑完直接退出；主工程 A 的队列因此可以 A →
 | 字段 | 控件 | 数据源 | 存进 JSON |
 |---|---|---|---|
 | 工程路径 | QLineEdit + 22×22 文件夹图标按钮（复用 Flipbook `_folder_icon_cached()`） | **只用系统原生 `QFileDialog.getOpenFileName`**：旧实现先开 Houdini chooser、用户点关闭后又弹一次系统对话框（双重弹窗 bug，2026-11 反馈已修）；返回路径 normpath | ``hip_path``（绝对路径） |
-| Houdini 版本 | 只读下拉，固定 ``H21``/``H22`` | ``external_run.app_ids()``；实际 exe 由包清单 env 解析 | ``app_id``（**不存路径**） |
+| Houdini 版本 | 只读下拉，**完全由配置文件驱动** | ``external_run.discover_apps()`` 读 ``{SETTINGS_DIR}/Automation_Config.json`` 的 ``apps`` 键（与 ``dw_exe_path`` 同文件，经 ``app_settings`` 的 JsonStore）；itemText=显示名、itemData=``app_id`` | ``app_id``（**不存路径**） |
 | 配置文件 | 只读下拉，选完工程路径自动刷新 | ``AutomationDataManager.list_configs_for_hip(hip_path)`` 扫外部工程 ``<dirname(hip)>/HouTools_cfg/Automation_json/*.json``；默认选中该工程按机器的「上次使用配置」标记，回落第一项 | ``config_name``（无后缀 basename） |
 
 - ``list_configs()`` 走 ``get_data_path()`` → ``hou.getenv("HIP")``，**只能列
@@ -158,16 +158,90 @@ Automation 配置，跑完直接退出；主工程 A 的队列因此可以 A →
   ``_write_log_header``、``smoke_test`` 的 count 断言。未知类型占位槽
   追加 combo 项 + ``stacked.addWidget`` 后索引自动对齐（现为 5）。
 
-### 版本路径（HouTools.json）
+### 应用级配置（Automation_Config.json，2026-11-25 用户拍板 A+B）
 
-包清单 ``env`` 新增 ``HOUTOOLS_H21_EXE`` / ``HOUTOOLS_H22_EXE`` 两个
-可执行文件绝对路径（本机默认 21.0.512 / 22.0.429 的 ``houdinifx.exe``）。
-``external_run.resolve_exe()`` 与 ``videoseq/ffmpeg.py::_custom_ffmpeg``
-同口径：strip → ``isfile`` → 不存在视为未配置（不扫 PATH、不自动猜版本，
-猜错版本会写坏工程）。**仓库根 HouTools.json 是随发行包的模板副本，
-生效的是 Documents/houdini21.0/packages 与 houdini22.0/packages 两份**，
-三处都要有；用户改生效清单、重启 Houdini 才生效（包 env 只在启动时读）。
-任务 JSON 只存 ``app_id``，小版本升级不动任何已存配置。
+**单一文件 + 单一写入通道 + 单一可视化入口**。原来 DW 软件路径放
+``Automation_Config.json``、版本列表放 ``Automation_apps.json``，两者
+都是逐机、跨 H21/H22 共享、不随 ``$HIP`` 走的应用级设置，但**写入方
+和时机不同**：``dw_exe_path`` 由设置窗口保存、面板每次打开还会
+``ensure_dw_config()`` 兜底补建；``apps`` 由设置窗口表格保存。分两个
+文件时物理隔离天然无冲突，**合并后若两边仍各自「读整份 → 改自己
+那个键 → 整份写回」，就会互相覆盖**（双开 Houdini / 面板与设置窗口
+同时开着都能触发）。因此合并的前提是统一走 ``core.settings.JsonStore``：
+脏键合并 + 跨进程 named mutex + 坏文件 ``.bak`` 留底 +
+tmp/``os.replace`` 原子写，与 hotkeys / hdrlight / recipelib 对齐。
+
+**不放 ``HouTools.json``**：Houdini 只把包清单的 ``env`` 注入进程环境，
+自定义顶层键它根本不读（hconfig 隔离实测 H21/H22 会忽略未知键、包仍
+正常加载），放那里等于借壳，且改完必须重启。改放个人设置目录
+``{SETTINGS_DIR}/Automation_Config.json``（``constants.SETTINGS_DIR``
+折叠版本目录，H21/H22 共享一份），插件运行时读，改完重开或刷新面板
+即生效。
+
+```json
+{
+  "dw_exe_path": "C:/.../deadlineworker.exe",
+  "apps": [
+    {"id": "H21.0.512", "exe": "C:/.../Houdini 21.0.512/bin/houdinifx.exe"},
+    {"id": "H21.0.596", "exe": "C:/.../Houdini 21.0.596/bin/houdinifx.exe"},
+    {"id": "H22.0.429", "exe": "C:/.../Houdini 22.0.429/bin/houdinifx.exe"}
+  ]
+}
+```
+
+- 唯一 IO 入口是 ``automation/app_settings.py``：模块级单例
+  ``JsonStore(CONFIG_FILE, defaults={dw_exe_path, apps})``。
+  ``data_manager.get_app_config_path/ensure_dw_config/load_dw_exe_path``
+  与 ``external_run.load_apps/save_apps/reset_apps/apps_config_path``
+  都只剩薄封装，**两个模块里原来的手写原子写全部删除**；
+  ``external_run._atomic_write_json`` 仍保留给 ticket / result 用
+  （运行回执不是应用级配置，不要误删）。
+- 读取（``get_apps`` / ``get_dw_exe_path``）每次 ``store().load()``
+  重读磁盘：手改 JSON、另一个进程写入后重开/刷新面板即生效；所有
+  写入都是 ``set(save=True)`` 立即落盘，正常路径无未保存脏键。
+- 旧 ``Automation_apps.json`` 是开发期新增、**未随发行版发布**的过渡
+  文件：``_migrate_legacy_apps()`` 在 Store 首次构造时读一次，把
+  ``apps`` 并入主配置（JsonStore 会保留已有的 ``dw_exe_path``），
+  成功后改名 ``.migrated`` 留底、不删除；写入失败则保留原文件下次
+  重试。主配置里已有 ``apps`` 键时只做留底改名、不重复读取。
+- **代码里没有任何版本枚举**：下拉 = ``discover_apps()`` 读 ``apps``
+  数组，按 id 排序；用户任意增删改动 ``{"id","exe"}`` 即可新增小版本
+  （id 可直接带点号）。首次访问按 ``DEFAULT_APPS`` 补建 H21 / H22。
+- ``discover_apps()`` **不做 isfile 过滤**：写进配置的条目就该在下拉里
+  看得见；路径写错由 ``resolve_exe()`` 明确报错。
+  ``set_apps()`` 跳过非对象 / 缺 id 或 exe / 重复 id 的条目，同样
+  **不校验 exe 存在**（用户可能先写好还没装的版本）。
+- 旧包清单 env ``HOUTOOLS_H21_EXE`` / ``HOUTOOLS_H22_EXE`` 只作兼容
+  fallback，三份 HouTools.json 模板已移除这两个变量。
+- 任务 JSON 只存 ``app_id``，换小版本不动任何已存配置；下拉里已删掉的
+  id 回填时仍显示出来（不悄悄丢数据），执行时给明确报错。
+
+### 设置窗口可视化编辑（2026-11-25，A+B 合并后）
+
+设置窗口布局照 ``recipelib/browser.py::_SettingsDialog`` 改成
+**左分类列表 + 右内容页**（2026-11-25 用户指定）：``_PAGES`` 三类
+「配置目录 / 快捷键 / Automation」，右侧 ``QStackedWidget`` 按同序
+放三页，底部 ``QDialogButtonBox.Close`` + 跨页共用的全局 ``_hint``。
+Automation 页同时编辑两个键：``dw_exe_path`` 一行（输入框 + 系统
+``QFileDialog`` 浏览 + 保存）、``apps`` 两列表格（版本标识 / 可执行
+文件，添加 / 删除 / 浏览 / 保存 / 恢复默认）。两段共用同一个 Store，
+**各自只写自己的脏键**——这正是 JsonStore 脏合并要解决的问题，
+smoke 有专门的「另一实例写 dw、本实例写 apps、dw 不被冲掉」断言。
+
+- ``dw_exe_path`` 浏览只走系统 ``QFileDialog``，不用 ``hou.ui.selectFile``
+  （避免点关闭后又弹第二次）；空值保存时回落出厂默认并回填显示。
+- 表格样式只在 ``ui/qss.py::table_qss()`` 用 token 拼，设置窗口
+  ``qss.dialog_qss(qss.table_qss())`` 追加，窗口模块不写裸 hex；
+  新增控件仍由 ``tool_fonts.apply(self)`` 逐控件刷字体。
+- 保存/删除只改表格与文件，**不自动刷新已打开的 Automation 面板**
+  （下拉在创建槽时读文件），提示文案明确「重开或刷新面板后生效」。
+- 反馈沿用窗口共享的 ``_hint``（错误走 ERROR_TEXT）与 ``status`` toast；
+  「恢复默认」走 ``dialogs.question`` 二次确认。
+- smoke：设置窗口实例化断言左分类三项 / stacked 三页联动 / Close
+  中文化 / 全局 hint + 两列默认两行 + DW 行往返 + 增改删保存往返 +
+  ``save_apps`` 去重过滤；smoke 在首个 houtools import 前把
+  ``HOUTOOLS_SETTINGS_DIR`` 指到临时目录，JsonStore 天然落进去，
+  零接触真实配置。
 
 ### 等待与判定（40 小时场景）
 

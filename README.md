@@ -61,7 +61,7 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings.
 
 | 工具 | 菜单项 / 键位 | 说明 |
 |------|--------|------|
-| Automation | `HouTools → Automation`（Python Panel） | 自动化批处理：节点按钮点击 / Flipbook 拍屏 / HomeAssistant Webhook / 打开DW / 跨应用执行（用指定版本 Houdini 打开别的工程跑它的配置，多个工程可排队顺序执行） |
+| Automation | `HouTools → Automation`（Python Panel） | 自动化批处理：节点按钮点击 / Flipbook 拍屏 / HomeAssistant Webhook / 打开DW / 跨应用执行（用指定版本 Houdini 打开别的工程跑它的配置，多个工程可排队顺序执行；版本在 `Documents/HouTools/settings/Automation_Config.json` 的 `apps` 键自定义） |
 | 粘贴为 Object Merge | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+V` | 复制节点后，按"目标上下文 × 源类别"在鼠标位置粘贴引用节点；键位在 `HouTools → HouTools Settings...` 修改 |
 | 复制输出路径 | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+C` | 选中带输出路径参数的节点（与右键 Open Cache Folder 同规则：filecache / mantra / karma / usdrender / rop geometry 等，第三方 Arnold 节点亦支持），把输出文件**所在的文件夹**（展开后的绝对路径，不含文件名）复制到系统剪贴板；目录未落盘时不复制并红色报错；多选时去重逐行合并 |
 | File Cache 路径转绝对 | 网络编辑器 `HouTools` 菜单 → `File Cache Paths to Absolute` | 一键把当前层级所有 File Cache 节点的三个路径参数（basedir/basename/file）展开成绝对路径（`$HIP`/`$HIPNAME`/`$OS` 等变量冻结成字面值、相对路径按工程目录拼接），**帧变量 `$F`/`$FF` 原样保留**（帧号不冻结）；已绝对/表达式驱动/锁定参数等自动跳过；整批单个 undo 槽 |
@@ -73,7 +73,7 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings.
 | Package Project | `HouTools → Package Project`（主菜单与网络编辑器菜单） | 打包工程：只扫**启用节点**上用户填过的路径（默认值不收），filecache 按 `sopoutput` 求值整段收帧、改写目标为 `basedir`；素材按文件类型归入 Houdini 官方 New Project 目录 `geo/hda/sim/abc/tex/render/flip/scripts/other`（不再有统一 `assets/` 层），参数按包根写成 `$HIP/<类型>/…` 或 `$JOB/<包名>/<类型>/…`；**包根只 `$HIP` / `$JOB` 两项**，两者都可在共用的「输出目录」输入框指定任意绝对目录（留空 = 当前工程目录），只改变打包产物落点、不改参数写法；选 `$JOB` 时额外用 `hou.putenv` 把本次会话 `$JOB` 指向该目录，不读也不改任何环境变量配置；帧模板 `$F4` 原样保留、表达式驱动参数跳过不改写；**生成方式固定「另存到包目录」**：生成 `<包名>/<hip>_packed.hip`（原工程不动，包名默认「工程名 + `-pack`」）；底部「打包」只做复制/改写/另存，「打包+zip」在打包成功后自动压缩成 `<包根>/<包名>.zip`（包内附 `package_log.txt` 明细）上传渲染农场；扫描旁的「重置」可随时清空列表；运行中可暂停/继续或中断（扫描遮罩上也有同款按钮） |
 | HDR Library | `HouTools → HDR Library` | HDR 环境贴图库浏览器：缩略图网格（后台生成）、子文件夹分类 + 收藏，选中灯光后双击即贴图 |
 | Recipe Library | `HouTools → Recipe Library` | recipes 资产库浏览器：官方 recipes 卡片网格浏览（缩略图/标签/主题色），树形侧栏过滤，双击/拖拽应用到网络，VEX/Python 代码块卡片（双击追加到选中节点），Markdown 文档，数据导入/导出 |
-| HouTools Settings | `HouTools → HouTools Settings...` | 设置窗口：配置目录展示（含修改方法）+ 快捷键设置（Paste as Object Merge / Copy Output Path，捕获式改键，会话即时生效） |
+| HouTools Settings | `HouTools → HouTools Settings...` | 设置窗口（与 Recipe Library 设置同构：**左侧分类 + 右侧内容**，底部全局反馈行）：「配置目录」展示生效路径与修改方法；「快捷键」捕获式改键（Paste as Object Merge / Copy Output Path，会话即时生效）；「Automation」编辑打开DW 软件路径 + 跨应用执行版本列表（id / exe 两列，可视化增删改保存） |
 | About HouTools | `HouTools → About HouTools` | 用默认浏览器打开离线使用手册（`docs/index.html` + 本地截图，零外部网络资源）：全部工具的功能与用法 |
 
 ### Automation
@@ -89,7 +89,7 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings.
   （多台机器各写各的配置文件，互不覆盖）；配置被其他机器修改过时写盘会弹窗
   三选——**覆盖 / 另存 / 取消**（取消 = 放弃本次修改、恢复磁盘内容）；
   「删除」按钮可删除废弃配置（二级确认，物理删除）
-- DW 软件路径在配置目录的 `Automation_Config.json` 中配置（随机器保存，缺失时打开面板自动按默认值补建，可直接编辑）
+- Automation **应用级配置统一存配置目录的 `Automation_Config.json`**（随机器保存、缺失时打开面板自动按默认值补建、H21/H22 共享一份）：`dw_exe_path` 是「打开DW」软件路径，`apps` 是跨应用执行的版本列表（数组，每条 `{"id": "H21.0.596", "exe": ".../houdinifx.exe"}`）。两者都在 `HouTools → HouTools Settings...` 里可视化编辑（DW 路径输入框 + 版本两列表格，各带浏览/保存/恢复默认），也可直接手改文件；读写统一走 `JsonStore`（脏键合并 + 跨进程锁），两个保存入口不会互相覆盖，改完重开或刷新面板即生效、不必重启 Houdini。代码不写死版本，任务里只存版本标识，换小版本不用改已有配置（缺失时自动补建 H21/H22 两条默认）
 - 节点可直接拖入参数路径框（原生投递、无视窗泄漏）
 - BUTTON_CLICK 任务里的**节点路径跟随改名**：节点或父级改名时，配置 JSON 与面板槽位
   里的路径实时同步改写（像原生参数引用一样）；改名/删除反馈走左下角 toast，控制台零提示
@@ -102,7 +102,7 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings.
 
 网络编辑器里 Ctrl+C 复制节点后，切到目标网络按 `Ctrl+Shift+V`（或点网络
 编辑器的 `HouTools` 菜单），在鼠标位置创建引用节点，颜色随源节点。键位在
-主菜单 `HouTools → HouTools Settings...` 的快捷键区修改（捕获式输入，保存到
+主菜单 `HouTools → HouTools Settings...` 的「快捷键」页修改（捕获式输入，保存到
 配置目录的 `hotkeys.json`，每次启动自动应用）；也可在 Houdini 自带
 Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_paste_as_object_merge`。
 
@@ -435,7 +435,7 @@ HouTools/
 │       ├── core/                  # 路径常量 / 日志 / JSON 设置 / 默认热键
 │       ├── ui/                    # theme / qss / components / fonts / qtcompat + window_manager / taskbar
 │       │                          # + dialogs / notify / reveal / networknav / sidebar / badge / status_flash
-│       ├── automation/            # Automation（任务类型/持久化/执行引擎/路径跟随/样式/窗口 + 跨应用执行逻辑/子实例启动脚本）
+│       ├── automation/            # Automation（任务类型/持久化/执行引擎/路径跟随/样式/窗口 + 应用级设置 JsonStore/跨应用执行逻辑/子实例启动脚本）
 │       ├── dragdrop.py            # 外部拖放导入 .abc / .fbx / .usd*
 │       ├── videoseq/              # 视频转序列图（ffmpeg 查找 + 窗口）
 │       ├── hdrlight/              # HDR Library（HDR 库浏览 + 缩略图 + 灯光赋值）
@@ -460,7 +460,7 @@ HouTools/
 
 ```
 settings/
-├── Automation_Config.json     # Automation 的 DW 软件路径等配置（缺失时自动补建）
+├── Automation_Config.json     # Automation 应用级配置：dw_exe_path + apps（缺失时自动补建）
 ├── hotkeys.json               # HouTools Settings 自定义键位
 ├── hdr_library.json           # HDR Library 的库目录/缩略图大小/收藏
 ├── hdr_scan_index.json        # HDR 扫描快照（可再生缓存，库未改动时打开免重扫）

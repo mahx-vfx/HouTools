@@ -934,25 +934,62 @@ def main():
     from houtools.automation import data_manager as dm
 
     with tempfile.TemporaryDirectory() as tmp:
-        cfg = Path(tmp) / "Automation_Config.json"
-        with patch.object(dm.AutomationDataManager, "get_app_config_path",
-                          return_value=str(cfg)):
+        # A+B：dw_exe_path 与 apps 合并到同一 Automation_Config.json，
+        # 读写统一走 app_settings 的 JsonStore（隔离目录由文件头设置）
+        from houtools.automation import app_settings as _aps_dw
+        from houtools.core.settings import JsonStore as _JS_dw
+
+        cfg = Path(_aps_dw.config_path())
+        assert cfg.name == "Automation_Config.json"
+        cfg_before = cfg.read_bytes() if cfg.exists() else None
+        try:
+            assert _aps_dw.set_dw_exe_path(dm.DW_EXE_PATH_DEFAULT)
+            assert _aps_dw.set_apps([
+                {"id": "H21", "exe": "C:/h21/houdinifx.exe"},
+                {"id": "H22", "exe": "C:/h22/houdinifx.exe"}])
+            shipped = json.loads(cfg.read_text(encoding="utf-8"))
+            assert shipped["dw_exe_path"] == dm.DW_EXE_PATH_DEFAULT
+            assert [a["id"] for a in shipped["apps"]] == ["H21", "H22"]
+            assert dm.AutomationDataManager.get_app_config_path() == str(cfg)
             assert dm.AutomationDataManager.load_dw_exe_path() \
                 == dm.DW_EXE_PATH_DEFAULT
-            dm.AutomationDataManager.ensure_dw_config()
-            assert cfg.exists(), "ensure_dw_config did not create the file"
-            assert dm.AutomationDataManager.load_dw_exe_path() \
-                == dm.DW_EXE_PATH_DEFAULT
-            cfg.write_text(json.dumps({"dw_exe_path": "D:/tools/dw.exe"}),
-                           encoding="utf-8")
-            assert dm.AutomationDataManager.load_dw_exe_path() \
-                == "D:/tools/dw.exe"
-            # 缺字段时 ensure 只补齐,不覆盖用户已有键
+
+            # 核心：另一实例写 dw、本实例写 apps，dw 不被整份写回冲掉
+            _other = _JS_dw("Automation_Config.json", defaults={})
+            assert _other.set("dw_exe_path", "D:/other/dw.exe")
+            assert _aps_dw.set_apps([{"id": "Only", "exe": "C:/only.exe"}])
+            merged = json.loads(cfg.read_text(encoding="utf-8"))
+            assert merged["dw_exe_path"] == "D:/other/dw.exe", merged
+            assert [a["id"] for a in merged["apps"]] == ["Only"]
+
+            # 手改文件后无需重启/重建 Store，读取即生效
+            cfg.write_text(json.dumps(
+                {"dw_exe_path": "D:/hand/dw.exe", "apps": []}),
+                encoding="utf-8")
+            assert _aps_dw.get_dw_exe_path() == "D:/hand/dw.exe"
+            assert _aps_dw.get_apps() == []
+
+            # 空值回落出厂默认；缺键由 ensure 补写回磁盘且保留用户其它键
+            assert _aps_dw.set_dw_exe_path("")
+            assert _aps_dw.get_dw_exe_path() == dm.DW_EXE_PATH_DEFAULT
             cfg.write_text(json.dumps({"other": 1}), encoding="utf-8")
             dm.AutomationDataManager.ensure_dw_config()
             data = json.loads(cfg.read_text(encoding="utf-8"))
             assert data["other"] == 1
             assert data["dw_exe_path"] == dm.DW_EXE_PATH_DEFAULT
+            assert isinstance(data["apps"], list)
+
+            # 坏文件留底 .bak、回退默认，不覆盖可抢救内容
+            cfg.write_text("{broken", encoding="utf-8")
+            assert _aps_dw.get_dw_exe_path() == dm.DW_EXE_PATH_DEFAULT
+            assert (cfg.parent / (cfg.name + ".bak")).exists()
+            dm.AutomationDataManager.ensure_dw_config()
+            assert cfg.exists(), "ensure_dw_config did not rebuild the file"
+        finally:
+            if cfg_before is None:
+                cfg.unlink(missing_ok=True)
+            else:
+                cfg.write_bytes(cfg_before)
 
         # load() 的 params 就地归一：params 写成数组/字符串（手改坏档）时
         # 降级为 {}，UI 填槽路径（_populate_slot_from_data 直接 .get()）
@@ -990,7 +1027,7 @@ def main():
     assert flipbook.save_to_disk is False
     print("deserialize_params Flipbook OK")
 
-    # settings/ 下的应用级配置可读且含有效 dw_exe_path 字段
+    # settings/ 下的应用级配置可读且 dw_exe_path / apps 两键齐全
     # (gitignored 运行时数据;缺失时 ensure 按默认值兜底补建)
     dm.AutomationDataManager.ensure_dw_config()
     shipped = json.loads(
@@ -998,6 +1035,7 @@ def main():
             encoding="utf-8"))
     assert isinstance(shipped.get("dw_exe_path"), str)
     assert shipped["dw_exe_path"].strip()
+    assert isinstance(shipped.get("apps"), list) and shipped["apps"]
     print("OPEN_DW task + app config OK")
 
     # ffmpeg 查找函数可执行（无头环境找不到也不算失败）
@@ -1100,6 +1138,8 @@ def main():
     _cfg_cb = slot0.findChild(QComboBox, "externalConfig")
     assert _hip_le is not None and _app_cb is not None and _cfg_cb is not None
     assert [_app_cb.itemText(i) for i in range(_app_cb.count())] == ["H21", "H22"]
+    # itemData 才是存进任务 JSON 的 app_id（显示名与数据分离）
+    assert [_app_cb.itemData(i) for i in range(_app_cb.count())] == ["H21", "H22"]
     # 浏览按钮 = 复用 Flipbook 的 22×22 文件夹图标按钮，不再有「浏览…」文字
     _browse = slot0.findChild(QPushButton, "externalBrowseBtn")
     assert _browse is not None and _browse.text() == "", "浏览按钮应为图标按钮"
@@ -4958,6 +4998,25 @@ def main():
     import houtools.tools.houtools_settings as _hts
     _set_win = _hts._HouToolsSettingsDialog()
     assert _set_win.windowTitle() == "HouTools Settings"
+    # 布局照 Recipe 设置面板：左分类列表 + 右内容页 + 底部关闭按钮盒
+    from PySide6.QtWidgets import QDialogButtonBox as _SBB
+    assert _set_win.cats.count() == 3
+    assert [_set_win.cats.item(i).text()
+            for i in range(_set_win.cats.count())] \
+        == ["配置目录", "快捷键", "Automation"]
+    assert _set_win.stack.count() == _set_win.cats.count()
+    assert _set_win.cats.currentRow() == 0
+    assert _set_win.stack.currentIndex() == 0
+    _set_win.cats.setCurrentRow(2)
+    assert _set_win.stack.currentIndex() == 2, "左分类与右内容页应联动"
+    _set_win.cats.setCurrentRow(1)
+    assert _set_win.stack.currentIndex() == 1
+    _set_win.cats.setCurrentRow(0)
+    _bbox = _set_win.findChild(_SBB)
+    assert _bbox is not None
+    assert _bbox.button(_SBB.Close).text() == "关闭", \
+        "QDialogButtonBox.Close 应中文化"
+    assert _set_win._hint.text().strip(), "底部全局反馈行跨页可见"
     assert str(houtools.core.constants.SETTINGS_DIR) \
         in _set_win._dir_label.text()
     assert set(_set_win._rows) == {"paste_merge", "copy_output_path"}, \
@@ -4965,6 +5024,51 @@ def main():
     from houtools.core import hotkeys as _hk_assert
     assert _set_win._rows["copy_output_path"].keySequence().toString() \
         == _hk_assert.COPY_OUTPUT_DEFAULT_KEY, "捕获框应显示当前生效键位"
+    # Automation 应用级设置：DW 路径输入框 + 版本两列表格，
+    # 两个保存入口写同一文件的不同键，互不覆盖
+    from PySide6.QtWidgets import QLineEdit as _SLE
+    from houtools.automation import app_settings as _aps_set
+    from houtools.automation import external_run as _xr_set
+    _dw_le = _set_win.findChild(_SLE, "dwExePath")
+    assert _dw_le is not None and _dw_le.text().strip()
+    assert _dw_le is _set_win._dw_path_le
+    assert _set_win._apps_table is not None
+    assert _set_win._apps_table.columnCount() == 2
+    assert _set_win._apps_table.rowCount() >= 2
+    _apps_file = Path(_xr_set.apps_config_path())
+    assert _apps_file.name == "Automation_Config.json"
+    _apps_before = _apps_file.read_bytes() if _apps_file.exists() else None
+    try:
+        # DW 路径保存往返；保存 dw 不应冲掉同一文件里的 apps
+        _dw_original = _dw_le.text()
+        _apps_snapshot = _aps_set.get_apps()
+        _dw_le.setText("D:/smoke/dw.exe")
+        _set_win._on_save_dw()
+        assert _aps_set.get_dw_exe_path() == "D:/smoke/dw.exe"
+        assert _aps_set.get_apps() == _apps_snapshot
+        _dw_le.setText(_dw_original)
+        _set_win._on_save_dw()
+        _set_win._on_add_app()
+        _added = _set_win._apps_table.rowCount() - 1
+        _set_win._apps_table.item(_added, 0).setText("H21.0.596")
+        _set_win._apps_table.item(_added, 1).setText("C:/h/houdinifx.exe")
+        _set_win._on_save_apps()
+        assert "H21.0.596" in _xr_set.app_ids(), _xr_set.app_ids()
+        _set_win._apps_table.selectRow(_added)
+        _set_win._on_del_app()
+        _set_win._on_save_apps()
+        assert "H21.0.596" not in _xr_set.app_ids()
+        # 缺字段 / 重复 id 校验
+        _set_win._on_add_app()
+        _added = _set_win._apps_table.rowCount() - 1
+        _set_win._apps_table.item(_added, 0).setText("Dup")
+        _set_win._on_save_apps()
+        assert "Dup" not in _xr_set.app_ids()
+    finally:
+        if _apps_before is None:
+            _apps_file.unlink(missing_ok=True)
+        else:
+            _apps_file.write_bytes(_apps_before)
     _set_win.close()
     print("houtools settings window OK")
 
@@ -6472,30 +6576,81 @@ def main():
     from houtools.automation.data_manager import AutomationDataManager as _DMX
     from houtools.automation.execution_engine import ExecutionEngine as _EE
 
-    assert _xr.app_ids() == ["H21", "H22"]
-    assert _xr.exe_env_key("H21") == "HOUTOOLS_H21_EXE"
-    assert _xr.exe_env_key("H22") == "HOUTOOLS_H22_EXE"
+    # 旧 Automation_apps.json 一次性迁移：并入主配置、改名 .migrated 留底
+    from houtools.automation import app_settings as _aps_m
+    from houtools.core.settings import JsonStore as _JS_m
+    _mig_dir = Path(tempfile.mkdtemp(prefix="houtools_migrate."))
+    try:
+        _mig_cfg = _mig_dir / _aps_m.CONFIG_FILE
+        _mig_cfg.write_text(json.dumps({"dw_exe_path": "D:/keep/dw.exe"}),
+                            encoding="utf-8")
+        _mig_old = _mig_dir / _aps_m.LEGACY_APPS_FILE
+        _mig_old.write_text(json.dumps({"apps": [
+            {"id": "Legacy", "exe": "C:/legacy/houdinifx.exe"}]}),
+            encoding="utf-8")
+        _mig_store = _JS_m(_aps_m.CONFIG_FILE, defaults=_aps_m._defaults())
+        _mig_store.path = _mig_cfg
+        _mig_store.load()
+        _aps_m._migrate_legacy_apps(_mig_store)
+        _merged = json.loads(_mig_cfg.read_text(encoding="utf-8"))
+        assert _merged["dw_exe_path"] == "D:/keep/dw.exe", _merged
+        assert [a["id"] for a in _merged["apps"]] == ["Legacy"]
+        assert (_mig_dir / (_aps_m.LEGACY_APPS_FILE + ".migrated")).exists()
+        assert not _mig_old.exists()
+    finally:
+        shutil.rmtree(_mig_dir, ignore_errors=True)
 
-    # resolve_exe：只认存在的文件；目录 / 空 / 不存在的路径视为未配置
+    # 版本列表与 DW 路径合并存于 Automation_Config.json 的两个键，代码零枚举
+    _apps_path = Path(_xr.apps_config_path())
+    assert _apps_path.name == "Automation_Config.json"
+    _apps_backup = _apps_path.read_bytes() if _apps_path.exists() else None
     _exe_dir = Path(tempfile.mkdtemp(prefix="houtools_exe."))
     _exe_file = _exe_dir / "houdinifx.exe"
     _exe_file.write_bytes(b"")
     _saved_env = os.environ.get("HOUTOOLS_H22_EXE")
     try:
+        # 用户自定义任意小版本（id 可带点号）+ 非法条目过滤
+        _xr._atomic_write_json(str(_apps_path), {"apps": [
+            {"id": "H21.0.596", "exe": "C:/h21_596/houdinifx.exe"},
+            {"id": "H21.0.512", "exe": "C:/h21_512/houdinifx.exe"},
+            {"id": "H22.0.429", "exe": "C:/h22_429/houdinifx.exe"},
+            {"exe": "C:/no_id.exe"}, {"id": "NoExe"}, "not-an-object",
+        ]})
+        assert _xr.app_ids() == [
+            "H21.0.512", "H21.0.596", "H22.0.429"], _xr.app_ids()
+        assert _xr.resolve_exe("H21.0.596") is None  # 路径不存在
+        assert _xr.config_hint() == str(_apps_path)
+        # 坏文件不覆盖、回退出厂默认
+        _apps_path.write_text("{broken", encoding="utf-8")
+        assert _xr.app_ids() == ["H21", "H22"]
+        # resolve_exe 认真实存在的文件；旧包清单 env 仅作兼容兜底
+        _xr._atomic_write_json(str(_apps_path), {"apps": [
+            {"id": "Custom", "exe": str(_exe_file)}]})
+        assert _xr.resolve_exe("Custom") == os.path.normpath(str(_exe_file))
+        assert _xr.resolve_exe("Nope") is None
         os.environ["HOUTOOLS_H22_EXE"] = str(_exe_file)
+        assert "H22" in _xr.app_ids()
         assert _xr.resolve_exe("H22") == os.path.normpath(str(_exe_file))
-        os.environ["HOUTOOLS_H22_EXE"] = str(_exe_dir)
-        assert _xr.resolve_exe("H22") is None
-        os.environ["HOUTOOLS_H22_EXE"] = str(_exe_dir / "nope.exe")
+        os.environ["HOUTOOLS_H22_EXE"] = str(_exe_dir)  # 目录不是文件
         assert _xr.resolve_exe("H22") is None
         os.environ.pop("HOUTOOLS_H22_EXE")
-        assert _xr.resolve_exe("H22") is None
-        assert _xr.resolve_exe("H99") is None
+        # save_apps：去重、过滤缺字段/非对象条目（设置窗口保存入口）
+        assert _xr.save_apps([
+            {"id": "Dup", "exe": "C:/a.exe"},
+            {"id": "Dup", "exe": "C:/b.exe"},
+            {"id": "", "exe": "C:/c.exe"},
+            {"id": "NoExe"}, "not-an-object",
+        ]) is True
+        assert [a["id"] for a in _xr.load_apps()] == ["Dup"]
     finally:
         if _saved_env is None:
             os.environ.pop("HOUTOOLS_H22_EXE", None)
         else:
             os.environ["HOUTOOLS_H22_EXE"] = _saved_env
+        if _apps_backup is None:
+            _apps_path.unlink(missing_ok=True)
+        else:
+            _apps_path.write_bytes(_apps_backup)
         shutil.rmtree(_exe_dir, ignore_errors=True)
 
     # 外部工程配置枚举 / 上次使用标记 / 绝对路径读盘
@@ -6628,10 +6783,11 @@ def main():
     # 控制台安静 / 日志完整：详细通道存在，且 window 把 _write_log 接进去
     assert "_log_detail" in _ee_src
     assert "log_sink=self._write_log" in _win_src
-    # 包清单模板给出两个版本的默认 exe
+    # 版本配置不再塞包清单（Houdini 不读自定义顶层键），改走个人设置文件
     _pkg = json.loads((ROOT / "HouTools.json").read_text(encoding="utf-8"))
     _env_keys = {k for entry in _pkg["env"] for k in entry}
-    assert {"HOUTOOLS_H21_EXE", "HOUTOOLS_H22_EXE"} <= _env_keys
+    assert not ({"HOUTOOLS_H21_EXE", "HOUTOOLS_H22_EXE"} & _env_keys)
+    assert "Automation_Config.json" in _win_src
     shutil.rmtree(_root, ignore_errors=True)
     print("EXTERNAL_RUN pure logic OK")
 

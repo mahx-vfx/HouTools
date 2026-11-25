@@ -403,9 +403,10 @@ class ExecutionEngine(QThread):
     def _execute_open_dw(self, params: OpenDWParams):
         """执行打开DW：启动 Deadline Worker。
 
-        软件路径从应用配置文件（``AutomationDataManager.get_app_config_path()``
-        = 配置目录下 ``Automation_Config.json``）的 ``dw_exe_path`` 字段读取
-        （用户可手动编辑），任务参数为空。
+        软件路径从应用级配置（``AutomationDataManager.get_app_config_path()``
+        = 配置目录下 ``Automation_Config.json``，与跨应用 ``apps`` 同文件、
+        经 ``app_settings`` 的 JsonStore）的 ``dw_exe_path`` 字段读取
+        （可在 HouTools Settings 编辑，也可手改文件），任务参数为空。
         ``subprocess.Popen`` 非阻塞启动，无需派发主线程。
 
         Raises:
@@ -471,9 +472,10 @@ class ExecutionEngine(QThread):
         exe = ext.resolve_exe(app_id)
         if not exe:
             raise ValueError(
-                "未配置 {} 的 Houdini 可执行文件：请在 HouTools.json 的 env "
-                "里把 {} 改成实际路径（重启 Houdini 后生效）".format(
-                    app_id or "(未选版本)", ext.exe_env_key(app_id)))
+                "未找到 {} 的 Houdini 可执行文件：请在应用级配置 {} 的 "
+                "apps 数组里添加 {{\"id\": \"...\", \"exe\": \"...\"}} 并确认 "
+                "exe 路径存在".format(
+                    app_id or "(未选版本)", ext.config_hint()))
 
         hip_path = str(params.hip_path or "").strip()
         if not hip_path or not os.path.isfile(hip_path):

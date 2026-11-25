@@ -8,9 +8,15 @@ Automation — 跨应用执行（纯逻辑层）
 本模块**无 hou / 无 Qt 依赖**（纯路径、JSON、进程句柄），可无头测试。
 
 设计边界（2026-11 用户逐轮拍板，勿轻易改动）：
-- 版本下拉固定 H21 / H22 两项；具体小版本的可执行文件路径由
-  ``HouTools.json`` 包清单 env 提供，用户可手改。任务 JSON 只存
-  ``app_id``，不存路径 —— 升级小版本不用改任何已保存的配置。
+- **版本列表完全由个人设置目录 ``Automation_Config.json`` 的 ``apps``
+  键驱动**（2026-11-25 用户拍板 A+B 合并）：该文件同时存
+  ``dw_exe_path``，读写统一经 ``automation.app_settings`` 的 JsonStore
+  （脏键合并 + 跨进程 named mutex），面板补建与设置窗口保存两个写入方
+  不会互相覆盖。代码里不存在任何版本枚举，用户在 ``apps`` 数组里任意
+  增删改 ``{"id": ..., "exe": ...}``，下拉自动同步。H21/H22 共享同一份；
+  改完重开面板即生效，不用重启 Houdini。任务 JSON 只存 ``app_id``、
+  不存路径 —— 换小版本只改配置文件，已存配置不用动。旧包清单 env
+  ``HOUTOOLS_H21_EXE`` / ``HOUTOOLS_H22_EXE`` 仅作兼容兜底。
 - 回执放在**发起编排的主工程 A** 的
   ``{A $HIP}/HouTools_cfg/Automation_runs/<run_id>/``（与现有配置、
   日志同根），不能放进 ``Automation_json/`` —— 后者会被
@@ -37,16 +43,22 @@ from typing import Optional
 
 from houtools.core.constants import PROJECT_ROOT
 from houtools.core.log import get_logger
+from . import app_settings as _aps
 
 logger = get_logger("automation.external")
 
-# 只支持项目设定的两个 Houdini 版本（2026-11 用户拍板：不做 20.5 / 不做
-# 自动发现）。值为包清单 env 变量名，默认值由 HouTools.json 提供。
-APP_ENV_KEYS = {
+# 版本列表与 DW 软件路径合并存于个人设置目录的 Automation_Config.json
+# （H21/H22 折叠到同一目录），不塞进 HouTools.json：Houdini 只会把包清单
+# 的 env 注入进程，自定义顶层键它根本不读，放那里等于借壳。读写统一走
+# app_settings 的 JsonStore；下面两个常量只是兼容既有引用的别名。
+APPS_CONFIG_FILE = _aps.CONFIG_FILE
+DEFAULT_APPS = _aps.DEFAULT_APPS
+
+# 旧版包清单 env 变量：只为兼容未迁移的清单/旧 app_id，新配置一律走文件
+LEGACY_ENV_KEYS = {
     "H21": "HOUTOOLS_H21_EXE",
     "H22": "HOUTOOLS_H22_EXE",
 }
-APP_IDS = ("H21", "H22")
 
 # 传给子实例的启动脚本（相对 python3.13libs；H21 通过 python3.11libs
 # 入口壳扩展 __path__ 指向同一份真身，绝对路径对本脚本仍成立）。
@@ -60,33 +72,78 @@ STARTUP_TIMEOUT_S = 90.0      # 启动阶段有界；仅覆盖到启动脚本第
 POLL_INTERVAL_S = 1.0         # 可中断等待的唤醒间隔，不是状态轮询
 
 
+def apps_config_path() -> str:
+    """应用级配置文件的绝对路径（dw_exe_path 与 apps 两键共存）。"""
+    return _aps.config_path()
+
+
+def config_hint() -> str:
+    """错误提示里指向的配置位置（不再提包清单 env）。"""
+    return apps_config_path()
+
+
+def _default_apps() -> list[dict]:
+    return [dict(item) for item in DEFAULT_APPS]
+
+
+def load_apps() -> list[dict]:
+    """读版本列表（薄封装；净化与 IO 统一在 app_settings 的 JsonStore）。
+
+    每次重读磁盘，手改配置文件后重开/刷新面板即生效；坏文件由
+    JsonStore 留底并回退出厂默认，不覆盖可抢救内容。
+    """
+    return _aps.get_apps()
+
+
+def save_apps(apps: list[dict]) -> bool:
+    """保存版本列表（薄封装；原子写 + 脏键合并 + 跨进程互斥由统一层负责）。
+
+    跳过非对象 / 缺 id 或 exe 的条目、按 id 去重、**不校验 exe 是否存在**
+    （用户可能先写好还没装的版本，执行时由 ``resolve_exe`` 报错）。
+    写盘失败返回 False，磁盘内容不动。
+    """
+    return _aps.set_apps(apps)
+
+
+def reset_apps() -> bool:
+    """恢复 H21 / H22 两条出厂默认（设置窗口「恢复默认」入口）。"""
+    return _aps.reset_apps()
+
+
+def discover_apps() -> list[dict]:
+    """下拉数据源：配置文件里的所有条目 + 旧 env 兜底，按 id 字典序。
+
+    这里**不做 isfile 过滤**：用户写进配置的版本就该在下拉里看得见，
+    路径写错时由 ``resolve_exe`` 给明确报错，而不是让这一项凭空消失。
+    """
+    by_id = {app["id"]: app for app in load_apps()}
+    for legacy_id, env_key in LEGACY_ENV_KEYS.items():
+        value = (os.environ.get(env_key) or "").strip()
+        if value and legacy_id not in by_id:
+            by_id[legacy_id] = {"id": legacy_id,
+                                "exe": os.path.normpath(value)}
+    return [by_id[key] for key in sorted(by_id)]
+
+
 def app_ids() -> list[str]:
-    """版本下拉的固定选项。"""
-    return list(APP_IDS)
-
-
-def exe_env_key(app_id: str) -> str:
-    """返回该版本对应的包清单 env 变量名（用于错误提示）。"""
-    return APP_ENV_KEYS.get(str(app_id), "HOUTOOLS_H21_EXE / HOUTOOLS_H22_EXE")
+    """版本下拉的选项（由配置文件驱动，代码无枚举）。"""
+    return [app["id"] for app in discover_apps()]
 
 
 def resolve_exe(app_id: str) -> Optional[str]:
-    """解析指定版本的 Houdini 可执行文件，找不到返回 None。
+    """``app_id`` → exe 绝对路径；路径不存在返回 None。
 
-    与 ``videoseq/ffmpeg.py::_custom_ffmpeg`` 同一套口径：env 值 strip
-    后必须是**存在的文件**；目录值、空值、指向不存在的路径一律视为未
-    配置（清单默认值常驻，静默落空，不刷 warning）。**不扫 PATH、不自动
-    猜版本** —— 猜错版本打开工程会写坏工程，宁可报「未配置」。
+    **不扫 PATH、不自动猜版本** —— 猜错版本打开工程会写坏工程，宁可报
+    「未配置」。优先配置文件，旧包清单 env 变量只作兼容兜底。
     """
-    key = APP_ENV_KEYS.get(str(app_id))
-    if not key:
-        return None
-    value = (os.environ.get(key) or "").strip()
-    if not value or not os.path.isfile(value):
-        if value:
-            logger.debug("%s 指向的路径不存在，忽略: %r", key, value)
-        return None
-    return os.path.normpath(value)
+    key = str(app_id or "")
+    for app in discover_apps():
+        if app["id"] == key:
+            return app["exe"] if os.path.isfile(app["exe"]) else None
+    value = (os.environ.get(LEGACY_ENV_KEYS.get(key, "")) or "").strip()
+    if value and os.path.isfile(value):
+        return os.path.normpath(value)
+    return None
 
 
 def new_run_id() -> str:

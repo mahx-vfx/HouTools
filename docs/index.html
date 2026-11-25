@@ -1206,7 +1206,7 @@ body.ds{ font-size:15px; }
     <li><strong>Flipbook</strong> — 按帧范围对视口拍屏输出序列图。</li>
     <li><strong>Webhook</strong> — 向指定 URL 发送请求,可用于联动智能家居(如跑完灯光提醒)。</li>
     <li><strong>打开DW</strong> — 启动外部 Deadline Worker 处理当前工程。</li>
-    <li><strong>跨应用执行</strong> — 用指定版本(H21 / H22)的 Houdini 打开另一个 .hip 工程,执行该工程自己的 Automation 配置,跑完直接退出。参数栏三个选项:工程路径、Houdini 版本、配置文件(选完工程路径后自动列出该工程目录里的配置)。把 A、B、C、D 排进同一个队列即可按顺序跑完多个工程。</li>
+    <li><strong>跨应用执行</strong> — 用指定版本的 Houdini 打开另一个 .hip 工程,执行该工程自己的 Automation 配置,跑完直接退出(版本列表可自行扩充)。参数栏三个选项:工程路径、Houdini 版本、配置文件(选完工程路径后自动列出该工程目录里的配置)。把 A、B、C、D 排进同一个队列即可按顺序跑完多个工程。</li>
   </ul>
   <h3 id="automation-h3-1">使用要点<a class="h3-anchor" href="#automation-h3-1" aria-label="链接到此小节">#</a></h3>
   <ul>
@@ -1217,9 +1217,9 @@ body.ds{ font-size:15px; }
     <li>节点被删除时只摘监听、路径保留,槽位显示红色「丢失」标签(不自动改配置);撤销删除或同名重建后自动恢复。无头/农场会话不挂监听、hip 零写入。</li>
     <li>配置 JSON 存 <code>$HIP/HouTools_cfg/Automation_json/</code>(跟工程走,多配置文件可切换),执行日志存 <code>$HIP/HouTools_cfg/Automation_logs/</code>。<strong>默认配置为本机计算机名</strong>,多台机器共用同一工程目录时各写各的配置文件,互不覆盖;「上次使用的配置」也按机器随工程记忆,重开同一工程自动切回。</li>
     <li>任务列表<strong>改动即存</strong>:编辑后 600ms 自动落盘(切配置/Start/关窗时强制保存),崩溃不丢配置;配置被其他机器修改过时,写盘会弹窗让用户选择<strong>覆盖 / 另存 / 取消</strong>(取消=放弃本次修改,恢复磁盘内容);工具栏「删除」按钮可删除废弃配置(二级确认,物理删除不可恢复)。</li>
-    <li>「打开DW」任务的软件路径在配置目录的 <code>Automation_Config.json</code> 配置(缺失时自动按默认值补建,可直接编辑);该任务执行前会强制保存当前工程。</li>
+    <li>「打开DW」软件路径与跨应用执行版本列表统一保存在配置目录的 <code>Automation_Config.json</code>(<code>dw_exe_path</code> 与 <code>apps</code> 两个键,缺失时自动按默认值补建);两项都可在 <code>HouTools → HouTools Settings...</code> 里可视化编辑,也可直接手改文件,改完重开或刷新面板即生效。该任务执行前会强制保存当前工程。</li>
     <li>Flipbook 帧范围支持灵活写法,解析失败时沿用场景当前范围并告警。</li>
-    <li><strong>跨应用执行</strong>:版本下拉固定 H21 / H22,两个版本实际可执行文件的路径在 <code>HouTools.json</code> 包清单的 <code>HOUTOOLS_H21_EXE</code> / <code>HOUTOOLS_H22_EXE</code> 里配置(改完重启 Houdini 生效);任务里只存版本标识,升级小版本不用改已有配置。配置下拉读的是<strong>目标工程</strong> <code>$HIP/HouTools_cfg/Automation_json/</code>。</li>
+    <li><strong>跨应用执行</strong>:版本下拉完全由个人设置目录 <code>Automation_Config.json</code> 的 <code>apps</code> 键驱动(<code>Documents/HouTools/settings/</code>,H21/H22 共享一份,与 <code>dw_exe_path</code> 同文件、经统一 <code>JsonStore</code> 读写,两个保存入口不会互相覆盖);在 <code>apps</code> 数组里按 <code>{"id": "H21.0.596", "exe": "..."}</code> 增删条目即可自行扩充任意小版本,代码里不写死版本;可在 <code>HouTools → HouTools Settings...</code> 的「Automation」页里可视化编辑(DW 路径输入框 + 版本两列表格,各带浏览/保存/恢复默认),也可直接手改该文件;改完重开或刷新面板即生效,不必重启 Houdini。任务里只存版本标识,换小版本不用改已有配置。配置下拉读的是<strong>目标工程</strong> <code>$HIP/HouTools_cfg/Automation_json/</code>。</li>
     <li>等待靠阻塞等子进程句柄,不轮询、不写心跳;启动 90 秒内有界检查,执行阶段无超时(数小时甚至数十小时的渲染是正常值)。跑完写一张 <code>result.json</code> 回执到<strong>主工程</strong> <code>$HIP/HouTools_cfg/Automation_runs/</code>,然后<strong>直接退出、不保存 hip</strong>,释放许可与内存。子应用崩溃时没有回执,主工程记为失败并继续下一个任务,不会卡住整条队列。</li>
     <li><strong>保存边界</strong>:全部任务完成后的收尾不保存工程;但任务项内部该保存的照常保存 — 例如 Deadline 提交(<code>dl_Submit</code>)点击前强制保存工程是必须保留的既有行为,否则提交会失效。</li>
   </ul></div>
@@ -1433,7 +1433,7 @@ body.ds{ font-size:15px; }
 <section id="houtools-settings" class="ds-sec">
   <h2>HouTools Settings<span class="zh">设置</span><a class="h2-anchor" href="#houtools-settings" aria-label="链接到此节">#</a></h2>
   <div class="ds-sec-body"><p class="entry">入口:<code>HouTools → HouTools Settings...</code></p>
-  <p>HouTools 的统一设置窗口,当前包含两块:</p>
+  <p>HouTools 的统一设置窗口,与 Recipe Library 设置一致采用<strong>左侧分类 + 右侧内容</strong>布局(底部为跨页共用的反馈行),当前三页:</p>
   <ul>
     <li><strong>配置目录</strong>:只读展示当前生效的配置目录(全部用户配置——快捷键、
       Recipe Library 元数据/缩略图/文档/代码块、HDR 库设置、Automation 应用级配置——
@@ -1444,6 +1444,10 @@ body.ds{ font-size:15px; }
     <li><strong>快捷键</strong>:每条可改键一行(Paste as Object Merge、Copy Output Path)——
       点捕获框按下键位组合,点「应用」<strong>会话即时生效</strong>并持久化到配置目录的
       <code>hotkeys.json</code>,每次启动自动应用;「恢复默认」清除该条自定义键位。</li>
+    <li><strong>Automation</strong>:编辑 <code>Automation_Config.json</code> 的两个键——
+      「打开DW 软件路径」输入框(浏览/保存)与「跨应用执行版本」两列表格
+      (添加/删除/浏览/保存/恢复默认)。两项共用统一存储,保存互不覆盖;
+      改完重开或刷新 Automation 面板即生效。</li>
   </ul>
   <ul>
     <li>自定义键优先;其次尊重 Hotkey Manager 中已有的键位;最后落默认值(Paste as Object Merge <code>Ctrl+Shift+V</code>、Copy Output Path <code>Ctrl+Shift+C</code>)。</li>
