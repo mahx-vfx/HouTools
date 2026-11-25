@@ -2,7 +2,8 @@
 Automation — 执行引擎
 =========================
 QThread 子类，在后台线程中逐个执行任务列表。
-支持 4 种任务类型：BUTTON_CLICK / FLIPBOOK / HOME_ASSISTANT / OPEN_DW。
+支持 5 种任务类型：BUTTON_CLICK / FLIPBOOK / HOME_ASSISTANT / OPEN_DW /
+EXTERNAL_RUN（EXTERNAL_RUN 启动另一个 Houdini 进程，阻塞等其退出）。
 
 执行器通过 ``hdefereval.executeDeferred`` 将 Houdini API 调用
 派发到主线程执行，确保线程安全。
@@ -34,8 +35,10 @@ from .task_types import (
     FlipbookParams,
     HomeAssistantParams,
     OpenDWParams,
+    ExternalRunParams,
 )
 from .data_manager import AutomationDataManager
+from . import external_run as ext
 
 # 尝试导入 hdefereval — Houdini 环境外不可用，此时为 None
 try:
@@ -95,9 +98,16 @@ class ExecutionEngine(QThread):
     task_completed = Signal(int, bool, str, float)  # (task_index, success, message, elapsed_seconds)
     all_completed = Signal(int, int, str, float)    # (success_count, fail_count, timestamp_str, total_elapsed)
 
-    def __init__(self, tasks: list[TaskItem], parent=None):
+    def __init__(self, tasks: list[TaskItem], parent=None,
+                 log_sink=None, host_config_name: str = ""):
         super().__init__(parent)
         self._tasks = tasks
+        # 只写日志文件、不进控制台的通道（window._write_log 持锁、跨线程
+        # 安全）。控制台要安静，但完整路径/run_id 不能从日志里消失
+        # （2026-11 用户拍板）；子实例与无头测试没有 sink 时静默。
+        self._log_sink = log_sink
+        # 发起编排的主程序配置名，用于子日志命名「配置名_日期_哈希.log」
+        self._host_config_name = str(host_config_name or "")
         self._cancelled = False
         # 本次运行因取消而未执行的任务数（协作式取消生效点统计；成功/
         # 失败不含它们——在途任务已计入各自结果）。完成回调读取并汇报
@@ -108,6 +118,16 @@ class ExecutionEngine(QThread):
         # 本次运行启动的全部 DW 子进程引用（防 GC ResourceWarning，见
         # _execute_open_dw 注释）
         self._dw_processes: list = []
+        # 跨应用执行：取消事件让阻塞中的进程句柄等待立刻可中断；$HIP 在
+        # 主线程预读（hou.getenv 严格说不该在 QThread 里调），供回执目录
+        # 定位用。无头会话静默为空，不触发 data_manager 的 fallback 告警。
+        self._stop_event = threading.Event()
+        self._hip_dir = ""
+        try:
+            import hou
+            self._hip_dir = hou.getenv("HIP") or ""
+        except ImportError:
+            pass
 
     # ── 主循环 ────────────────────────────────────────────
 
@@ -156,6 +176,8 @@ class ExecutionEngine(QThread):
                         self._execute_home_assistant(task.params)
                     elif task.task_type == TaskType.OPEN_DW:
                         self._execute_open_dw(task.params)
+                    elif task.task_type == TaskType.EXTERNAL_RUN:
+                        self._execute_external_run(task.params)
                     else:
                         raise ValueError(f"未知任务类型: {task.task_type}")
 
@@ -197,8 +219,31 @@ class ExecutionEngine(QThread):
         协作式取消：标志位只在任务循环的边界检查，在途任务（及其对主线程
         的同步等待）不可被打断——这是有意设计，见模块文档。UI 层不得因
         调用了本方法就把界面复位成空闲，应等 ``all_completed`` 到达。
+
+        同时置位 ``_stop_event``：跨应用执行的进程句柄等待靠它可中断，
+        不需要把外部任务的执行等到底再响应取消（语义仍是协作式：由
+        run() 循环顶部统一统计取消数）。
         """
         self._cancelled = True
+        self._stop_event.set()
+
+    # ── 仅日志通道（控制台不显示） ─────────────────────────
+
+    def _log_detail(self, text: str) -> None:
+        """把完整排障信息写进**日志文件**，不 print 到控制台。
+
+        控制台输出要短（用户反馈「输出太多显得乱」），但绝对路径、
+        run_id、ticket/result 路径、子日志完整路径等必须在日志里留全。
+        ``window._write_log`` 自己持锁并追加换行，可从 QThread 直接调；
+        失败只 debug，绝不影响任务执行。
+        """
+        sink = getattr(self, "_log_sink", None)
+        if sink is None:
+            return
+        try:
+            sink(text)
+        except Exception as exc:
+            logger.debug("详细日志写入失败（忽略）: %s", exc)
 
     # ── 主线程派发 ────────────────────────────────────────
 
@@ -399,3 +444,162 @@ class ExecutionEngine(QThread):
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0))
         except OSError as e:
             raise ValueError(f"启动 DW 失败: {exe_path} ({e})") from e
+
+    # ── 跨应用执行（EXTERNAL_RUN）───────────────────────────
+
+    def _execute_external_run(self, params: ExternalRunParams):
+        """启动指定版本的 Houdini 打开外部工程、执行其 Automation 配置。
+
+        在**后台线程**执行，不派发主线程（与 Webhook / 打开DW 同类）：
+        等待由 ``external_run.wait_for_exit`` 阻塞在进程句柄上，内核在
+        子进程退出时唤醒，期间零 CPU、不读状态文件、不写心跳。
+
+        完成判定只认 ``result.json`` 回执：有 = 正常完成，无 = 崩溃/
+        被杀/许可失败/手动关窗（记失败并继续队列，用户拍板「崩溃不卡
+        住」）。进程退出码仅用于报错文案，不作为完成信号。
+
+        ★ 硬约束：**本方法及其子实例的收尾流程绝不新增
+        ``hou.hipFile.save()``**。任务项内部的保存（``_execute_button_click``
+        的 ``dl_Submit`` 前置保存）必须原样保留、一行不动——Deadline 提交
+        依赖它，「不保存」只针对全部任务完成后的收尾动作。
+
+        Raises:
+            ValueError / RuntimeError: 均由 run() 的逐任务 except 记失败
+            并继续下一任务，不会中断整条队列。
+        """
+        app_id = str(params.app_id or "")
+        exe = ext.resolve_exe(app_id)
+        if not exe:
+            raise ValueError(
+                "未配置 {} 的 Houdini 可执行文件：请在 HouTools.json 的 env "
+                "里把 {} 改成实际路径（重启 Houdini 后生效）".format(
+                    app_id or "(未选版本)", ext.exe_env_key(app_id)))
+
+        hip_path = str(params.hip_path or "").strip()
+        if not hip_path or not os.path.isfile(hip_path):
+            raise ValueError("外部工程不存在: {}".format(hip_path or "(空)"))
+        hip_path = os.path.abspath(hip_path)
+
+        config_name = str(params.config_name or "").strip()
+        if not config_name:
+            raise ValueError("未选择配置文件")
+        if not os.path.isfile(ext.config_path_for_hip(hip_path, config_name)):
+            raise ValueError(
+                "外部工程的配置文件不存在: {} / {}".format(
+                    hip_path, config_name))
+
+        if not self._hip_dir:
+            raise ValueError("当前工程 $HIP 不可用，无法确定回执目录")
+
+        run_id = ext.new_run_id()
+        run_dir = ext.runs_dir(self._hip_dir, run_id)
+        ticket_path = os.path.join(run_dir, "ticket.json")
+        result_path = os.path.join(run_dir, "result.json")
+        # 子日志名 = 主程序配置名_日期_哈希.log（用户指定）；由 A 侧算好
+        # 写进 ticket，子实例照用即可，不需要理解命名规则
+        log_name = ext.log_basename(self._host_config_name, run_id)
+        ext.write_ticket(ticket_path, {
+            "run_id": run_id,
+            "app_id": app_id,
+            "hip_path": hip_path,
+            "config_name": config_name,
+            "host_config": self._host_config_name,
+            "log_name": log_name,
+            "result_path": result_path,
+            "created_at": datetime.now().timestamp(),
+            "startup_timeout_s": ext.STARTUP_TIMEOUT_S,
+        })
+
+        bootstrap = ext.bootstrap_path()
+        if not os.path.isfile(bootstrap):
+            raise ValueError("启动脚本不存在: {}".format(bootstrap))
+
+        cmd = ext.build_command(exe, bootstrap)
+        # 控制台只留一行短摘要；完整路径 / run_id / ticket / result 全部
+        # 写进日志文件（_log_detail 不 print，不会让控制台变乱）
+        print("启动外部 Houdini {}：{} / {}".format(
+            app_id, os.path.basename(hip_path), config_name))
+        self._log_detail(
+            "外部执行启动: run_id={} app_id={} exe={}\n"
+            "  hip_path={} config_name={} host_config={}\n"
+            "  log_name={}\n  ticket={}\n  result={}".format(
+                run_id, app_id, exe, hip_path, config_name,
+                self._host_config_name, log_name,
+                ticket_path, result_path))
+        try:
+            # stdio 全 DEVNULL：GUI 可执行文件不向管道写 stdout（实测），
+            # 子进程若继承控制台会刷 Houdini 启动日志进主程序。
+            proc = subprocess.Popen(
+                cmd, env=ext.child_env(ticket_path),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=(subprocess.CREATE_NO_WINDOW
+                              if os.name == "nt" else 0))
+        except OSError as e:
+            raise ValueError(
+                "启动外部 Houdini 失败: {} ({})".format(exe, e)) from e
+
+        def _started():
+            """启动阶段结束时只读一次 ticket，确认启动脚本确实执行过。"""
+            ticket = ext.read_ticket(ticket_path)
+            return bool(ticket and ticket.get("started_at"))
+
+        def _progress(elapsed):
+            # 只写日志、不进控制台：40 小时任务在日志里有进度可查，
+            # 控制台却不会被每 30 分钟一行的提示刷乱
+            self._log_detail(
+                "已等待 {} 分钟（无超时，等待进程退出），run_id={}"
+                .format(int(elapsed // 60), run_id))
+
+        phase, rc = ext.wait_for_exit(
+            proc, stop_event=self._stop_event, started_check=_started,
+            progress_cb=_progress)
+
+        if phase in ("cancelled", "no_bootstrap"):
+            ext.terminate_process(proc)
+            self._log_detail(
+                "外部执行终止: phase={} run_id={} ticket={} result={}"
+                .format(phase, run_id, ticket_path, result_path))
+            if phase == "cancelled":
+                raise RuntimeError("跨应用执行已取消")
+            raise RuntimeError(
+                "外部 Houdini 已启动但自动化脚本未执行（{} 秒内无启动标记）："
+                "可能卡在许可 / 崩溃恢复对话框，或 waitforui 未执行脚本".format(
+                    ext.STARTUP_TIMEOUT_S))
+
+        result = ext.read_result(result_path)
+        if result is None:
+            self._log_detail(
+                "外部执行异常退出: 无回执 rc={} run_id={} result={}"
+                .format(rc, run_id, result_path))
+            raise RuntimeError(
+                "外部应用异常退出（无回执，退出码 {}）：{}；已按失败继续队列"
+                .format(rc if rc is not None else "?", result_path))
+        if result.get("status") != "completed":
+            self._log_detail(
+                "外部执行返回失败: run_id={} status={} message={} result={}"
+                .format(run_id, result.get("status"),
+                        result.get("message"), result_path))
+            raise RuntimeError("外部应用执行失败：{}".format(
+                result.get("message") or "子实例返回失败状态"))
+
+        # 控制台只打日志文件名；完整绝对路径、run_id、result 路径、
+        # 版本号与全部统计写进日志正文（用户：控制台要短、日志不能缩减）
+        log_path = result.get("log_path") or ""
+        log_display = os.path.basename(log_path) or "(无)"
+        print("外部执行完成：成功 {} / 失败 {} / 取消 {}，耗时 {} 秒；日志 {}"
+              .format(result.get("success", 0), result.get("fail", 0),
+                      result.get("cancelled", 0),
+                      result.get("elapsed_s", 0), log_display))
+        self._log_detail(
+            "外部执行完成详情: run_id={} status={} success={} fail={} "
+            "cancelled={} elapsed_s={} hou_version={}\n"
+            "  hip_path={} config_name={} host_config={}\n"
+            "  result={}\n  ticket={}\n  子日志完整路径={}".format(
+                run_id, result.get("status"),
+                result.get("success", 0), result.get("fail", 0),
+                result.get("cancelled", 0), result.get("elapsed_s", 0),
+                result.get("hou_version"), result.get("hip_path"),
+                result.get("config_name"), self._host_config_name,
+                result_path, ticket_path, log_path))

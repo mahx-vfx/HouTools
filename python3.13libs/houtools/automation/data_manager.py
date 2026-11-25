@@ -30,6 +30,7 @@ from .task_types import (
     FlipbookParams,
     HomeAssistantParams,
     OpenDWParams,
+    ExternalRunParams,
 )
 
 from houtools.core.constants import SETTINGS_DIR
@@ -357,7 +358,7 @@ class AutomationDataManager:
 
     @classmethod
     def load(cls, filename: Optional[str] = None) -> list[dict]:
-        """从 JSON 文件读取任务数据列表。
+        """从当前 ``$HIP`` 的配置目录读取任务列表（行为不变）。
 
         Args:
             filename: 配置文件 basename(**无** ``.json`` 后缀)。
@@ -365,7 +366,16 @@ class AutomationDataManager:
 
         返回 ``data["tasks"]``,若文件不存在或 JSON 损坏则返回空列表。
         """
-        path = cls.get_data_path(filename)
+        return cls.load_file(cls.get_data_path(filename))
+
+    @classmethod
+    def load_file(cls, path: str) -> list[dict]:
+        """按**绝对路径**读取任务列表（跨应用子实例用，与 load 同一套容错）。
+
+        ``load()`` 走 ``get_data_path()`` → ``hou.getenv("HIP")``，只能读
+        当前会话工程；子实例要读的是 ticket 指定的外部工程，直接按绝对
+        路径读可绕开 ``$HIP`` 更新时序，且复用完全相同的损坏/脏数据容错。
+        """
         try:
             if not os.path.exists(path):
                 return []
@@ -629,8 +639,8 @@ class AutomationDataManager:
             return False
 
     @classmethod
-    def list_configs(cls) -> list[str]:
-        """返回配置目录中所有 ``.json`` 配置文件的 basename 列表(**无后缀**)。
+    def _list_configs_in_dir(cls, json_dir: str) -> list[str]:
+        """枚举指定目录下所有 ``.json`` 配置的 basename(**无后缀**)。
 
         行为约定:
           - **不创建** 配置目录(若不存在返回空列表,与 ``load()`` 一致)
@@ -641,11 +651,7 @@ class AutomationDataManager:
             由 ``load()`` 容错处理返回 ``[]``)
           - 文件名按字典序排序(sorted)——保证 UI 下拉显示稳定
           - 出错时返回空列表并记 warning(权限错误等不该伪装成"没有配置")
-
-        Returns:
-            排序后的 basename 列表,例 ``["Automation", "MAtest1", "MAtest2"]``。
         """
-        json_dir = os.path.dirname(cls.get_data_path())
         if not os.path.isdir(json_dir):
             return []
         try:
@@ -659,6 +665,46 @@ class AutomationDataManager:
             logger.warning("列出配置目录失败（按无配置处理）: %s (%s)",
                            json_dir, exc)
             return []
+
+    @classmethod
+    def list_configs(cls) -> list[str]:
+        """当前会话 ``$HIP`` 的配置列表（行为不变，见 ``_list_configs_in_dir``）。"""
+        return cls._list_configs_in_dir(os.path.dirname(cls.get_data_path()))
+
+    @classmethod
+    def list_configs_for_hip(cls, hip_path: str) -> list[str]:
+        """**外部工程**的配置列表（跨应用执行的配置下拉数据源）。
+
+        ``list_configs()`` 走 ``get_data_path()`` → ``hou.getenv("HIP")``，
+        永远只能列当前会话工程；列别的工程必须显式给 hip 路径。
+        目录结构同当前工程：``<hip 所在目录>/HouTools_cfg/Automation_json/``。
+        纯读盘、不创建目录、不校验内容，语义与 ``list_configs()`` 完全一致。
+        """
+        if not hip_path or not str(hip_path).strip():
+            return []
+        json_dir = os.path.join(
+            os.path.dirname(os.path.abspath(str(hip_path))),
+            "HouTools_cfg", "Automation_json")
+        return cls._list_configs_in_dir(json_dir)
+
+    @classmethod
+    def load_last_config_for_hip(cls, hip_path: str) -> Optional[str]:
+        """外部工程「上次使用配置」的只读查询（用于配置下拉默认选中）。
+
+        按机器标记优先，旧共享标记只读兼容（与 ``load_last_config`` 同
+        口径）；缺标记 / 标记损坏一律返回 None，调用方回落第一项。
+        标记放在 ``HouTools_cfg/`` 顶层，**不会被配置下拉枚举到**。
+        """
+        if not hip_path or not str(hip_path).strip():
+            return None
+        base = os.path.join(
+            os.path.dirname(os.path.abspath(str(hip_path))), "HouTools_cfg")
+        for name in ("Automation_last.{}.json".format(cls.config_hostname()),
+                     "Automation_last.json"):
+            marker = cls._read_last_marker(os.path.join(base, name))
+            if marker:
+                return marker
+        return None
 
     @classmethod
     def delete_config(cls, filename: Optional[str] = None) -> bool:
@@ -730,6 +776,8 @@ class AutomationDataManager:
             return HomeAssistantParams(**cls._filter_known_fields(params_dict, HomeAssistantParams))
         elif task_type == TaskType.OPEN_DW:
             return OpenDWParams()
+        elif task_type == TaskType.EXTERNAL_RUN:
+            return ExternalRunParams(**cls._filter_known_fields(params_dict, ExternalRunParams))
         else:
             raise ValueError(f"未知参数类型: {type_str}")
 

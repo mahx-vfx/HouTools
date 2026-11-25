@@ -20,7 +20,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox,
     QLineEdit, QStackedWidget, QCheckBox, QWidget, QScrollArea, QSizePolicy,
-    QGraphicsDropShadowEffect, QApplication, QMenu, QFrame,
+    QGraphicsDropShadowEffect, QApplication, QMenu, QFrame, QFileDialog,
 )
 from PySide6.QtCore import Qt, Signal, QPoint, QSize, QRect, QRectF, QEvent, QTimer, QObject
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QShortcut, QPainter, QPixmap, QPalette
@@ -35,6 +35,7 @@ from houtools.automation.data_manager import (
     ConfigConflictError,
 )
 from houtools.automation import path_tracker
+from houtools.automation import external_run as ext
 from houtools.automation.task_types import (
     TaskItem,
     TaskType,
@@ -42,6 +43,7 @@ from houtools.automation.task_types import (
     FlipbookParams,
     HomeAssistantParams,
     OpenDWParams,
+    ExternalRunParams,
     as_bool,
 )
 from houtools.automation.execution_engine import (
@@ -380,6 +382,34 @@ def _combine_parm_path(node_path: str, parm_name: str) -> str:
     if node_path and parm_name:
         return f"{node_path}/{parm_name}"
     return node_path or parm_name
+
+
+def _fill_external_configs(cfg_combo, hip_path: str, preferred: str = "") -> None:
+    """按**外部工程**路径刷新配置文件下拉（纯读盘、不创建目录）。
+
+    选完工程路径即刷新；默认选中顺序 = 当前仍有效的选择 → 该工程自己的
+    「上次使用配置」标记 → 字典序第一项。标记在 ``HouTools_cfg/`` 顶层，
+    不会被 ``list_configs`` 枚举进下拉（与本机标记同一套防污染约定）。
+
+    ``blockSignals`` 包住 clear/addItems：程序化重建下拉不是用户编辑，
+    不能触发 ``_mark_dirty`` 把「改动即存」提前点燃。
+    """
+    names = AutomationDataManager.list_configs_for_hip(hip_path)
+    last = AutomationDataManager.load_last_config_for_hip(hip_path) or ""
+    if preferred and preferred in names:
+        target = preferred
+    elif last and last in names:
+        target = last
+    else:
+        target = names[0] if names else ""
+    cfg_combo.blockSignals(True)
+    try:
+        cfg_combo.clear()
+        cfg_combo.addItems(names)
+        if target:
+            cfg_combo.setCurrentText(target)
+    finally:
+        cfg_combo.blockSignals(False)
 
 
 # 匹配 ``hou.parm('...')`` 表达式(拖到 Python shell 的格式),DOTALL 容许多行。
@@ -1477,9 +1507,12 @@ class AutomationWindow(QWidget):
         # 用 _NoWheelComboBox 替 QComboBox,屏蔽 hover 滚轮循环选项
         combo = _NoWheelComboBox()
         combo.setObjectName("taskType")
-        # 顺序即任务类型索引: 0按钮点击 1Flipbook 2Webhook 3打开DW,
-        # 与 stacked 页序号一一对应(Flipbook 除外,见下方占位页)
-        combo.addItems(["按钮点击", "Flipbook", "Webhook", "打开DW"])
+        # 顺序即任务类型索引: 0按钮点击 1Flipbook 2Webhook 3打开DW
+        # 4跨应用执行，与 stacked 页序号一一对应(Flipbook 除外,见下方
+        # 占位页)。新增类型必须同步 _collect_data / _populate_slot_from_data
+        # / task_types / data_manager.deserialize_params / 引擎派发五处。
+        combo.addItems(["按钮点击", "Flipbook", "Webhook", "打开DW",
+                        "跨应用执行"])
         combo.setFixedWidth(120)
 
         # ── 参数区域（QStackedWidget） ──
@@ -1529,6 +1562,81 @@ class AutomationWindow(QWidget):
         )
         p3_layout.addWidget(dw_hint)
         stacked.addWidget(page3)
+
+        # Page 4: 跨应用执行 —— 工程路径 / Houdini 版本 / 配置文件
+        # （2026-11 用户逐轮拍板：参数栏严格三个选项，两行布局）
+        # 行距 0、控件统一 22px、第二行两个下拉等宽：减少两行槽在类型
+        # 下拉上下与下拉框内部留下的空白（用户截图反馈「空白太多」）。
+        page4 = QWidget()
+        p4_layout = QVBoxLayout(page4)
+        p4_layout.setContentsMargins(0, 0, 0, 0)
+        p4_layout.setSpacing(0)
+
+        ext_row1 = QHBoxLayout()
+        ext_row1.setContentsMargins(0, 0, 0, 0)
+        ext_row1.setSpacing(3)
+        ext_hip_le = QLineEdit()
+        ext_hip_le.setObjectName("externalHipPath")
+        ext_hip_le.setPlaceholderText("工程路径 (.hip)")
+        ext_hip_le.setFixedHeight(22)
+        # 复用 Flipbook 的文件夹图标按钮（22×22）。不再用「浏览…」文字
+        # 按钮：窄面板里文字被裁切，且图标按钮给路径框让出宽度。
+        ext_browse_btn = QPushButton()
+        ext_browse_btn.setObjectName("externalBrowseBtn")
+        ext_browse_btn.setFixedSize(22, 22)
+        ext_browse_btn.setToolTip("选择要用哪个 .hip 工程执行（绝对路径）")
+        _folder = _folder_icon_cached()
+        if _folder is not None:
+            ext_browse_btn.setIcon(_folder)
+        ext_browse_btn.setIconSize(QSize(18, 18))
+        ext_browse_btn.setStyleSheet(
+            "QPushButton { border: none; padding: 0px; background: transparent; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.15); border-radius: 3px; }"
+        )
+        ext_row1.addWidget(ext_hip_le, 1)
+        ext_row1.addWidget(ext_browse_btn)
+
+        ext_row2 = QHBoxLayout()
+        ext_row2.setContentsMargins(0, 0, 0, 0)
+        ext_row2.setSpacing(3)
+        ext_app_combo = _NoWheelComboBox()
+        ext_app_combo.setObjectName("externalApp")
+        ext_app_combo.addItems(ext.app_ids())  # 固定 H21 / H22 两项
+        ext_app_combo.setFixedHeight(22)
+        ext_app_combo.setToolTip(
+            "用哪个版本的 Houdini 打开该工程；可执行文件绝对路径在 "
+            "HouTools.json 的 HOUTOOLS_H21_EXE / HOUTOOLS_H22_EXE 中配置")
+        ext_cfg_combo = _NoWheelComboBox()
+        ext_cfg_combo.setObjectName("externalConfig")
+        ext_cfg_combo.setMinimumWidth(36)  # 唯一让位项，窄面板防挤压
+        ext_cfg_combo.setFixedHeight(22)
+        ext_cfg_combo.setPlaceholderText("无配置文件")
+        ext_cfg_combo.setToolTip("该工程 $HIP/HouTools_cfg/Automation_json/ 下的配置")
+        ext_row2.addWidget(ext_app_combo, 1)
+        ext_row2.addWidget(ext_cfg_combo, 1)
+        p4_layout.addLayout(ext_row1)
+        p4_layout.addLayout(ext_row2)
+        stacked.addWidget(page4)
+
+        # 选完工程路径后立即刷新配置下拉（来自外部工程目录，不是当前 $HIP）
+        def _refresh_ext_configs(preferred: str = ""):
+            _fill_external_configs(ext_cfg_combo, ext_hip_le.text(), preferred)
+
+        def _on_ext_browse():
+            # 只用系统原生文件对话框。旧实现先开 Houdini chooser、用户点
+            # 关闭后又弹一次系统对话框，是明确的双重弹窗 bug（2026-11 反馈）。
+            try:
+                path, _ = QFileDialog.getOpenFileName(
+                    slot, "选择 Houdini 工程", "",
+                    "Houdini 工程 (*.hip *.hipnc *.hiplc);;所有文件 (*)")
+            except Exception as exc:
+                logger.debug("系统文件对话框失败: %s", exc)
+                return
+            if path:
+                ext_hip_le.setText(os.path.normpath(path))
+                _refresh_ext_configs(ext_cfg_combo.currentText())
+
+        ext_browse_btn.clicked.connect(lambda: _on_ext_browse())
 
         # Flipbook — 独立 widget，不放入 stacked（避免宽度被拉大）
         flipbook_widget = QWidget()
@@ -1650,7 +1758,7 @@ class AutomationWindow(QWidget):
             if idx == 1:  # Flipbook
                 stacked.hide()
                 flipbook_widget.show()
-            else:  # 按钮点击 / Webhook / 打开DW
+            else:  # 按钮点击 / Webhook / 打开DW / 跨应用执行 / 未知类型占位
                 flipbook_widget.hide()
                 stacked.show()
                 stacked.setCurrentIndex(idx)
@@ -1701,6 +1809,7 @@ class AutomationWindow(QWidget):
                     parm_path_le,
                     start_frame_le, end_frame_le, output_path_le, save_to_disk_cb,
                     webhook_url_le,
+                    ext_hip_le, ext_app_combo, ext_cfg_combo,
                     enabled_cb,
                 )
             finally:
@@ -1709,7 +1818,8 @@ class AutomationWindow(QWidget):
         # 自动保存接线：值编辑入口汇入 _mark_dirty。接线在 populate 之后
         # ——装载期 setText/setChecked 的信号天然不进脏标记
         for _name in ("parmPath", "webhookUrl", "flipbookStartFrame",
-                      "flipbookEndFrame", "flipbookOutputPath"):
+                      "flipbookEndFrame", "flipbookOutputPath",
+                      "externalHipPath"):
             _le = slot.findChild(QLineEdit, _name)
             if _le is not None:
                 _le.textChanged.connect(self._mark_dirty)
@@ -1717,6 +1827,18 @@ class AutomationWindow(QWidget):
             _cb = slot.findChild(QCheckBox, _name)
             if _cb is not None:
                 _cb.toggled.connect(self._mark_dirty)
+        # 跨应用执行：版本/配置下拉改动也算编辑；工程路径变化要立即重新
+        # 枚举外部工程的配置（程序化重建下拉在 _fill_external_configs 里
+        # 已 blockSignals，不会把刷新本身误记成用户改动）
+        for _name in ("externalApp", "externalConfig"):
+            _cb = slot.findChild(QComboBox, _name)
+            if _cb is not None:
+                _cb.currentIndexChanged.connect(self._mark_dirty)
+        _ext_hip = slot.findChild(QLineEdit, "externalHipPath")
+        if _ext_hip is not None:
+            _ext_hip.textChanged.connect(
+                lambda _text: _refresh_ext_configs(
+                    ext_cfg_combo.currentText()))
 
         return slot
 
@@ -1725,7 +1847,9 @@ class AutomationWindow(QWidget):
         slot, data, combo, stacked, flipbook_widget,
         parm_path_le,
         start_frame_le, end_frame_le, output_path_le, save_to_disk_cb,
-        webhook_url_le, enabled_cb,
+        webhook_url_le,
+        ext_hip_le, ext_app_combo, ext_cfg_combo,
+        enabled_cb,
     ):
         """根据 dict 数据填充一个已创建的槽控件。"""
         # 缺 type 字段与未知类型同路：静默默认 BUTTON_CLICK 会在首次 Start
@@ -1765,6 +1889,19 @@ class AutomationWindow(QWidget):
             webhook_url_le.setText(str(params.get("webhook_url") or ""))
         elif type_str == "OPEN_DW":
             combo.setCurrentIndex(3)  # 无参数页,占位提示见 page3
+        elif type_str == "EXTERNAL_RUN":
+            combo.setCurrentIndex(4)  # page4：工程路径/版本/配置文件
+            hip_path = str(params.get("hip_path") or "")
+            ext_hip_le.setText(hip_path)
+            app_id = str(params.get("app_id") or "")
+            if app_id:
+                idx = ext_app_combo.findText(app_id)
+                ext_app_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            # 装载期显式刷一次：textChanged 的刷新接线在 populate 之后，
+            # 此刻还没有信号可用；外部工程的配置不来自当前 $HIP
+            _fill_external_configs(
+                ext_cfg_combo, hip_path,
+                str(params.get("config_name") or ""))
         else:
             # 未知任务类型(新版数据被旧版面板打开/手工编辑)或缺失 type
             # 字段：绝不静默落到默认 BUTTON_CLICK —— 那会把原始数据悄悄
@@ -1774,8 +1911,9 @@ class AutomationWindow(QWidget):
                            type_str)
             slot._raw_data = dict(data)
             # 本槽的 combo 独立追加占位项并切过去:setCurrentIndex 触发
-            # _on_type_changed(4) 自动隐藏跳转按钮、切到占位页,随后禁用
-            # 下拉,杜绝用户改类型把原始数据弄丢
+            # _on_type_changed(5) 自动隐藏跳转按钮、切到追加的占位页
+            # （stacked 也同步 addWidget，索引自动对齐）,随后禁用下拉,
+            # 杜绝用户改类型把原始数据弄丢
             combo.addItem("未知类型")
             hint_page = QWidget()
             hint_layout = QHBoxLayout(hint_page)
@@ -2547,6 +2685,10 @@ class AutomationWindow(QWidget):
                         _mask_webhook_url(webhook_url)))
                 elif task_type == "OPEN_DW":
                     lines.append(f"  DW 软件路径: {AutomationDataManager.load_dw_exe_path()}")
+                elif task_type == "EXTERNAL_RUN":
+                    lines.append(f"  工程: {params.get('hip_path', '')}")
+                    lines.append(f"  版本: {params.get('app_id', '')}")
+                    lines.append(f"  配置: {params.get('config_name', '')}")
                 lines.append("")
         else:
             lines.append("任务列表: (空)")
@@ -2897,6 +3039,20 @@ class AutomationWindow(QWidget):
                     enabled=enabled,
                 )
 
+            elif type_idx == 4:  # 跨应用执行 —— 工程 / 版本 / 配置
+                hip_le = slot.findChild(QLineEdit, "externalHipPath")
+                app_cb = slot.findChild(QComboBox, "externalApp")
+                cfg_cb = slot.findChild(QComboBox, "externalConfig")
+                item = TaskItem(
+                    task_type=TaskType.EXTERNAL_RUN,
+                    params=ExternalRunParams(
+                        hip_path=hip_le.text() if hip_le else "",
+                        app_id=app_cb.currentText() if app_cb else "",
+                        config_name=cfg_cb.currentText() if cfg_cb else "",
+                    ),
+                    enabled=enabled,
+                )
+
             else:  # 未知类型(理论不可达),跳过避免写坏配置
                 logger.warning("未知任务类型索引: %s", type_idx)
                 continue
@@ -3170,7 +3326,11 @@ class AutomationWindow(QWidget):
             # _force_restore_stdout / _close_log_file）在 __init__ 已连接，
             # 这里不重复连——每次 Start 追加连接会让连接表随执行次数增长
 
-        self._engine = ExecutionEngine(task_items)
+        # 只写日志文件的通道 + 主程序配置名：控制台保持安静，完整信息
+        # （绝对路径 / run_id / 子日志全路径）仍全部留在日志正文里
+        self._engine = ExecutionEngine(
+            task_items, log_sink=self._write_log,
+            host_config_name=self._current_config_name)
         _LIVE_ENGINES.append(self._engine)
         # QThread.finished 无参发射，而 PySide6 在发射时才检查槽的参数个数
         # （连接时不查），直连单参普通函数会在每次线程收尾时报 TypeError 且

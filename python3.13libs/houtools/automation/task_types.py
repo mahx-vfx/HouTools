@@ -15,6 +15,7 @@ class TaskType(Enum):
     FLIPBOOK = "FLIPBOOK"
     HOME_ASSISTANT = "HOME_ASSISTANT"
     OPEN_DW = "OPEN_DW"
+    EXTERNAL_RUN = "EXTERNAL_RUN"
 
 
 @dataclass
@@ -44,7 +45,24 @@ class OpenDWParams:
     """打开DW 参数：软件路径来自应用级配置文件，任务本身无参数。"""
 
 
-TaskParams = Union[ButtonClickParams, FlipbookParams, HomeAssistantParams, OpenDWParams]
+@dataclass
+class ExternalRunParams:
+    """跨应用执行参数：用指定版本的 Houdini 打开指定工程并跑指定配置。
+
+    - ``hip_path``：目标工程 .hip 的绝对路径；
+    - ``app_id``：版本下拉的固定值 ``H21`` / ``H22``。**只存版本标识，
+      不存 exe 路径** —— 小版本升级只改 ``HouTools.json`` 里的 env，
+      已保存的任务配置一个都不用动；
+    - ``config_name``：目标工程 ``$HIP/HouTools_cfg/Automation_json/``
+      下某个配置的 basename（无 .json 后缀）。
+    """
+    hip_path: str = ""
+    app_id: str = "H22"
+    config_name: str = ""
+
+
+TaskParams = Union[ButtonClickParams, FlipbookParams, HomeAssistantParams,
+                   OpenDWParams, ExternalRunParams]
 
 
 def as_bool(value, default: bool) -> bool:
@@ -103,6 +121,13 @@ class TaskItem:
         elif self.task_type == TaskType.OPEN_DW:
             assert isinstance(self.params, OpenDWParams)
             base["params"] = {}
+        elif self.task_type == TaskType.EXTERNAL_RUN:
+            assert isinstance(self.params, ExternalRunParams)
+            base["params"] = {
+                "hip_path": self.params.hip_path,
+                "app_id": self.params.app_id,
+                "config_name": self.params.config_name,
+            }
         else:
             raise ValueError(f"Unknown task type: {self.task_type}")
 
@@ -153,6 +178,17 @@ class TaskItem:
         elif type_str == "OPEN_DW":
             task_type = TaskType.OPEN_DW
             params: TaskParams = OpenDWParams()
+        elif type_str == "EXTERNAL_RUN":
+            task_type = TaskType.EXTERNAL_RUN
+            # 三个字段一律 str() 归一：手改 JSON 写成数字/布尔时不能让
+            # 非 str 进 Popen / 路径拼接（与 BUTTON_CLICK 同款防护）。
+            # app_id 非法值原样保留，由引擎 resolve_exe 明确报错，不静默
+            # 改写成别的版本去打开工程。
+            params = ExternalRunParams(
+                hip_path=str(params_data.get("hip_path") or ""),
+                app_id=str(params_data.get("app_id") or "H22"),
+                config_name=str(params_data.get("config_name") or ""),
+            )
         else:
             raise ValueError(f"Unknown task type string: {type_str}")
 

@@ -111,3 +111,120 @@ BUTTON_CLICK 任务的 `params.node_path` 存工程外部 JSON，节点改名后
 - 打开时**已**断的路径（上个会话遗留）没有节点可注册——非本次改名造成，执行时按既有「节点不存在」暴露；丢失状态可视化属二期。
 - **删除零即时反馈**（不订阅删除的既定语义）：删除被引用节点后面板红边框要等交互间隙评估（切回面板/编辑落盘/重开工程）才现形；节点删除+同名重建后，跟随要等下次 reconcile（面板交互点）恢复。
 - GUI 会话待验证（hython 无 undo 栈 API 探不了）：交互式改名（网络编辑器回车提交）的事件时序、undo 改名的事件流（预期 NameChanged 对称触发）。
+
+## 跨应用执行（EXTERNAL_RUN，2026-11 用户逐轮拍板）
+
+用另一个**指定版本**的 Houdini 打开指定 .hip 工程、执行该工程自己的
+Automation 配置，跑完直接退出；主工程 A 的队列因此可以 A → B → C → D
+顺序编排不同版本/不同工程的任务。
+
+### ★ 三条不可违背的硬约束
+
+1. **任务项内部的保存零改动**：``execution_engine.py`` 的
+   ``_execute_button_click`` 里 ``dl_Submit`` 点击前 ``hou.hipFile.save()``
+   是 Deadline 提交的必要前置条件（不保存会弹「保存工程」对话框或提交
+   失效），``_hip_never_saved`` 能力探测链同样一行不动。子实例复用同一个
+   ``ExecutionEngine``，该行为天然照常执行。
+2. **收尾阶段绝不新增任何 ``hipFile.save()``**：「不保存」针对的是**全部
+   任务执行完成后**的收尾动作，不是禁止任务项内部的保存命令。用户原话：
+   「这些动作实际上应该在用户设置自动化配置文件的时候就应该完成了，
+   自动化开始执行的时候就不应该再保存」。收尾只有
+   ``写 result.json → hou.exit(0, suppress_save_prompt=True)``。
+3. ``suppress_save_prompt=True`` 只抑制**退出时**的「是否保存」模态框，
+   不拦截任务项内已发生的保存。少了它，任一按钮回调改过场景就会弹框、
+   B 的进程句柄不消失，A 会永远等（无人值守死等）。
+
+### 参数栏（严格三个选项，两行布局）
+
+| 字段 | 控件 | 数据源 | 存进 JSON |
+|---|---|---|---|
+| 工程路径 | QLineEdit + 22×22 文件夹图标按钮（复用 Flipbook `_folder_icon_cached()`） | **只用系统原生 `QFileDialog.getOpenFileName`**：旧实现先开 Houdini chooser、用户点关闭后又弹一次系统对话框（双重弹窗 bug，2026-11 反馈已修）；返回路径 normpath | ``hip_path``（绝对路径） |
+| Houdini 版本 | 只读下拉，固定 ``H21``/``H22`` | ``external_run.app_ids()``；实际 exe 由包清单 env 解析 | ``app_id``（**不存路径**） |
+| 配置文件 | 只读下拉，选完工程路径自动刷新 | ``AutomationDataManager.list_configs_for_hip(hip_path)`` 扫外部工程 ``<dirname(hip)>/HouTools_cfg/Automation_json/*.json``；默认选中该工程按机器的「上次使用配置」标记，回落第一项 | ``config_name``（无后缀 basename） |
+
+- ``list_configs()`` 走 ``get_data_path()`` → ``hou.getenv("HIP")``，**只能列
+  当前会话工程**；列外部工程必须走 ``list_configs_for_hip()``。两者共用
+  ``_list_configs_in_dir()``，行为（不创建目录/不校验 JSON/字典序）一致。
+- ``Automation_runs/`` 必须在 ``HouTools_cfg/`` **顶层**，不能放进
+  ``Automation_json/`` —— 后者 ``*.json`` 会被配置下拉枚举（与
+  ``Automation_last.<host>.json`` 放顶层同一套防污染约定）。
+- 回执目录跟**发起编排的主工程 A** 走：
+  ``{A $HIP}/HouTools_cfg/Automation_runs/<run_id>/``。B 只读 ticket、
+  只往 A 指定的绝对路径写一次回执；B 自己的日志仍在 B 的
+  ``$HIP/HouTools_cfg/Automation_logs/``。多个主工程（A / Q）天然隔离。
+- 类型索引 0..4 硬编码同步点：``task_types`` 枚举/``to_dict``/``from_dict``、
+  ``data_manager.deserialize_params``、``execution_engine.run`` 派发、
+  ``window`` 的 combo/stacked/``_populate_slot_from_data``/``_collect_data``/
+  ``_write_log_header``、``smoke_test`` 的 count 断言。未知类型占位槽
+  追加 combo 项 + ``stacked.addWidget`` 后索引自动对齐（现为 5）。
+
+### 版本路径（HouTools.json）
+
+包清单 ``env`` 新增 ``HOUTOOLS_H21_EXE`` / ``HOUTOOLS_H22_EXE`` 两个
+可执行文件绝对路径（本机默认 21.0.512 / 22.0.429 的 ``houdinifx.exe``）。
+``external_run.resolve_exe()`` 与 ``videoseq/ffmpeg.py::_custom_ffmpeg``
+同口径：strip → ``isfile`` → 不存在视为未配置（不扫 PATH、不自动猜版本，
+猜错版本会写坏工程）。**仓库根 HouTools.json 是随发行包的模板副本，
+生效的是 Documents/houdini21.0/packages 与 houdini22.0/packages 两份**，
+三处都要有；用户改生效清单、重启 Houdini 才生效（包 env 只在启动时读）。
+任务 JSON 只存 ``app_id``，小版本升级不动任何已存配置。
+
+### 等待与判定（40 小时场景）
+
+- 父进程 ``_execute_external_run`` 在后台线程跑，不派发主线程（与
+  Webhook / 打开DW 同类），**不改** ``_run_deferred`` 的无超时约定。
+  ``external_run.wait_for_exit()`` 启动阶段 ``proc.wait(timeout=90)``
+  有界（抓许可失败/闪退/启动弹窗），之后 ``stop_event.wait(1)`` 可中断
+  无界等待 —— 内核在进程退出时唤醒，期间零 CPU、**不读状态文件、不写
+  心跳**。取消由 ``ExecutionEngine.cancel()`` 置位 ``_stop_event``。
+- 启动阶段结束时只读**一次** ticket 的 ``started_at`` 标记（bootstrap
+  第一行回写）：没有标记 = ``no_bootstrap``，终止子进程并记失败，兜住
+  「进程还在但卡在弹窗」这一 PID 方案覆盖不到的情形。
+- 完成只认 ``result.json``：有 = 正常完成（取成功/失败/取消计数、耗时、
+  版本、子日志路径）；无 = 崩溃/被杀/许可失败/手动关窗，记失败并继续
+  C（用户拍板「崩溃不卡住」，不自动重试）。进程退出码只用于报错文案。
+- 子实例启动命令 ``houdini -foreground waitforui <bootstrap 绝对路径>``；
+  hip 由 bootstrap 自己 ``hou.hipFile.load()`` 打开，不依赖命令行文件
+  参数顺序（社区实测 Windows 上 .py 必须绝对路径、hip 顺序部分版本不稳）。
+  GUI 可执行文件不向管道写 stdout（本机实测 ``houdinifx.exe -h`` 零输出、
+  20 秒未返回），所以 stdio 全 DEVNULL、结果只走文件。
+- ``hou.exit()`` 抛 ``SystemExit`` 会被引擎 ``except BaseException`` 吞掉
+  —— 退出必须挂 ``all_completed`` 之后、经 ``hdefereval.executeDeferred``
+  排到主线程，不能在引擎信号回调里同步调用。
+- **控制台精简 / 日志完整（2026-11 用户二次拍板）**：
+  - print 一律不带 ``[跨应用执行]`` 标签；每个外部任务控制台只有两行
+    ——启动短摘要（版本 + hip 文件名 + 配置名）、完成短摘要（统计 +
+    耗时 + 日志文件名）。等待进度**不进控制台**。
+  - 完整信息（绝对路径、run_id、exe、ticket/result 路径、hou_version、
+    子日志完整路径、每 30 分钟等待进度、各种失败原因）全部经
+    ``ExecutionEngine._log_detail`` **只写 A 的日志文件**（window 构造
+    引擎时传 ``log_sink=self._write_log``，持锁跨线程安全，不 print）；
+    子实例日志文件开头另写一行完整运行信息。**缩减的是控制台噪音，
+    不是日志内容** —— 用户明确「日志中不能缩减」。
+  - ``result.json`` 仍保留 ``log_path`` 完整绝对路径，控制台只显示
+    ``os.path.basename``。
+  - 子日志名 = ``主程序配置名_日期_哈希.log``（用户指定，例如
+    ``WS-TEST_20261125_31a3f5.log``），由 A 侧
+    ``external_run.log_basename(host_config, run_id)`` 算好写进 ticket，
+    子实例照用；配置名经 ``_safe_log_name`` 净化。完整 run_id 仍在
+    目录名、ticket、result 与日志正文里，排障可追溯。
+- 已知边界：A 崩溃/重开不自动接管队列（本期 L1，句柄在内存里会丢）；
+  PID 还在但死锁只给手动终止；崩溃时许可未必立即释放，C 启动拿到
+  退出码 3 要识别；跨版本打开低/高版本 hip 本身可能不兼容。
+
+### GUI 实测（P0，2026-11-25 真机实证通过）
+
+用户已用真实 H21/H22 队列跑通 A→B→C→D：A 控制台打印出子日志文件名
+（说明读到 ``result.json`` 回执），并按队列继续启动了后续工程。下列
+三项同时得到验证 —— 不再是未决风险，后续改动按此清单回归即可：
+
+1. 三个版本（本项目只 H21/H22）是否继承 ``Popen(env=...)`` 的
+   ``HOUTOOLS_AUTORUN_TICKET``、是否被包清单同名 env 覆盖；
+2. ``waitforui + .py`` 在 H21 / H22 的实际执行顺序，以及 Houdini 执行
+   .py 时是否把 ``__name__`` 设成 ``__main__``（bootstrap 用 ticket
+   env 而不是 ``__name__`` 作闸门，正是为了绕开这个不确定）；
+3. 子实例里不建面板直接跑 ``ExecutionEngine`` 时
+   ``hdefereval.executeDeferred(...)`` → ``hou.exit()`` 是否真的退出进程
+   （不退出会让 A 永远等）—— **已实证退出，A 被唤醒并继续队列**。
+   后续若改启动/退出链路，按 AGENTS.md:111 先用 hython + 隔离
+   HOUDINI_USER_PREF_DIR 探针回归，再开 GUI 会话验证。

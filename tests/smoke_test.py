@@ -1082,13 +1082,62 @@ def main():
     # 任务类型下拉与 stacked 页对齐 + 打开DW 收集
     slot0 = win._slot_widgets[0]
     combo = slot0.findChild(QComboBox, "taskType")
-    assert combo is not None and combo.count() == 4, combo
+    assert combo is not None and combo.count() == 5, combo
     stacked = slot0.findChild(QStackedWidget, "paramsStacked")
-    assert stacked is not None and stacked.count() == 4, stacked
+    assert stacked is not None and stacked.count() == 5, stacked
     combo.setCurrentIndex(3)  # 打开DW
     collected = win._collect_data()
     assert collected[0]["type"] == "OPEN_DW"
     assert collected[0]["params"] == {}
+
+    # ── 跨应用执行（EXTERNAL_RUN）：第 5 个类型页 + 三个参数控件 ──
+    from houtools.automation import external_run as _ext_mod
+    from houtools.automation.data_manager import AutomationDataManager as _ADM
+    combo.setCurrentIndex(4)
+    assert stacked.currentIndex() == 4, stacked.currentIndex()
+    _hip_le = slot0.findChild(QLineEdit, "externalHipPath")
+    _app_cb = slot0.findChild(QComboBox, "externalApp")
+    _cfg_cb = slot0.findChild(QComboBox, "externalConfig")
+    assert _hip_le is not None and _app_cb is not None and _cfg_cb is not None
+    assert [_app_cb.itemText(i) for i in range(_app_cb.count())] == ["H21", "H22"]
+    # 浏览按钮 = 复用 Flipbook 的 22×22 文件夹图标按钮，不再有「浏览…」文字
+    _browse = slot0.findChild(QPushButton, "externalBrowseBtn")
+    assert _browse is not None and _browse.text() == "", "浏览按钮应为图标按钮"
+    assert _browse.maximumWidth() == 22
+
+    # 选完工程路径 → 配置下拉自动读外部工程目录（不是当前 $HIP）
+    _ext_dir = Path(tempfile.mkdtemp(prefix="houtools_ext_hip."))
+    _ext_cfg = _ext_dir / "HouTools_cfg" / "Automation_json"
+    _ext_cfg.mkdir(parents=True)
+    for _n in ("Alpha", "Beta"):
+        (_ext_cfg / (_n + ".json")).write_text(
+            json.dumps({"tasks": [], "rev": 1}), encoding="utf-8")
+    # 按机器的「上次使用配置」标记放 HouTools_cfg 顶层，不污染下拉
+    (_ext_dir / "HouTools_cfg" /
+     ("Automation_last.{}.json".format(_ADM.config_hostname()))).write_text(
+        json.dumps({"last_config": "Beta"}), encoding="utf-8")
+    _hip_le.setText(str(_ext_dir / "shot_B.hip"))
+    assert [_cfg_cb.itemText(i) for i in range(_cfg_cb.count())] == ["Alpha", "Beta"]
+    assert _cfg_cb.currentText() == "Beta", _cfg_cb.currentText()
+    _cfg_cb.setCurrentText("Alpha")
+    _ext_data = win._collect_data()[0]
+    assert _ext_data["type"] == "EXTERNAL_RUN", _ext_data
+    assert _ext_data["params"] == {
+        "hip_path": str(_ext_dir / "shot_B.hip"),
+        "app_id": "H21", "config_name": "Alpha",
+    }, _ext_data["params"]
+    # 从 dict 回填：类型索引 4、三个控件值都能还原。用 _create_slot_widget
+    # 造孤立槽（不进 _slot_widgets），避免改变 win 的槽数影响后续断言
+    _ext_slot = win._create_slot_widget(0, _ext_data)
+    _e_combo = _ext_slot.findChild(QComboBox, "taskType")
+    assert _e_combo is not None and _e_combo.currentIndex() == 4
+    assert _ext_slot.findChild(QLineEdit, "externalHipPath").text() == \
+        str(_ext_dir / "shot_B.hip")
+    assert _ext_slot.findChild(QComboBox, "externalApp").currentText() == "H21"
+    assert _ext_slot.findChild(QComboBox, "externalConfig").currentText() == "Alpha"
+    _ext_slot.deleteLater()
+    shutil.rmtree(_ext_dir, ignore_errors=True)
+    print("EXTERNAL_RUN window slot round-trip OK")
 
     # 回归：Flipbook 参数在 stacked 之外,收集必须仍取到编辑值
     combo.setCurrentIndex(1)
@@ -6414,6 +6463,177 @@ def main():
     assert list(_cat_plan.values())[0] == \
         os.path.normpath("C:/hip/pack/tex/D_p/a.jpg")
     print("package category layout OK")
+
+    # ── 跨应用执行纯逻辑（不启动 Houdini）────────────────────────
+    import subprocess as _subprocess
+    import threading as _threading
+    from houtools.automation import external_run as _xr
+    from houtools.automation import task_types as _tt
+    from houtools.automation.data_manager import AutomationDataManager as _DMX
+    from houtools.automation.execution_engine import ExecutionEngine as _EE
+
+    assert _xr.app_ids() == ["H21", "H22"]
+    assert _xr.exe_env_key("H21") == "HOUTOOLS_H21_EXE"
+    assert _xr.exe_env_key("H22") == "HOUTOOLS_H22_EXE"
+
+    # resolve_exe：只认存在的文件；目录 / 空 / 不存在的路径视为未配置
+    _exe_dir = Path(tempfile.mkdtemp(prefix="houtools_exe."))
+    _exe_file = _exe_dir / "houdinifx.exe"
+    _exe_file.write_bytes(b"")
+    _saved_env = os.environ.get("HOUTOOLS_H22_EXE")
+    try:
+        os.environ["HOUTOOLS_H22_EXE"] = str(_exe_file)
+        assert _xr.resolve_exe("H22") == os.path.normpath(str(_exe_file))
+        os.environ["HOUTOOLS_H22_EXE"] = str(_exe_dir)
+        assert _xr.resolve_exe("H22") is None
+        os.environ["HOUTOOLS_H22_EXE"] = str(_exe_dir / "nope.exe")
+        assert _xr.resolve_exe("H22") is None
+        os.environ.pop("HOUTOOLS_H22_EXE")
+        assert _xr.resolve_exe("H22") is None
+        assert _xr.resolve_exe("H99") is None
+    finally:
+        if _saved_env is None:
+            os.environ.pop("HOUTOOLS_H22_EXE", None)
+        else:
+            os.environ["HOUTOOLS_H22_EXE"] = _saved_env
+        shutil.rmtree(_exe_dir, ignore_errors=True)
+
+    # 外部工程配置枚举 / 上次使用标记 / 绝对路径读盘
+    _root = Path(tempfile.mkdtemp(prefix="houtools_ext_run."))
+    _b_hip = _root / "B" / "shot_B.hip"
+    _b_cfg = _root / "B" / "HouTools_cfg" / "Automation_json"
+    _b_cfg.mkdir(parents=True)
+    for _n in ("Render", "Cache"):
+        (_b_cfg / (_n + ".json")).write_text(
+            json.dumps({"tasks": [], "rev": 1}), encoding="utf-8")
+    (_root / "B" / "HouTools_cfg" /
+     ("Automation_last.{}.json".format(_DMX.config_hostname()))).write_text(
+        json.dumps({"last_config": "Cache"}), encoding="utf-8")
+    assert _DMX.list_configs_for_hip(str(_b_hip)) == ["Cache", "Render"]
+    assert _DMX.load_last_config_for_hip(str(_b_hip)) == "Cache"
+    assert _DMX.list_configs_for_hip("") == []
+    assert _DMX.load_last_config_for_hip("") is None
+    assert os.path.isfile(_xr.config_path_for_hip(str(_b_hip), "Render"))
+    assert _DMX.load_file(
+        _xr.config_path_for_hip(str(_b_hip), "Render")) == []
+
+    # 回执目录：主工程 HouTools_cfg 顶层，绝不在 Automation_json 内
+    _rid = _xr.new_run_id()
+    assert _rid and _xr.new_run_id() != _rid
+    _rdir = _xr.runs_dir(str(_root / "A"), _rid)
+    assert "HouTools_cfg" in _rdir and "Automation_runs" in _rdir
+    assert "Automation_json" not in _rdir
+    _tp = os.path.join(_rdir, "ticket.json")
+    _rp = os.path.join(_rdir, "result.json")
+    _xr.write_ticket(_tp, {"run_id": _rid, "hip_path": str(_b_hip)})
+    assert _xr.read_ticket(_tp)["hip_path"] == str(_b_hip)
+    _xr.write_result(_rp, {"status": "completed", "success": 3})
+    assert _xr.read_result(_rp)["success"] == 3
+    assert _xr.read_result(_rp + ".missing") is None
+    Path(_rp).write_text("{not json", encoding="utf-8")
+    assert _xr.read_result(_rp) is None
+
+    # 启动命令 / 子进程 env / bootstrap 绝对路径
+    assert _xr.build_command("C:/H22/bin/houdinifx.exe", "C:/boot.py") == [
+        "C:/H22/bin/houdinifx.exe", "-foreground", "waitforui", "C:/boot.py"]
+    assert _xr.child_env(_tp)[_xr.ENV_TICKET] == _tp
+    assert os.path.isabs(_xr.bootstrap_path())
+    assert str(ROOT / "python3.13libs") in _xr.bootstrap_path()
+
+    # wait_for_exit 四态：fake proc，一个真实进程都不启动
+    class _FakeProc:
+        def __init__(self, mode):
+            self.mode = mode
+            self.polls = 0
+            self.terminated = False
+
+        def wait(self, timeout=None):
+            if self.mode == "early":
+                return 3
+            raise _subprocess.TimeoutExpired("cmd", timeout or 0)
+
+        def poll(self):
+            self.polls += 1
+            if self.mode == "exited" and self.polls >= 2:
+                return 0
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+    _fast = dict(startup_timeout=0.001, poll_interval=0.001)
+    assert _xr.wait_for_exit(_FakeProc("early"), **_fast)[0] == "early_exit"
+    assert _xr.wait_for_exit(
+        _FakeProc("exited"), started_check=lambda: True, **_fast)[0] == "exited"
+    _stop = _threading.Event()
+    _stop.set()
+    assert _xr.wait_for_exit(
+        _FakeProc("exited"), stop_event=_stop,
+        started_check=lambda: True, **_fast)[0] == "cancelled"
+    assert _xr.wait_for_exit(
+        _FakeProc("exited"), started_check=lambda: False,
+        **_fast)[0] == "no_bootstrap"
+    # 等待期间的进度回调只打印、不读文件；不传即零输出
+    _seen = []
+    assert _xr.wait_for_exit(
+        _FakeProc("exited"), started_check=lambda: True,
+        progress_cb=_seen.append, progress_interval=0,
+        **_fast)[0] == "exited"
+    assert _seen
+
+    # TaskItem 往返 + 序列化容错 + 引擎接线 + 硬约束回归
+    _item = _tt.TaskItem(
+        _tt.TaskType.EXTERNAL_RUN,
+        _tt.ExternalRunParams("D:/B.hip", "H22", "Render"), True)
+    assert _item.to_dict() == {
+        "type": "EXTERNAL_RUN", "enabled": True,
+        "params": {"hip_path": "D:/B.hip", "app_id": "H22",
+                    "config_name": "Render"}}
+    _back = _tt.TaskItem.from_dict(_item.to_dict())
+    assert isinstance(_back.params, _tt.ExternalRunParams)
+    assert _back.params.config_name == "Render"
+    assert _DMX.deserialize_params(
+        "EXTERNAL_RUN", {"hip_path": "x", "junk": 1}).app_id == "H22"
+    _dirty = _tt.TaskItem.from_dict(
+        {"type": "EXTERNAL_RUN",
+         "params": {"hip_path": 123, "app_id": None, "config_name": 0}})
+    assert (_dirty.params.hip_path, _dirty.params.app_id,
+            _dirty.params.config_name) == ("123", "H22", "")
+    _eng = _EE([_item])
+    assert hasattr(_eng, "_execute_external_run")
+    assert hasattr(_eng, "_stop_event") and hasattr(_eng, "_hip_dir")
+
+    _ee_src = (ROOT / "python3.13libs/houtools/automation/execution_engine.py").read_text(
+        encoding="utf-8")
+    _bs_src = (ROOT / "python3.13libs/houtools/automation/external_bootstrap.py").read_text(
+        encoding="utf-8")
+    # 硬约束①：任务项内 dl_Submit 的强制保存一行不许被删
+    assert 'params.parm_name == "dl_Submit"' in _ee_src
+    assert "hou.hipFile.save()" in _ee_src
+    # 硬约束②：收尾直接退出、抑制保存提示；③：不在引擎回调里同步 exit
+    assert "hou.exit(0, suppress_save_prompt=True)" in _bs_src
+    assert "hdefereval.executeDeferred(_do)" in _bs_src
+    # 2026-11 用户反馈：打印不带方括号标签、子日志只打文件名、
+    # 浏览只走系统对话框（禁止 Houdini chooser + 二次弹窗）、日志名要短
+    assert "[跨应用执行]" not in _ee_src and "[跨应用执行]" not in _bs_src
+    assert "os.path.basename" in _ee_src
+    _win_src = (ROOT / "python3.13libs/houtools/automation/window.py").read_text(
+        encoding="utf-8")
+    assert "hou.ui.selectFile" not in _win_src
+    # 日志名 = 主程序配置名_日期_哈希.log（用户指定格式）
+    _logname = _xr.log_basename("WS-TEST", _rid)
+    assert _logname.startswith("WS-TEST_") and _logname.endswith(".log")
+    assert _logname.split("_")[-2].isdigit() and len(_logname.split("_")[-2]) == 8
+    assert len(_logname) <= 64, _logname
+    # 控制台安静 / 日志完整：详细通道存在，且 window 把 _write_log 接进去
+    assert "_log_detail" in _ee_src
+    assert "log_sink=self._write_log" in _win_src
+    # 包清单模板给出两个版本的默认 exe
+    _pkg = json.loads((ROOT / "HouTools.json").read_text(encoding="utf-8"))
+    _env_keys = {k for entry in _pkg["env"] for k in entry}
+    assert {"HOUTOOLS_H21_EXE", "HOUTOOLS_H22_EXE"} <= _env_keys
+    shutil.rmtree(_root, ignore_errors=True)
+    print("EXTERNAL_RUN pure logic OK")
 
     print("SMOKE TEST OK")
 

@@ -61,7 +61,7 @@ Houdini 生效。当前生效位置可随时在 `HouTools → HouTools Settings.
 
 | 工具 | 菜单项 / 键位 | 说明 |
 |------|--------|------|
-| Automation | `HouTools → Automation`（Python Panel） | 自动化批处理：节点按钮点击 / Flipbook 拍屏 / HomeAssistant Webhook / 打开DW |
+| Automation | `HouTools → Automation`（Python Panel） | 自动化批处理：节点按钮点击 / Flipbook 拍屏 / HomeAssistant Webhook / 打开DW / 跨应用执行（用指定版本 Houdini 打开别的工程跑它的配置，多个工程可排队顺序执行） |
 | 粘贴为 Object Merge | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+V` | 复制节点后，按"目标上下文 × 源类别"在鼠标位置粘贴引用节点；键位在 `HouTools → HouTools Settings...` 修改 |
 | 复制输出路径 | 网络编辑器 `HouTools` 菜单 / `Ctrl+Shift+C` | 选中带输出路径参数的节点（与右键 Open Cache Folder 同规则：filecache / mantra / karma / usdrender / rop geometry 等，第三方 Arnold 节点亦支持），把输出文件**所在的文件夹**（展开后的绝对路径，不含文件名）复制到系统剪贴板；目录未落盘时不复制并红色报错；多选时去重逐行合并 |
 | File Cache 路径转绝对 | 网络编辑器 `HouTools` 菜单 → `File Cache Paths to Absolute` | 一键把当前层级所有 File Cache 节点的三个路径参数（basedir/basename/file）展开成绝对路径（`$HIP`/`$HIPNAME`/`$OS` 等变量冻结成字面值、相对路径按工程目录拼接），**帧变量 `$F`/`$FF` 原样保留**（帧号不冻结）；已绝对/表达式驱动/锁定参数等自动跳过；整批单个 undo 槽 |
@@ -435,7 +435,7 @@ HouTools/
 │       ├── core/                  # 路径常量 / 日志 / JSON 设置 / 默认热键
 │       ├── ui/                    # theme / qss / components / fonts / qtcompat + window_manager / taskbar
 │       │                          # + dialogs / notify / reveal / networknav / sidebar / badge / status_flash
-│       ├── automation/            # Automation（任务类型/持久化/执行引擎/路径跟随/样式/窗口）
+│       ├── automation/            # Automation（任务类型/持久化/执行引擎/路径跟随/样式/窗口 + 跨应用执行逻辑/子实例启动脚本）
 │       ├── dragdrop.py            # 外部拖放导入 .abc / .fbx / .usd*
 │       ├── videoseq/              # 视频转序列图（ffmpeg 查找 + 窗口）
 │       ├── hdrlight/              # HDR Library（HDR 库浏览 + 缩略图 + 灯光赋值）

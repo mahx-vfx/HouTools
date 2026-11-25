@@ -1,9 +1,13 @@
-from .task_types import TaskType, ButtonClickParams, FlipbookParams, HomeAssistantParams, TaskItem, TaskParams
+from .task_types import (
+    TaskType, ButtonClickParams, FlipbookParams, HomeAssistantParams,
+    OpenDWParams, ExternalRunParams, TaskItem, TaskParams,
+)
 from .execution_engine import ExecutionEngine
 
 __all__ = [
     "TaskType", "ButtonClickParams", "FlipbookParams",
-    "HomeAssistantParams", "TaskItem", "TaskParams",
+    "HomeAssistantParams", "OpenDWParams", "ExternalRunParams",
+    "TaskItem", "TaskParams",
     "ExecutionEngine",
     "open_floating_panel",
 ]
