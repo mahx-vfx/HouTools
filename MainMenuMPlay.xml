@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mainMenu>
+  <menuBar>
+    <!-- MPlay 专用工具集：与 Houdini 主菜单的 HouTools 工具互不混用。
+         MPlay 是独立进程、没有 .hip 场景与节点树，这里只挂能在 MPlay
+         环境里独立运行的工具。 -->
+    <subMenu id="houtools_mplay_tools_menu">
+      <insertBefore>windows_menu</insertBefore>
+      <label>HouTools</label>
+
+      <scriptItem id="houtools.mplay.sequence_to_mp4">
+        <label>Sequence to MP4...</label>
+        <scriptCode><![CDATA[
+import os, sys, hou
+# MPlay 不会把 HOUDINI_PATH/pythonX.Ylibs 自动加进 sys.path（实测菜单点击
+# 报 ModuleNotFoundError: No module named 'houtools'）。用官方
+# hou.findFiles 反查插件菜单所在目录，自己挂载，避免依赖包 env 是否重载。
+for _ht_root in {os.path.dirname(p) for p in hou.findFiles("MainMenuMPlay.xml")}:
+    _ht_p = os.path.join(_ht_root, "python%d.%dlibs" % sys.version_info[:2])
+    if not os.path.isdir(os.path.join(_ht_p, "houtools")):
+        _ht_p = os.path.join(_ht_root, "python3.13libs")
+    if os.path.isdir(os.path.join(_ht_p, "houtools")) and _ht_p not in sys.path:
+        sys.path.insert(0, _ht_p)
+try:
+    import houtools.mplaytools.dispatcher as _houtools_mplay
+except ImportError as _ht_err:
+    raise RuntimeError(
+        "HouTools: 找不到 houtools 包，请确认 HouTools 已在 MPlay 的 "
+        "HOUDINI_PATH 中（或从 Houdini 重新启动 MPlay）") from _ht_err
+_houtools_mplay.run("sequence_to_mp4")
+        ]]></scriptCode>
+      </scriptItem>
+    </subMenu>
+  </menuBar>
+</mainMenu>

@@ -3,6 +3,7 @@
     "env":
     [
         {"HOUDINI_PATH" : "$HOUDINI_PACKAGE_PATH/HouTools"},
+        {"PYTHONPATH" : {"value" : "$HOUDINI_PACKAGE_PATH/HouTools/python3.13libs", "method" : "append"}},
         {"HOUTOOLS_SETTINGS_DIR" : "$HOUDINI_USER_PREF_DIR/../HouTools/settings"},
         {"HOUTOOLS_FFMPEG" : "$HOUDINI_USER_PREF_DIR/../HouTools"}
     ]

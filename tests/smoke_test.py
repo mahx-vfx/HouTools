@@ -107,10 +107,509 @@ def _check_undefined_names():
     print("undefined-name scan OK")
 
 
+def _check_mplay_tools():
+    """MPlay 独立工具集：菜单 XML + 纯逻辑 + 真实 ffmpeg 端到端。
+
+    刻意不并入 test_about_sync 的 MENU_FILES：那是三份主程序菜单，
+    MPlay 是另一套工具集（不依赖 .hip 场景 / hou.ui / Qt）。
+    """
+    import datetime
+    import re
+    import subprocess
+    import zlib
+    import struct
+
+    menu_path = ROOT / "MainMenuMPlay.xml"
+    ET.parse(menu_path)
+    xml = menu_path.read_text(encoding="utf-8")
+    # 注释可以有中文，<label> 一律 ASCII（OPmenu 中文 label 不渲染同款坑）
+    labels = re.findall(r"<label>(.*?)</label>", xml)
+    assert labels and all(label.isascii() for label in labels)
+    assert 'id="houtools_mplay_tools_menu"' in xml
+    assert '<insertBefore>windows_menu</insertBefore>' in xml
+    assert '<label>HouTools</label>' in xml
+    assert 'MPlay Tools' not in xml
+    assert 'id="houtools.mplay.sequence_to_mp4"' in xml
+    assert '_houtools_mplay.run("sequence_to_mp4")' in xml
+    assert "sequence_to_mp4" not in (ROOT / "MainMenuCommon.xml").read_text(
+        encoding="utf-8"), "MPlay-only tool leaked into main menu"
+    # MPlay 不扫 HOUDINI_PATH/pythonX.Ylibs：菜单脚本必须自举挂 sys.path，
+    # 且包清单要有兜底 PYTHONPATH（实测菜单点击会报 ModuleNotFoundError）
+    assert 'hou.findFiles("MainMenuMPlay.xml")' in xml
+    assert "sys.path.insert(0, _ht_p)" in xml
+    assert "python3.13libs" in xml
+    pkg = json.loads((ROOT / "HouTools.json").read_text(encoding="utf-8"))
+    assert any("PYTHONPATH" in entry for entry in pkg["env"]), \
+        "package PYTHONPATH fallback missing"
+    bootstrap = re.search(
+        r"<scriptCode><!\[CDATA\[(.*?)\]\]></scriptCode>", xml, re.S).group(1)
+    bootstrap = bootstrap.split("try:")[0]
+    import types
+    with tempfile.TemporaryDirectory(prefix="houtools_mplay_boot.") as boot_dir:
+        libs_dir = os.path.join(
+            boot_dir, "python%d.%dlibs" % sys.version_info[:2], "houtools")
+        os.makedirs(libs_dir)
+        with open(os.path.join(libs_dir, "__init__.py"), "w") as fh:
+            fh.write("")
+        fake_hou = types.SimpleNamespace(
+            findFiles=lambda name: [os.path.join(boot_dir, "MainMenuMPlay.xml")])
+        saved_hou = sys.modules.get("hou")
+        saved_path = list(sys.path)
+        sys.modules["hou"] = fake_hou
+        try:
+            exec(compile(bootstrap, "<MainMenuMPlay bootstrap>", "exec"), {})
+            assert any(os.path.normcase(p).startswith(os.path.normcase(boot_dir))
+                       for p in sys.path), "bootstrap did not mount plugin libs"
+        finally:
+            sys.path[:] = saved_path
+            if saved_hou is None:
+                sys.modules.pop("hou", None)
+            else:
+                sys.modules["hou"] = saved_hou
+    # 控制台契约（用户拍板）：成功只输出纯路径；中间状态静默；
+    # 错误一条 + 可见框；MPlay 无 hou.qt 绝不调主程序 toast
+    from houtools.mplaytools import feedback
+    import contextlib
+    import io
+    import unittest
+
+    class _MPlayHou:
+        def __init__(self):
+            self.commands = []
+
+        def hscript(self, command):
+            self.commands.append(command)
+            return ("", "")
+
+    class _DevSpy:
+        def __init__(self):
+            self.calls = 0
+
+        def status(self, *args, **kwargs):
+            self.calls += 1
+
+    mplay_hou = _MPlayHou()
+    dev_spy = _DevSpy()
+    saved_hou = sys.modules.get("hou")
+    saved_dev = sys.modules.get("houtools.dev")
+    sys.modules["hou"] = mplay_hou
+    sys.modules["houtools.dev"] = dev_spy
+    try:
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            feedback.report("info msg")
+        assert captured.getvalue() == "", "info 必须完全静默"
+        assert dev_spy.calls == 0, "MPlay must not use main-window toast"
+        assert not mplay_hou.commands, "info must not pop an hscript dialog"
+
+        with unittest.TestCase().assertLogs(
+                "houtools.mplaytools.feedback", level="ERROR") as logs:
+            feedback.report("bad msg", error=True)
+        assert len(logs.output) == 1 and "bad msg" in logs.output[0]
+        assert mplay_hou.commands \
+            and mplay_hou.commands[0].startswith("message ")
+        assert dev_spy.calls == 0
+
+        result_out = io.StringIO()
+        with contextlib.redirect_stdout(result_out):
+            feedback.output_path("C:/proj/a.mp4")
+        assert result_out.getvalue() == "C:/proj/a.mp4\n", \
+            "成功时控制台只能有一行纯路径"
+
+        class _GuiHou(_MPlayHou):
+            qt = object()
+
+        sys.modules["hou"] = _GuiHou()
+        feedback.report("gui error", error=True)
+        assert dev_spy.calls == 1, "GUI branch must keep project toast"
+    finally:
+        if saved_hou is None:
+            sys.modules.pop("hou", None)
+        else:
+            sys.modules["hou"] = saved_hou
+        if saved_dev is None:
+            sys.modules.pop("houtools.dev", None)
+        else:
+            sys.modules["houtools.dev"] = saved_dev
+
+    pack_src = (ROOT / ".agents/skills/houtools-release/scripts/pack_zip.py"
+                ).read_text(encoding="utf-8")
+    assert '"MainMenuMPlay.xml"' in pack_src, "new menu not in zip manifest"
+    print("MPlay menu wiring + sys.path bootstrap + feedback: consistent")
+
+    from houtools.mplaytools import export, session
+    from houtools.videoseq.ffmpeg import (find_ffmpeg, find_ffprobe,
+                                          get_startup_kwargs)
+
+    no_hou = session.NO_HOU
+
+    def _write_png(path, width=321, height=181, rgb=(200, 90, 40)):
+        row = b"\x00" + bytes(rgb) * width
+        raw = row * height
+
+        def chunk(tag, data):
+            body = tag + data
+            return (struct.pack(">I", len(data)) + body
+                    + struct.pack(">I", zlib.crc32(body) & 0xffffffff))
+        with open(path, "wb") as fh:
+            fh.write(b"\x89PNG\r\n\x1a\n"
+                     + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height,
+                                                  8, 2, 0, 0, 0))
+                     + chunk(b"IDAT", zlib.compress(raw, 6))
+                     + chunk(b"IEND", b""))
+
+    with tempfile.TemporaryDirectory(prefix="houtools_mplay_smoke.") as td:
+        seqdir = os.path.join(td, "frames")
+        hip = os.path.join(td, "proj")
+        os.makedirs(seqdir)
+        os.makedirs(hip)
+        # 故意缺 1003：验证扫盘以真实帧为准，且 has_gaps 会提示
+        for number in (1001, 1002, 1004):
+            _write_png(os.path.join(seqdir, "shot.%04d.png" % number))
+
+        for pattern in ("shot.$F4.png", "shot.####.png",
+                        "shot.%04d.png", "shot.1002.png",
+                        "shot.*.png", "shot.????.png"):
+            spec = session.parse_sequence_line(
+                os.path.join(seqdir, pattern), hou_module=no_hou)
+            assert spec and spec.frame_count == 3, pattern
+            assert spec.frame_numbers == (1001, 1002, 1004), pattern
+            assert spec.has_gaps and not spec.is_exr
+        spec = session.parse_sequence_line(
+            os.path.join(seqdir, "shot.$F4.png"), hou_module=no_hou)
+
+        # 头部行 / N: 前缀 / 空行都要跳过
+        raw = "\n".join([
+            "Sequences:",
+            "1: " + os.path.join(seqdir, "shot.$F4.png"),
+            "",
+        ])
+        got, warnings, cleanup = session.current_sequence(
+            hou_module=no_hou, output=raw)
+        assert got.frame_count == 3 and cleanup is None
+        assert any("不连续" in w for w in warnings)
+
+        # 内存序列（拍屏/ip 渲染）：seqls -f 只返回名字 'Flipbook Images'
+        class _DumpHou:
+            def __init__(self):
+                self.dumped_dir = ""
+                self.commands = []
+
+            def hscript(self, command):
+                self.commands.append(command)
+                if command.startswith("imgsave "):
+                    pattern = command.rsplit(" ", 1)[-1]
+                    self.dumped_dir = pattern.rsplit("/", 1)[0]
+                    ext = pattern.rsplit(".", 1)[-1]
+                    numbers = (1, 2, 3)
+                    matched = re.search(r"-f\s+(\d+)\s+(\d+)", command)
+                    if matched:
+                        numbers = tuple(range(int(matched.group(1)),
+                                             int(matched.group(2)) + 1))
+                    for number in numbers:
+                        with open(os.path.join(
+                                self.dumped_dir,
+                                "frame.%d.%s" % (number, ext)), "wb") as fh:
+                            fh.write(b"")
+                    return ("", "")
+                return ("Flipbook Images\n", "")
+
+        dump_hou = _DumpHou()
+        dumped, notes, dispose = session.current_sequence(
+            hou_module=dump_hou, output="Flipbook Images\n")
+        assert dumped.frame_count == 3, dumped.files
+        assert any("内存序列" in note for note in notes)
+        assert dispose is not None
+        # 画面一致性：-g auto -p C + 8bit jpg 优先
+        assert dump_hou.commands
+        assert "-g auto -p C" in dump_hou.commands[0]
+        assert dump_hou.commands[0].endswith(".jpg")
+        assert os.path.isdir(dump_hou.dumped_dir)
+        dispose()
+        assert not os.path.exists(dump_hou.dumped_dir), "temp frames leaked"
+
+        # 用户设定播放范围 → imgsave -f 只写范围内帧
+        range_hou = _DumpHou()
+        ranged, _rnotes, dispose_range = session.current_sequence(
+            hou_module=range_hou, output="Flipbook Images\n",
+            frame_range=(2, 3))
+        assert ranged.frame_count == 2, ranged.frame_numbers
+        assert "-f 2 3" in range_hou.commands[0]
+        dispose_range()
+
+        # jpg 写不出时自动回退 png
+        class _PngOnlyHou(_DumpHou):
+            def hscript(self, command):
+                if command.startswith("imgsave ") and command.endswith(".jpg"):
+                    return ("", "jpg unsupported")
+                return super().hscript(command)
+
+        png_hou = _PngOnlyHou()
+        png_spec, _pnotes, png_dispose = session.current_sequence(
+            hou_module=png_hou, output="Flipbook Images\n")
+        assert png_spec.frame_count == 3
+        assert all(name.endswith(".png") for name in
+                   [os.path.basename(p) for p in png_spec.files])
+        png_dispose()
+
+        # 「-g auto -p C」不被接受时降级到裸 imgsave
+        class _BasicOnlyHou(_DumpHou):
+            def hscript(self, command):
+                if "-g auto" in command:
+                    return ("", "unsupported option")
+                return super().hscript(command)
+
+        basic_hou = _BasicOnlyHou()
+        basic_spec, _bnotes, basic_dispose = session.current_sequence(
+            hou_module=basic_hou, output="Flipbook Images\n")
+        assert basic_spec.frame_count == 3
+        assert any(cmd.startswith("imgsave -a ") or
+                   cmd.startswith("imgsave -f ") for cmd in basic_hou.commands)
+        basic_dispose()
+
+        # 两种格式都写不出 → 明确报错且临时目录不残留
+        class _NoFramesHou:
+            def hscript(self, command):
+                return ("", "")
+
+        try:
+            session.current_sequence(hou_module=_NoFramesHou(),
+                                     output="Flipbook Images\n")
+            raise AssertionError("expected MPlaySessionError")
+        except session.MPlaySessionError as exc:
+            assert "imgsave" in str(exc)
+
+        # 播放范围：**用户设定的是 playbackRange，不是全局 frameRange**
+        # （实机反馈「没按范围保存」的根因）
+        assert session.playback_range(hou_module=types.SimpleNamespace(
+            playbar=types.SimpleNamespace(playbackRange=lambda: [10, 15],
+                                          frameRange=lambda: [1, 240]))) \
+            == (10, 15)
+        assert session.playback_range(hou_module=types.SimpleNamespace(
+            playbar=types.SimpleNamespace(frameRange=lambda: [3, 7]))) == (3, 7)
+
+        class _FrangeHou:
+            def hscript(self, command):
+                return ("Frame range: 4 to 9\n", "") \
+                    if command == "frange" else ("", "")
+
+        assert session.playback_range(hou_module=_FrangeHou()) == (4, 9)
+        assert session.playback_range(hou_module=no_hou,
+                                      raw="Frame range: 1 to 50\n") == (1, 50)
+        assert session.playback_range(hou_module=no_hou, raw="1 6") == (1, 6)
+        assert session.playback_range(hou_module=no_hou, raw="") is None
+
+        clipped = session.filter_sequence_range(spec, (1001, 1002))
+        assert clipped.frame_numbers == (1001, 1002) and len(clipped.files) == 2
+        assert session.filter_sequence_range(spec, None).frame_count == 3
+        assert session.filter_sequence_range(spec, (9000, 9001)).frame_count == 3
+
+        # -f 不被支持时回退 -a，但**必须**仍按范围裁剪，不能全量导出
+        class _NoRangeFlagHou(_DumpHou):
+            def hscript(self, command):
+                if "-f " in command:
+                    return ("", "range flag unsupported")
+                return super().hscript(command)
+
+        noflag = _NoRangeFlagHou()
+        noflag_spec, _nn, noflag_dispose = session.current_sequence(
+            hou_module=noflag, output="Flipbook Images\n",
+            frame_range=(2, 3))
+        assert noflag_spec.frame_numbers == (2, 3), noflag_spec.frame_numbers
+        noflag_dispose()
+
+        # 帧号体系与 playbar 不同时按范围长度截前 N 帧
+        offset = _NoRangeFlagHou()
+        offset_spec, _on, offset_dispose = session.current_sequence(
+            hou_module=offset, output="Flipbook Images\n",
+            frame_range=(1001, 1002))
+        assert offset_spec.frame_count == 2, offset_spec.frame_numbers
+        offset_dispose()
+
+        # 打开的是成片所在文件夹（不再用不稳定的 explorer /select）
+        if os.name == "nt":
+            import unittest.mock as mock
+            with mock.patch.object(os, "startfile", create=True) as starter:
+                export.reveal_file(os.path.join(td, "clips", "a.mp4"))
+                assert starter.call_args[0][0] == os.path.join(td, "clips")
+
+        # 左下角开始通知：MPlay 无 hou.qt，notify 主窗需有 Qt 回退，
+        # 且 show() 后必须 processEvents（同步转码会冻结事件循环）
+        notify_src = (ROOT / "python3.13libs/houtools/ui/notify.py"
+                      ).read_text(encoding="utf-8")
+        assert "topLevelWidgets" in notify_src
+        feedback_src = (ROOT / "python3.13libs/houtools/mplaytools/feedback.py"
+                        ).read_text(encoding="utf-8")
+        assert "def start_notice" in feedback_src
+        assert "processEvents" in feedback_src
+        tool_src = (ROOT / "python3.13libs/houtools/mplaytools/tools"
+                    "/sequence_to_mp4.py").read_text(encoding="utf-8")
+        assert "feedback.start_notice(" in tool_src
+
+        # 工程目录：优先已保存 .hip 的目录，env HIP=HOME 只是启动快照
+        home_dir = os.path.expanduser("~")
+        project_dir = os.path.join(td, "project")
+        os.makedirs(project_dir, exist_ok=True)
+
+        class _SavedHip:
+            hipFile = types.SimpleNamespace(
+                path=lambda: os.path.join(project_dir, "scene.hip"))
+
+        assert session.resolve_hip(
+            hou_module=_SavedHip,
+            environ={"HIP": home_dir, "HIPNAME": "untitled"}) \
+            == os.path.normpath(project_dir)
+        assert session.resolve_hip_name(
+            hou_module=_SavedHip, environ={"HIPNAME": "untitled"}) == "scene"
+        assert session.hip_is_home(home_dir)
+        assert not session.hip_is_home(project_dir)
+
+        # 工程已保存：MPlay 自己的 hscript 变量表才是正确来源，
+        # OS env 的 HIP/HIPNAME 只是启动时的旧快照（实机 H21 反馈）
+        class _SavedMPlayHou:
+            def hscript(self, command):
+                values = {
+                    "echo $HIP": project_dir + "\n",
+                    "echo $HIPNAME": "shotA\n",
+                    "echo $HIPFILE": os.path.join(project_dir, "shotA.hip") + "\n",
+                }
+                return (values.get(command, ""), "")
+
+        mplay_env = {"HIP": home_dir, "HIPNAME": "untitled",
+                     "HIPFILE": os.path.join(home_dir, "untitled.hip")}
+        assert session.resolve_hip(hou_module=_SavedMPlayHou(),
+                                   environ=mplay_env) == os.path.normpath(project_dir)
+        assert session.resolve_hip_name(hou_module=_SavedMPlayHou(),
+                                        environ=mplay_env) == "shotA"
+        assert "hscript $HIP" in session.diagnose_hip(
+            hou_module=_SavedMPlayHou(), environ=mplay_env)
+
+        # 只有 HOME 也必须返回可写目录（上一版硬报错让工具完全不可用）
+        assert session.resolve_hip(hou_module=no_hou,
+                                   environ={"HIP": home_dir}) \
+            == os.path.normpath(home_dir)
+        assert session.resolve_hip_name(hou_module=no_hou,
+                                        environ={"HIPNAME": "untitled"}) \
+            == "untitled"
+        from houtools.mplaytools.tools import sequence_to_mp4 as _mplay_tool
+        assert _mplay_tool._usable_hip(home_dir, "untitled") is True
+        assert _mplay_tool._usable_hip("", "") is False
+
+        env = {"HOUTOOLS_MPLAY_HIP": hip,
+               "HOUTOOLS_MPLAY_HIPNAME": "myScene"}
+        assert session.resolve_hip(hou_module=no_hou, environ=env) \
+            == os.path.normpath(hip)
+        assert session.resolve_hip_name(hou_module=no_hou, environ=env) \
+            == "myScene"
+        assert session.session_fps(hou_module=no_hou) == 24.0
+
+        day = datetime.date(2026, 11, 25)
+        first = export.versioned_output_path(hip, "myScene", day)
+        assert first.endswith(os.path.join("Flipbook", "2026-11-25",
+                                           "myScene.v001.mp4"))
+        folder = os.path.dirname(first)
+        os.makedirs(folder, exist_ok=True)
+        with open(first, "wb") as fh:
+            fh.write(b"x")
+        with open(os.path.join(folder, "myScene.v009.mp4"), "wb") as fh:
+            fh.write(b"x")
+        assert export.versioned_output_path(hip, "myScene", day).endswith(
+            "myScene.v010.mp4")
+
+        text = export.concat_text(spec.files, 24.0)
+        assert text.count("file '") == 3
+        assert "duration 0.041666667" in text
+        assert export.concat_quote("a'b") == "'a'\\''b'"
+        assert export.pick_encoder(" V....D libopenh264 OpenH264") \
+            == "libopenh264"
+        assert export.pick_encoder(" V....D libx264 x\n V....D libopenh264 y") \
+            == "libx264"
+        assert export.pick_encoder("") == "libopenh264"
+
+        cmd = export.build_ffmpeg_command(
+            "ffmpeg", "frames.txt", first, 24.0, "libopenh264")
+        assert cmd[cmd.index("-f") + 1] == "concat"
+        assert "-r" in cmd and "-apply_trc" not in cmd
+        assert "-crf" not in cmd and "-b:v" in cmd
+        exr_cmd = export.build_ffmpeg_command(
+            "ffmpeg", "frames.txt", first, 24.0, "libopenh264", exr=True)
+        assert "-apply_trc" in exr_cmd and "iec61966_2_1" in exr_cmd
+        x264_cmd = export.build_ffmpeg_command(
+            "ffmpeg", "frames.txt", first, 24.0, "libx264")
+        assert "-crf" in x264_cmd and "-b:v" not in x264_cmd
+
+        # 失败回滚：不留半成品 mp4 / 空日期目录（否则下次版本扫描会跳号），
+        # 且不碰目录里别人的既有文件
+        import types
+
+        class _FailRun:
+            def __init__(self, out):
+                self.out = out
+
+            def __call__(self, cmd):
+                if "-encoders" in cmd:
+                    return types.SimpleNamespace(
+                        stdout=" V....D libx264 x", stderr="", returncode=0)
+                os.makedirs(os.path.dirname(self.out), exist_ok=True)
+                with open(self.out, "wb") as fh:
+                    fh.write(b"partial")
+                return types.SimpleNamespace(stdout="", stderr="boom",
+                                            returncode=1)
+
+        fail_out = os.path.join(td, "failed", "2026-11-25", "clip.v001.mp4")
+        try:
+            export.run_export(spec, fail_out, 24.0, "ffmpeg",
+                              runner=_FailRun(fail_out))
+            raise AssertionError("expected MPlayExportError")
+        except export.MPlayExportError:
+            pass
+        assert not os.path.exists(fail_out), "partial mp4 leaked"
+        assert not os.path.isdir(os.path.dirname(fail_out)), \
+            "empty date folder leaked"
+
+        keep_dir = os.path.join(td, "keep")
+        os.makedirs(keep_dir)
+        keep_file = os.path.join(keep_dir, "other.mp4")
+        with open(keep_file, "wb") as fh:
+            fh.write(b"keep")
+        fail_out2 = os.path.join(keep_dir, "clip.v001.mp4")
+        try:
+            export.run_export(spec, fail_out2, 24.0, "ffmpeg",
+                              runner=_FailRun(fail_out2))
+            raise AssertionError("expected MPlayExportError")
+        except export.MPlayExportError:
+            pass
+        assert not os.path.exists(fail_out2)
+        assert os.path.isfile(keep_file), "existing file must survive rollback"
+
+        # 真实 ffmpeg 端到端：缺帧序列仍应输出全部 3 帧、24fps、偶数宽高
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg:
+            print("MPlay export E2E skipped (ffmpeg not found)")
+        else:
+            out = os.path.join(td, "e2e.mp4")
+            result, codec = export.run_export(spec, out, 24.0, ffmpeg)
+            assert os.path.getsize(result) > 0 and codec
+            probe = find_ffprobe(ffmpeg)
+            assert probe, "ffprobe missing next to ffmpeg"
+            done = subprocess.run(
+                [probe, "-v", "error", "-show_entries",
+                 "stream=nb_frames,avg_frame_rate,width", "-of",
+                 "default=nw=1", result],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", **get_startup_kwargs())
+            assert "nb_frames=3" in done.stdout, done.stdout
+            assert "avg_frame_rate=24/1" in done.stdout, done.stdout
+            assert "width=320" in done.stdout, done.stdout
+            print("MPlay export E2E OK (%s)" % codec)
+    print("MPLAY TOOLS pure logic OK")
+
+
 def main():
     for menu_file in ("MainMenuCommon.xml", "NetworkViewMenu.xml", "OPmenu.xml"):
         ET.parse(ROOT / menu_file)
     print("menu XMLs: well-formed")
+    _check_mplay_tools()
 
     # 粘贴为 Object Merge:入口在网络编辑器菜单(item id 用 pane.wsheet.*
     # 前缀,热键符号随之);主菜单的设置窗口条目已吞并旧快捷键设置项

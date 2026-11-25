@@ -1,7 +1,8 @@
 """Toast 通知（主窗左下角，全仓状态反馈的统一出口）。
 
 结构与定稿决策（2026-11 用户逐项拍板，实机调试数据见 dev-notes/notify.md）：
-- 顶层 Tool 无边框小窗挂 hou.qt.mainWindow() 名下：不进任务栏、不抢焦点
+- 顶层 Tool 无边框小窗挂主窗名下（Houdini 走 hou.qt.mainWindow()，
+  MPlay 无 hou.qt 时回退 Qt topLevelWidgets 挑最大可见主窗）：不进任务栏、不抢焦点
   （WA_ShowWithoutActivating）、随主窗最小化隐藏；渐透走 windowOpacity
   （系统合成通道——QGraphicsOpacityEffect 撞 QSS、QSS background 撞
   半透明顶层窗，两者在 Houdini Qt 上都不可靠）
@@ -150,12 +151,29 @@ def _dispatch_to_main(message, level, duration):
 
 
 def _main_window():
-    """取主窗；无头/异常环境抛 RuntimeError，由 show() 的兜底接住。"""
-    import hou
-    win = hou.qt.mainWindow()
-    if win is None:
-        raise RuntimeError("hou.qt.mainWindow() is None (headless?)")
-    return win
+    """取主窗；无头/异常环境抛 RuntimeError，由 show() 的兜底接住。
+
+    MPlay 的 ``hou`` 没有 ``hou.qt``（实机 AttributeError），但它仍是
+    Qt 应用：这里回退从 ``QApplication.topLevelWidgets()`` 里挑最大的
+    可见主窗，让同一套左下角 toast 在 MPlay 里也能显示。
+    有 ``hou.qt`` 时行为完全不变。
+    """
+    import hou  # 完全无 hou 的无头环境直接抛出，保持原有降级语义
+    try:
+        win = hou.qt.mainWindow()
+        if win is not None:
+            return win
+    except Exception:
+        pass
+    # 有 hou 但缺 hou.qt（MPlay）：才用 Qt 自己找主窗
+    app = QtWidgets.QApplication.instance()
+    widgets = [w for w in (app.topLevelWidgets() if app is not None else [])
+               if w.isVisible() and w.isWindow()
+               and w.width() >= 400 and w.height() >= 300]
+    if not widgets:
+        raise RuntimeError("no Qt main window available (headless?)")
+    widgets.sort(key=lambda w: w.width() * w.height(), reverse=True)
+    return widgets[0]
 
 
 def _fade_ms(level, duration):

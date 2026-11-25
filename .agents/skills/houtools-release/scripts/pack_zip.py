@@ -45,7 +45,8 @@ import uuid
 import zipfile
 from pathlib import Path
 
-FILES = ["README.md", "LICENSE", "MainMenuCommon.xml", "NetworkViewMenu.xml", "OPmenu.xml"]
+FILES = ["README.md", "LICENSE", "MainMenuCommon.xml",
+         "MainMenuMPlay.xml", "NetworkViewMenu.xml", "OPmenu.xml"]
 DIRS = ["python3.11libs", "python3.13libs", "python_panels", "scripts", "docs"]
 MANIFEST = "HouTools.json"  # zip top level, next to PACKAGE_DIR
 PACKAGE_DIR = "HouTools"
