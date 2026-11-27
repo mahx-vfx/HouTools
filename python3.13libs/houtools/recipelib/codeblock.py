@@ -1014,7 +1014,7 @@ _NETWORK_HINTS = {
 
 def check_parm_writable(parm):
     """代码参数写入前预检关键帧/表达式/channel reference：可写返回 None，
-    否则返回原因（供调用方拼进跳过列表/状态栏）。
+    否则返回原因（供调用方拼进跳过列表/Toast）。
 
     ⚠ 三态预检（2026-10 复审补，与 paste_bbox 的 deleteAllKeyframes 教训
     同源）：不预检直接 set 有三种静默失效——参数带表达式时 set() 不生效
@@ -1111,7 +1111,7 @@ def create_node_with_code(parent, language, code, display_label="",
     """在 parent 网络里创建对应节点并填入代码（拖代码块进网络编辑器）。
 
     仅 SOP 网络（attribwrangle / python SOP 都是 SOP 类）；层级不符抛
-    RuntimeError（中文提示，browser 推状态栏红字）。节点名取显示名的
+    RuntimeError（中文提示，browser 发 warning Toast）。节点名取显示名的
     ASCII token（中文显示名不进节点名——节点名 charset 限制，显示层
     不受影响）。创建失败不残留半截节点。
     """

@@ -1,5 +1,4 @@
-"""状态栏信号闪烁：成功绿 / 失败红的背景脉冲反馈（Recipe Library 与
-HDR Library 共用，2026-10-21 从 recipelib/browser.py 提取）。
+"""状态栏信号闪烁：成功绿 / 失败红的背景脉冲反馈（HDR Library 使用）。
 
 QVariantAnimation 关键帧 0→0.12 峰值→0 共 900ms 淡出，背景 rgba 色 +
 对比色文字圆角（样式选择器要求目标 QLabel 的 objectName 为 statusLabel），

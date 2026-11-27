@@ -537,7 +537,7 @@ def _read_tool_network_categories(name):
 class ContextMismatch(RuntimeError):
     """recipe 与目标网络层级不匹配。
 
-    这是预期内的用户操作反馈（层级点错了），UI 红字提示即可——
+    这是预期内的用户操作反馈（层级点错了），UI 发 warning Toast 即可——
     调用方不得把它当程序错误打日志/堆栈。
     """
 

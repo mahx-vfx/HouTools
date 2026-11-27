@@ -121,8 +121,8 @@ Hotkey Manager 中修改，符号为 `h.pane.wsheet.houtools_paste_as_object_mer
 | LOP → ROP | usdrender `XXX` |
 
 未列出的组合一律跳过；路径参数细则见 `houtools/tools/paste_as_object_merge.py` 模块 docstring。
-源路径取 OS 剪贴板文本（引用语义必须有"原件路径"），文本失效时直接拒绝并在状态栏
-按原因提示重新复制（不粘贴副本，避免目标网络多出副本节点）。整次操作占用单个 undo 槽。
+源路径取 OS 剪贴板文本（引用语义必须有"原件路径"），文本失效时直接拒绝并通过左下角
+Toast 按原因提示重新复制（不粘贴副本，避免目标网络多出副本节点）。整次操作占用单个 undo 槽。
 
 ### 复制输出路径
 
@@ -188,7 +188,7 @@ File > Import > Alembic Scene... / File > Import > Filmbox FBX...）：
 `size` / `t`（`sizex/y/z ← bbox(A, ...)`、`tx/y/z ← centroid(A, ...)`）：
 
 - **Paste Absolute Values [HT]**：求值后直接写入；B 参数已有的表达式/
-  关键帧清除替换，锁定参数跳过并在状态栏提示
+  关键帧清除替换，锁定参数跳过并通过左下角 Toast 提示
 - **Paste Expressions [HT]**：写入 `bbox()` / `centroid()` 表达式，A 变动
   时 B 实时跟随；A 与 B 同网络用相对路径（`../A`），跨层级用绝对路径
 - 绝对值与表达式走同一套表达式函数求值，两种模式结果一致；整次操作单个
@@ -205,7 +205,7 @@ File > Import > Alembic Scene... / File > Import > Filmbox FBX...）：
 - **Paste Absolute Values [HT]**：求值后直接写入
 - **Paste Expressions [HT]**：写入 `centroid()` 链接表达式，A 或 B 变动时
   transform 实时跟随；A 与 B 同网络用相对路径（`../A`），跨层级用绝对路径
-- transform 按 B 所在网络类别创建（SOP/LOP/COP；其余上下文状态栏提示）；
+- transform 按 B 所在网络类别创建（SOP/LOP/COP；其余上下文通过左下角 Toast 提示）；
   整次操作单个 undo 槽；源或目标有 cook 错误时不创建；源与目标是同一
   节点时跳过
 
@@ -329,8 +329,9 @@ Tab 菜单里的 session tool 从会话开始可用。recipe 的创建走 Houdin
   空白处创建对应节点并填码；语言不匹配的拖入自动拒绝（编辑器通路在拖放层
   拦截、写入不执行，网络通路不并入也不凭空创建异语言节点）；搜索含代码全文
 - **应用**：双击卡片 = 官方工具架体验（参数照抄，视角不拉远），拖拽到网络 = 在落点对齐创建；
-  应用前做网络层级匹配检查（如 SOP recipe 进 LOP 网络会给出中文提示）；应用成功时
-  底部状态栏绿色闪烁反馈、失败红色闪烁；同一配方 1.2 秒内的重复应用自动去重（防双击/拖拽连发
+  应用前做网络层级匹配检查（如 SOP recipe 进 LOP 网络会通过项目统一的左下角 Toast
+  给出中文提示）；拖拽过程不显示面板内文字通知，也不发 Toast，布局保持不变；
+  应用成功发绿色 Toast、失败发红色 Toast；同一配方 1.2 秒内的重复应用自动去重（防双击/拖拽连发
   重复创建，失败不占去重窗口、可立即重试）
 - **元数据**：自定义显示名（支持中文）、标签（可自定义颜色）、颜色、收藏存
   配置目录的 `recipelib.json`，缩略图存配置目录 `recipe_thumbs/`（相对路径存储，配置目录挪动不失效）；

@@ -40,7 +40,7 @@ Houdini 对每一次文件拖放（落到主窗口任意面板）都会查找 HO
     SOPs 两项——``unlock_geometry=True, unlock_deformations=True`` 传参后
     导入即无锁（无头实测零锁节点、cook 正常），无需事后遍历解锁；
   - 钩子内裸抛异常时 Houdini 会把拖入文件当 hip 文件打开（弹错误框），因此
-    drop_accept 全程兜底：记日志 + 状态栏提示 + return True。
+    drop_accept 全程兜底：记日志 + Toast 提示 + return True。
 """
 
 import os

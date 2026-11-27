@@ -2,7 +2,7 @@
 
 布局：顶部工具栏（刷新/设置/搜索/大小）+ 左侧树形栏（全部/收藏/节点参数/
 子菜单▸/标签▸/层级▸，段头整行点击折叠展开）+ 中部缩略图网格 + 右侧预览面板
-（动图预览/元信息/标签编辑）+ 底部状态栏。设置面板（ShareX 式左分类右内容）
+（动图预览/元信息/标签编辑）。设置面板（ShareX 式左分类右内容）
 承载库目录管理与数据导入/导出（transfer.py，.zip 交换包），后续设置项往里加页。
 
 交互（四类 recipe 语义不同，见 store.apply_*）：
@@ -42,7 +42,6 @@ from houtools.ui.sidebar import (SIDEBAR_COLOR_ROLE, SIDEBAR_COUNT_ROLE,
 from houtools.ui.badge import WARNING_BADGE_SVG, FavoriteBadge
 from houtools.ui.dialogs import info, localize_buttons, localize_color_dialog, warn
 from houtools.ui.taskbar import apply_appwindow_flags
-from houtools.ui.status_flash import StatusFlash
 from houtools.core.settings import JsonStore
 
 log = get_logger("recipelib.browser")
@@ -54,15 +53,6 @@ TOOL_ID = "recipe_library"
 # python SOP → maintainstate。见 _refresh_dropped_editor_display。
 _CARRIER_PARM_NAMES = ("autobind", "maintainstate")
 _REFRESH_TOGGLE_DELAY_MS = 150
-
-
-def _push_houdini_error(message, severity="error"):
-    """把失败/拒绝推到 Houdini 左下角（toast 通知；severity 语义不变）。
-
-    面板自身状态栏也有同款文案；这里保证用户视线留在网络编辑器时
-    也能看到。无头自动降级 logger。
-    """
-    status("Recipe Library: {}".format(message), severity=severity)
 
 
 def _cover_crop(src, w, h):
@@ -1577,15 +1567,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([190, 740, 300])
 
-        self.status = QtWidgets.QLabel("双击卡片应用；或按住卡片拖入网络编辑器。")
-        self.status.setObjectName("statusLabel")
-        self.status.setTextFormat(QtCore.Qt.PlainText)
-        self._status_flash = StatusFlash(self.status)
-
         lay = QtWidgets.QVBoxLayout(self)
         lay.addLayout(top)
         lay.addWidget(self.splitter, 1)
-        lay.addWidget(self.status)
 
         self.refresh_btn.clicked.connect(self.reload)
         self.settings_btn.clicked.connect(self._open_settings)
@@ -1663,24 +1647,15 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                         ", ".join(clashes))
         self._info_by_name.update(code_by_name)
         self._rebuild_sidebar()
-        if self._recipes or self._code_infos:
-            # 与侧栏行计数/网格 total 同一口径：按显示开关过滤（代码块
-            # 开关关闭时状态栏总数不能把它原样计入）
-            visible = sum(1 for r in self._recipes if self._type_visible(r))
-            visible += sum(1 for c in self._code_infos
-                           if self._type_visible(c))
-            note = "，共 {} 个".format(visible)
-        else:
-            note = "；请先在「设置 ▸ 库目录」配置库文件夹"
-        self._apply_filter(note=note)
+        self._apply_filter()
         if error_text:
-            # _apply_filter 会写状态栏（分类计数），错误文案必须在其后
-            # 写入才能露出来（旧版顺序即如此）
-            self.status.setText(error_text)
+            status(error_text, severity="error")
         elif clashes:
-            self.status.setText(
+            status(
                 "警告：代码块与配方重名（{}），同名配方卡片不可达"
-                .format("、".join(clashes)))
+                .format("、".join(clashes)), severity="warning")
+        elif not self._recipes and not self._code_infos:
+            status("请先在「设置 ▸ 库目录」配置库文件夹", severity="warning")
 
     # ---------------- 设置面板：库目录 / 导入导出 ----------------
 
@@ -1760,7 +1735,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             warn(parent, "导出失败", str(exc))
             return
         if summary is None:
-            self.status.setText("导出已取消")
+            status("导出已取消", severity="info")
             return
         _UI_SETTINGS.set("last_export_dir", os.path.dirname(zip_path))
         msg = ("导出完成：{} 个配方、代码块 {} 个（文档 {} 份、缩略图 {} 张、"
@@ -1768,7 +1743,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                .format(summary["recipes"], summary["code_blocks"],
                        summary["docs"], summary["thumbs"], summary["hda"],
                        summary["path"]))
-        self.status.setText("导出完成 → {}".format(summary["path"]))
+        status("导出完成 → {}".format(summary["path"]), severity="success")
         info(parent, "导出完成", msg)
 
     @staticmethod
@@ -1856,7 +1831,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             warn(parent, "导入失败", str(exc))
             return
         if result is None:
-            self.status.setText("导入已取消")
+            status("导入已取消", severity="info")
             return
         if lib_dir:
             dirs = metadata.get_lib_dirs()
@@ -1876,7 +1851,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                        ("；跳过库文件 {} 个（同名冲突）"
                         .format(len(result["hda_skipped"]))
                         if result["hda_skipped"] else "")))
-        self.status.setText("导入完成：配方 {} 个".format(len(s["recipes"])))
+        status("导入完成：配方 {} 个".format(len(s["recipes"])),
+               severity="success")
         info(parent, "导入完成", msg)
 
     def _type_visible(self, info):
@@ -2124,7 +2100,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         if empty:
             self._empty_state.setGeometry(self.list.viewport().rect())
 
-    def _apply_filter(self, note=""):
+    def _apply_filter(self):
         """重建网格条目（hdrlight 同款结论：IconMode+gridSize 下
         setHidden 的条目仍占槽位，必须重建式过滤）。重建会丢选中态——
         按内部名恢复，否则元数据操作（改标签/收藏等）之后
@@ -2146,8 +2122,6 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         entries += [c for c in self._code_infos
                     if self._type_visible(c) and self._match_category(c)
                     and self._match_search(c)]
-        total = (sum(1 for r in self._recipes if self._type_visible(r))
-                 + sum(1 for c in self._code_infos if self._type_visible(c)))
         self.list.setUpdatesEnabled(False)
         self.list.blockSignals(True)
         try:
@@ -2172,10 +2146,6 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     self.list.blockSignals(False)
                     break
         self._update_empty_state()
-        self.status.setText("{}：{}/{} 个{}。{}{}".format(
-            self._category_label(), len(entries), total,
-            "代码块" if self._category_key == KEY_CODE else "recipe", note,
-            "双击应用；或按住拖入网络编辑器。"))
         current = self.list.currentItem()
         if current is None:
             self._clear_preview()
@@ -2579,29 +2549,14 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
     # ---------------- 应用（双击 / 按钮） ----------------
 
-    def _status_success(self, text):
-        """成功反馈：状态栏文本 + 绿色高亮闪烁一下（2026-10 用户指定，
-        双击/拖拽应用成功时一眼可见）。失败路径走 _status_error 红闪
-        （2026-10-21 用户指定）。闪烁器为 ui.status_flash.StatusFlash
-        共享实现（HDR Library 同款）。"""
-        self._status_flash.success(text)
-
-    def _status_error(self, text):
-        """失败反馈：状态栏文本 + 红色高亮闪烁一下（与 _status_success
-        同款脉冲、项目错误色 ERROR）。只用于真实失败；前置未满足的
-        引导文案不闪，保持纯文字。"""
-        self._status_flash.error(text)
-
     # 同一配方重复应用去重窗口（秒）：双击序列偶尔会漏进第二发（拖拽
-    # 落网后紧跟的平台级 DblClick、事件循环重入、连点节奏尾巴等），表现
-    # 为状态栏连闪两次 + 节点/代码重复创建。窗口必须盖过闪烁时长
-    # （900ms）——曾取 0.75s，淡出尾段（0.75~0.9s）到达的重复投递恰好
-    # 逃出闸门二次起脉冲
+    # 落网后紧跟的平台级 DblClick、事件循环重入、连点节奏尾巴等），会
+    # 造成重复通知与节点/代码重复创建。
     APPLY_DEDUP_WINDOW = 1.2
 
     def _apply_gated(self, info, apply_fn):
         """入口层同配方去重：窗口内的重复应用直接吞掉（不刷时间戳，让
-        下一次真正点击在窗口期满后正常触发），被吞时给一句状态栏反馈、
+        下一次真正点击在窗口期满后正常触发），被吞时给一句 toast 反馈、
         不静默。apply_fn 返回 False（未真正应用）或抛异常都回滚时间戳
         ——失败不占闸，修正层级后可立即重试。gate 在用户入口层，
         _apply_recipe 返回是否真正应用但自身吞异常（smoke test 直接调它）。"""
@@ -2609,8 +2564,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         last = getattr(self, "_last_apply", None)
         if last is not None and last[0] == info.name \
                 and now - last[1] < self.APPLY_DEDUP_WINDOW:
-            self.status.setText("（{} 的重复应用已忽略，稍候再试）".format(
-                self._display_label(info)))
+            status("（{} 的重复应用已忽略，稍候再试）".format(
+                self._display_label(info)), severity="info")
             return False
         self._last_apply = (info.name, now)
         try:
@@ -2628,7 +2583,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self._apply_gated(info, lambda: self._apply_recipe(info))
 
     def _apply_recipe(self, info):
-        """按类型分发应用；错误进状态栏不打断窗口。
+        """按类型分发应用；错误进 toast 通知，不打断窗口。
 
         Tool 走官方工具架参数（立即在当前网络创建并 frame 框选），
         与"点工架按钮"同体验；预设/装饰类需要先选中目标节点。
@@ -2642,9 +2597,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 # 无匹配参数的节点逐个跳过并汇报
                 nodes = store.selected_nodes()
                 if not nodes:
-                    self.status.setText(
+                    status(
                         "代码块：请先在场景中选中目标节点"
-                        "（双击 = 把代码追加到选中节点的代码参数）")
+                        "（双击 = 把代码追加到选中节点的代码参数）",
+                        severity="warning")
                     return False
                 appended, skipped = codeblock.append_to_nodes(
                     nodes, info.language, info.code)
@@ -2658,59 +2614,61 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     msg += "；跳过 {} 个（{}）".format(len(skipped),
                                                       skipped[0])
                 if appended:
-                    self._status_success(msg)   # 全部/部分成功都闪烁
+                    status(msg, severity="success")
                 else:
-                    self._status_error(msg)   # 全失败红色闪烁
-                    _push_houdini_error(msg, severity="warning")
+                    status(msg, severity="error")
                     return False
                 return True
             elif info.category == "tool":
                 editor = store.current_network_editor()
                 if editor is None:
-                    self.status.setText("找不到网络编辑器面板，请先打开一个网络视图")
+                    status("找不到网络编辑器面板，请先打开一个网络视图",
+                           severity="warning")
                     return False
                 store.apply_tool_recipe(info.name, pane=editor, mode="shelf")
-                self._status_success("已把「{}」创建到当前网络".format(
-                    info.display_label))
+                status("已把「{}」创建到当前网络".format(
+                    info.display_label), severity="success")
                 return True
             elif info.category == "node":
                 nodes = store.selected_nodes()
                 if not nodes:
-                    self.status.setText("Node 预设：请先在场景中选中目标节点")
+                    status("Node 预设：请先在场景中选中目标节点",
+                           severity="warning")
                     return False
                 store.apply_node_preset(info.name, nodes[0])
-                self._status_success("已把预设应用到 {}".format(nodes[0].path()))
+                status("已把预设应用到 {}".format(nodes[0].path()),
+                       severity="success")
                 return True
             elif info.category == "parm":
                 nodes = store.selected_nodes()
                 if not nodes:
-                    self.status.setText("参数预设：请先在场景中选中目标节点")
+                    status("参数预设：请先在场景中选中目标节点",
+                           severity="warning")
                     return False
                 store.apply_parm_preset(info.name, nodes[0])
-                self._status_success("已把参数预设应用到 {}".format(nodes[0].path()))
+                status("已把参数预设应用到 {}".format(nodes[0].path()),
+                       severity="success")
                 return True
             elif info.category == "decoration":
                 nodes = store.selected_nodes()
                 if not nodes:
-                    self.status.setText("Decoration：请先选中中心节点")
+                    status("Decoration：请先选中中心节点", severity="warning")
                     return False
                 store.apply_decoration(info.name, nodes[0])
-                self._status_success("已把装饰应用到 {}".format(nodes[0].path()))
+                status("已把装饰应用到 {}".format(nodes[0].path()),
+                       severity="success")
                 return True
             else:
-                self.status.setText(
-                    "类型 {} 暂不支持面板内应用，请用官方菜单".format(info.category))
+                status(
+                    "类型 {} 暂不支持面板内应用，请用官方菜单".format(info.category),
+                    severity="warning")
                 return False
         except store.ContextMismatch as exc:
-            # 预期内的操作反馈（层级点错）：面板红闪提示即可，控制台保持
-            # 安静；Houdini 状态栏推黄字（拒绝，未写入任何东西）
-            self.status.setText(str(exc))
-            _push_houdini_error(str(exc), severity="warning")
+            status(str(exc), severity="warning")
             return False
         except Exception as exc:
             log.warning("apply %s failed: %s", info.name, exc, exc_info=True)
-            self.status.setText("应用失败: {}".format(exc))
-            _push_houdini_error(str(exc))
+            status("应用失败: {}".format(exc), severity="error")
             return False
 
     # ---------------- 拖拽进网络编辑器 ----------------
@@ -2723,10 +2681,11 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             if getattr(info, "is_code", False):
                 self._start_code_drag(info)
                 return
-            self.status.setText(
+            status(
                 "{} 是 {} 类型：请先选中目标节点后双击应用（拖拽仅支持 Tool）"
                 .format(self._display_label(info),
-                        store.CATEGORY_LABELS.get(info.category, info.category)))
+                        store.CATEGORY_LABELS.get(info.category, info.category)),
+                severity="warning")
             return
         icon = self._base_icon(info)
         pm = icon.pixmap(56, 56)
@@ -2742,7 +2701,6 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         ghost.show()
         self._drag_state = {"info": info, "ghost": ghost}
         QtWidgets.QApplication.instance().installEventFilter(self)
-        self.status.setText("拖到目标网络编辑器上松手放置（Esc 取消）")
 
     def eventFilter(self, obj, event):
         if obj is self.list.viewport()                 and event.type() == QtCore.QEvent.Type.Resize:
@@ -2794,7 +2752,6 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         info = state["info"]
         pane = store.network_editor_under_cursor()
         if pane is None:
-            self.status.setText("落点不在网络编辑器上，已取消放置")
             return
         position = None
         try:
@@ -2808,21 +2765,16 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
         try:
             if self._apply_gated(info, _do_apply):
-                self._status_success("已在当前网络中创建 {}".format(
-                    self._display_label(info)))
+                status("已在当前网络中创建 {}".format(
+                    self._display_label(info)), severity="success")
         except store.ContextMismatch as exc:
-            # 预期内的操作反馈（层级点错）：面板红闪提示即可，控制台保持
-            # 安静；Houdini 状态栏推黄字（拒绝，未写入任何东西）
-            self.status.setText(str(exc))
-            _push_houdini_error(str(exc), severity="warning")
+            status(str(exc), severity="warning")
         except Exception as exc:
             log.warning("drag apply %s failed: %s", info.name, exc, exc_info=True)
-            self._status_error("创建失败: {}".format(exc))
-            _push_houdini_error(str(exc))
+            status("创建失败: {}".format(exc), severity="error")
 
     def _cancel_drag(self):
         self._teardown_drag()
-        self.status.setText("已取消拖拽")
 
     def _teardown_drag(self):
         state = self._drag_state
@@ -2837,7 +2789,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
     def _code_drop_language_ok(self):
         """Drop 落点语言检查：光标下参数面板显示的代码节点与拖拽卡片
         同语言（或根本不是代码编辑器）返回 True 放行；异语言返回 False
-        并给出红色提示。识别不了也放行——无法确定就不拦。"""
+        并给出 toast 提示。识别不了也放行——无法确定就不拦。"""
         info = getattr(self, "_code_drag_info", None)
         if info is None:
             return True
@@ -2857,8 +2809,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         msg = "{} 代码块不能拖入 {} 编辑器（{}）".format(
             codeblock.LANGUAGE_LABELS[info.language],
             codeblock.LANGUAGE_LABELS[node_lang], node.path())
-        self._status_error(msg)
-        _push_houdini_error(msg, severity="warning")
+        status(msg, severity="warning")
         return False
 
     def _start_code_drag(self, info):
@@ -2882,7 +2833,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
            是好的）；语言错配（Python 卡拖进 VEX 编辑器或反向）在拖放
            层拦截：Drop 事件流经应用过滤器，目标是异语言代码编辑器时
            直接吞掉——写入根本不发生；过滤器识别不了的旁路落点事后只
-           红闪提示。
+           给 toast 提示。
         拖在网络编辑器上：原生落点不接受外来文本（exec 返回 Ignore），
         落点命中同语言代码节点 → NodeCodeDialog 并入；异语言代码节点 →
         拒绝（不并入不创建）；空白 → 创建对应节点并填码（同 recipe
@@ -2915,8 +2866,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             QtWidgets.QApplication.instance().removeEventFilter(self)
         drag.deleteLater()
         pane = store.network_editor_under_cursor()
-        # 拖拽落网后紧跟的平台级 DblClick 会再跑一次 _apply_recipe（闪烁
-        # 中途二次高亮 + 选中节点被误追加），与 _finish_drag 同款：先盖
+        # 拖拽落网后紧跟的平台级 DblClick 会再跑一次 _apply_recipe（重复
+        # 通知 + 选中节点被误追加），与 _finish_drag 同款：先盖
         # 去重时间戳，让紧跟的第二发被 _apply_gated 吞掉。中途取消（落点
         # 无效且不在任何网络编辑器上）没有落网、没有尾巴——盖了闸反而把
         # 随后 1.2s 内的正常双击吞掉且不刷时间戳
@@ -2929,7 +2880,6 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self._refresh_dropped_editor_display(language=info.language)
             return
         if pane is None:
-            self.status.setText("已取消拖拽")
             return
         # 拖在已有代码节点上：同语言 → 弹自建编辑器并入；异语言 → 拒绝
         # （不并入、也不 fallback 成在旁边凭空创建异语言节点）；空白或
@@ -2947,8 +2897,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 msg = "{} 代码块不能拖入 {} 代码节点 {}（语言不匹配）".format(
                     codeblock.LANGUAGE_LABELS[info.language],
                     codeblock.LANGUAGE_LABELS[target_lang], target.path())
-                self._status_error(msg)
-                _push_houdini_error(msg, severity="warning")
+                status(msg, severity="warning")
                 return
             parm_name = codeblock.code_parm_name(target, info.language)
             parm = target.parm(parm_name) if parm_name else None
@@ -2962,8 +2911,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             if reason:
                 msg = "并入已跳过：{} {}".format(target.path(), reason)
                 log.warning(msg)
-                self._status_error(msg)
-                _push_houdini_error(msg, severity="warning")
+                status(msg, severity="warning")
                 return
             try:
                 existing = parm.unexpandedString()
@@ -2986,11 +2934,10 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     parm.set(code_out, follow_parm_reference=False)
             except Exception as exc:
                 log.warning("merge code failed: %s", exc, exc_info=True)
-                self._status_error("并入失败: {}".format(exc))
-                _push_houdini_error(str(exc))
+                status("并入失败: {}".format(exc), severity="error")
                 return
-            self._status_success("已把「{}」并入 {}".format(
-                self._display_label(info), target.path()))
+            status("已把「{}」并入 {}".format(
+                self._display_label(info), target.path()), severity="success")
             return
         position = None
         try:
@@ -3005,12 +2952,11 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 node = codeblock.create_node_with_code(
                     pane.pwd(), info.language, info.code,
                     self._display_label(info), position)
-            self._status_success("已在当前网络创建 {} 并填入代码".format(
-                node.name()))
+            status("已在当前网络创建 {} 并填入代码".format(
+                node.name()), severity="success")
         except Exception as exc:
             log.warning("code drag create failed: %s", exc, exc_info=True)
-            self._status_error("创建失败: {}".format(exc))
-            _push_houdini_error(str(exc))
+            status("创建失败: {}".format(exc), severity="error")
 
     def _refresh_dropped_editor_display(self, language=None):
         """原生落点写入后触发参数面板整体重建，修复 GL 编辑器多行拖放
@@ -3026,11 +2972,11 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         跳），QTimer 延迟后翻回来（第二跳）——各触发一次重建，结束时
         旗标归位、面板外观零变化（载体选在用户看不到的位置：autobind
         在 wrangle 第二栏 Bindings）。参数值零触碰。
-        语言错配只红闪提示不做撤销：正常情况下错配 Drop 已在事件过滤
+        语言错配只给 toast 提示不做撤销：正常情况下错配 Drop 已在事件过滤
         器层被吞掉（根本不会写进来），走到这里说明落点绕过了拦截（浮
         动窗等旁路），不可靠的事后撤销比如实提示更糟。
         识别失败/无载体一律静默返回（普通文本框的原生落点显示本来就是
-        好的）；锁定 HDA 等修改被拒 → 状态栏提示。"""
+        好的）；锁定 HDA 等修改被拒 → toast 提示。"""
         import hou
         tab = None
         try:
@@ -3050,8 +2996,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 msg = "{} 代码块不能拖入 {} 编辑器（{}）".format(
                     codeblock.LANGUAGE_LABELS[language],
                     codeblock.LANGUAGE_LABELS[node_lang], node.path())
-                self._status_error(msg)
-                _push_houdini_error(msg, severity="warning")
+                status(msg, severity="warning")
                 return
         ptg = None
         if node is not None:
@@ -3066,7 +3011,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     carrier = name
                     break
         if ptg is None or carrier is None:
-            self.status.setText("代码已插入落点")
+            status("代码已插入落点", severity="success")
             return
         try:
             with hou.undos.group("HouTools 刷新编辑器"):
@@ -3076,9 +3021,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 node.setParmTemplateGroup(ptg)
         except Exception as exc:
             log.warning("editor display refresh failed: %s", exc, exc_info=True)
-            self._status_error("刷新编辑器显示失败: {}".format(exc))
-            # 代码已写入成功，仅显示修复降级 → Warning 而非 Error
-            _push_houdini_error(str(exc), severity="warning")
+            status("刷新编辑器显示失败: {}".format(exc), severity="warning")
             return
 
         def _toggle_back():
@@ -3097,7 +3040,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                 log.warning("editor display restore failed: %s", exc, exc_info=True)
 
         QtCore.QTimer.singleShot(_REFRESH_TOGGLE_DELAY_MS, _toggle_back)
-        self._status_success("代码已插入落点（已触发面板重建）")
+        status("代码已插入落点（已触发面板重建）", severity="success")
 
     def _apply_code_blocks(self):
         """代码块数据变更后的轻量重建：不重扫 HDA 库，只并表 + 重建
@@ -3117,9 +3060,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self._rebuild_sidebar()
         self._apply_filter()
         if clashes:
-            self.status.setText(
+            status(
                 "警告：代码块与配方重名（{}），同名配方卡片不可达"
-                .format("、".join(clashes)))
+                .format("、".join(clashes)), severity="warning")
         if self._preview_info is not None:
             current = self._info_by_name.get(self._preview_info.name)
             if current is not None:
@@ -3151,8 +3094,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             if self.list.item(i).data(QtCore.Qt.UserRole) == stem:
                 self.list.setCurrentRow(i)
                 break
-        self.status.setText("已创建代码块「{}」（{}）".format(
-            stem, codeblock.LANGUAGE_LABELS[language]))
+        status("已创建代码块「{}」（{}）".format(
+            stem, codeblock.LANGUAGE_LABELS[language]), severity="success")
 
     def _edit_code(self, info):
         """编辑代码块内容/语言（内部名称创建后不可改——弹窗只读）。"""
@@ -3174,7 +3117,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self._thumb_cache.pop(info.name, None)
         self._cover_cache.clear()   # 代码变了：代码文本缩略图全部重渲染
         self._apply_code_blocks()
-        self.status.setText("已更新代码块「{}」".format(info.name))
+        status("已更新代码块「{}」".format(info.name), severity="success")
 
     def _delete_code_block(self, info):
         box = QtWidgets.QMessageBox(self)
@@ -3212,7 +3155,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self._thumb_cache.pop(info.name, None)
         self._cover_cache.clear()
         self._apply_code_blocks()
-        self.status.setText("已删除代码块 {}".format(info.name))
+        status("已删除代码块 {}".format(info.name), severity="success")
 
     def _on_code_context_menu(self, pos):
         """预览代码区右键：「编辑代码」（卡片右键同款入口的预览位版）。"""
@@ -3386,13 +3329,13 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
 
     def _open_doc_dir(self, info):
         """资源管理器打开该配方的文档文件夹（doc.md + assets/）。
-        失败只状态栏提示不抛（文件夹可能被占用或已被外部删除）。"""
+        失败只发 toast 不抛（文件夹可能被占用或已被外部删除）。"""
         path = metadata.doc_dir(info.name)
         try:
             os.startfile(path)
         except OSError as exc:
             log.warning("cannot open doc folder %s: %s", path, exc)
-            self.status.setText("无法打开文档文件夹: {}".format(exc))
+            status("无法打开文档文件夹: {}".format(exc), severity="error")
 
     def _on_thumb_context_menu(self, pos):
         """预览缩略图区右键：缩略图设置入口（与卡片右键同一套 handler）。
@@ -3438,12 +3381,12 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             return
         if cleared:
             metadata.set_color(info.name, None)
-            self.status.setText("{}：颜色已恢复默认".format(
-                self._display_label(info)))
+            status("{}：颜色已恢复默认".format(
+                self._display_label(info)), severity="success")
         else:
             metadata.set_color(info.name, color)
-            self.status.setText("{}：颜色已更新（{}）".format(
-                self._display_label(info), color))
+            status("{}：颜色已更新（{}）".format(
+                self._display_label(info), color), severity="success")
         self._refresh_current_item()
 
     def _pick_color(self, title, current, default):
@@ -3495,10 +3438,11 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             return
         if cleared:
             metadata.set_tag_color(tag, None)
-            self.status.setText("#{}：颜色已恢复默认".format(tag))
+            status("#{}：颜色已恢复默认".format(tag), severity="success")
         else:
             metadata.set_tag_color(tag, color)
-            self.status.setText("#{}：颜色已更新（{}）".format(tag, color))
+            status("#{}：颜色已更新（{}）".format(tag, color),
+                   severity="success")
         # 标签色影响侧栏行/卡片标签行/预览面板三处显示，整层重建
         self._rebuild_sidebar()
         self._apply_filter()
@@ -3561,10 +3505,11 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         if self._preview_info is not None:
             self._update_preview(self._preview_info)
         if (title or "").strip():
-            self.status.setText("「{}」显示名已设为「{}」".format(
-                info.name, title.strip()))
+            status("「{}」显示名已设为「{}」".format(
+                info.name, title.strip()), severity="success")
         else:
-            self.status.setText("「{}」已恢复默认显示名".format(info.name))
+            status("「{}」已恢复默认显示名".format(info.name),
+                   severity="success")
 
     def _set_favorite(self, info, fav):
         metadata.set_favorite(info.name, fav)
@@ -3577,8 +3522,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         if current is not None \
                 and current.data(QtCore.Qt.UserRole) == info.name:
             self._update_preview(info)
-        self.status.setText("{}：{}".format(
-            self._display_label(info), "已收藏" if fav else "已取消收藏"))
+        status("{}：{}".format(
+            self._display_label(info), "已收藏" if fav else "已取消收藏"),
+            severity="success")
 
     def _show_tags(self, tags):
         """预览面板标签展示（# 前缀，与卡片标签行同款；只读不可编辑）。
@@ -3641,7 +3587,8 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         if current is not None \
                 and current.data(QtCore.Qt.UserRole) == info.name:
             self._update_preview(info)
-        self.status.setText("{}：标签已更新".format(self._display_label(info)))
+        status("{}：标签已更新".format(self._display_label(info)),
+               severity="success")
 
     def _set_thumb(self, info):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -3671,8 +3618,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self._cover_cache.clear()
         self._apply_filter()
         self._update_preview(info)
-        self.status.setText("{}：缩略图已更新（{}）".format(
-            self._display_label(info), os.path.basename(stored)))
+        status("{}：缩略图已更新（{}）".format(
+            self._display_label(info), os.path.basename(stored)),
+            severity="success")
 
     def _clear_thumb(self, info, item):
         """清除缩略图，带确认防误触：只删工具内保存的缩略图副本，
@@ -3781,8 +3729,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
             self._cover_cache.clear()
             self._apply_filter()
             self._update_preview(info)
-            self.status.setText("{}：缩略图已更新（{}）".format(
-                self._display_label(info), os.path.basename(stored)))
+            status("{}：缩略图已更新（{}）".format(
+                self._display_label(info), os.path.basename(stored)),
+                severity="success")
         except RuntimeError:
             log.warning("recipe 面板已销毁，跳过截取缩略图收尾刷新")
 
@@ -3818,8 +3767,9 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
                     # closeEvent 在用户拒绝「放弃修改」时 ignore，close()
                     # 返回 False——此时无条件 deleteLater 会绕过确认把
                     # 未保存正文连窗销毁（确认框形同虚设）。中止本次打开。
-                    self.status.setText(
-                        "上一个文档编辑器还有未保存修改，未打开新文档")
+                    status(
+                        "上一个文档编辑器还有未保存修改，未打开新文档",
+                        severity="warning")
                     return
                 self._doc_dialog.deleteLater()
             except RuntimeError as exc:
@@ -3874,7 +3824,7 @@ class _RecipeLibraryWindow(QtWidgets.QWidget):
         self._thumb_cache.pop(info.name, None)
         self._cover_cache.clear()
         self.reload()
-        self.status.setText("已删除 {}".format(info.display_label))
+        status("已删除 {}".format(info.display_label), severity="success")
 
     # ---------------- 窗口生命周期 ----------------
 

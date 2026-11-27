@@ -7,7 +7,8 @@ MPlay 是独立进程，主菜单那个 Reload Modules 按钮点不到；这里�
     feedback → session → export → tools.<tool_id>
 
 ``houtools.videoseq.ffmpeg`` 保持稳定不重载（共用查找链）；
-``houtools.dev`` 在 MPlay 里不参与反馈（无 hou.qt）。
+``houtools.dev`` 在 MPlay 里不参与反馈；开始通知由 ``feedback``
+直接调用 ``ui.notify``（无 ``hou.qt`` 时走 Qt 主窗回退）。
 任一模块重载失败就从 sys.modules 摘掉，下次点击重新导入。
 注意 dispatcher 自身**不会**被重载，改本文件仍需重启 MPlay。
 """

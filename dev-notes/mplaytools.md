@@ -63,7 +63,7 @@
     用 `try/finally` 保证成功、失败、提前 return 都清理临时帧。
   * `imgsave` 一帧都没写出（空序列 / 渲染未完成）时抛带 hscript stderr
     的明确错误，不再误报「没有序列」。
-  * 内存序列会给一条状态栏提示，说明已临时落盘并会自动清理。
+  * 内存序列静默临时落盘并在 ``finally`` 自动清理，不额外发状态栏通知。
 - MPlay 独立进程限制：`hou.ui.paneTab*`、`hou.node()`、`hou.qt.Icon`
   不可用；`uiready.py`（默认热键 / recipe bootstrap）不能假定执行；
   MPlay 的 hscript 命令表里**没有 `menurefresh`**，改 XML 要重启 MPlay。
@@ -165,9 +165,9 @@
   加 PYTHONPATH，功能照样正常）；``imgsave -a ...\$\F.png`` 转义写法
   实机有效、50 帧全部落盘；hffmpeg 编码器探测选中 ``libopenh264``；
   concat + ``-r`` + libopenh264 成功产出 mp4。
-- 该次 ``$HIP=C:\Users\mahx_`` / ``$HIPNAME=untitled`` —— **工程未保存时
+- 该次 ``$HIP=C:/Users/<user>`` / ``$HIPNAME=untitled`` —— **工程未保存时
   Houdini 把 $HIP 指到 HOME**，于是成片落到
-  ``C:\Users\mahx_\Flipbook\2026-11-25\untitled.vNNN.mp4``。这是 Houdini
+  ``C:/Users/<user>/Flipbook/2026-11-25/untitled.vNNN.mp4``。这是 Houdini
   自身语义、不是路径规则 bug；用户指定的规则不改，工具在
   ``hipname == untitled`` 或 ``$HIP == HOME`` 时加一条可见提示，
   说明成片会输出到该目录（避免「怎么跑这儿去了」）。
@@ -243,8 +243,8 @@
 
 ## 临时文件与残留（2026-11 用户问询）
 
-两处都在系统临时目录 `tempfile.gettempdir()`（Windows 实测
-`C:\Users\mahx_\AppData\Local\Temp`），**都不是** `$HIP` 里的产物：
+两处都在系统临时目录 `tempfile.gettempdir()`（Windows 实测为
+`C:/Users/<user>/AppData/Local/Temp`），**都不是** `$HIP` 里的产物：
 
 | 目录 | 内容 | 生命周期 |
 |---|---|---|
@@ -275,8 +275,9 @@
   HIP/HIPNAME 解析链、版本升级、concat 转义、编码器挑选、命令拼装，
   **内存序列兜底**（假 hou 收到 `imgsave -a` 后写真帧，断言落盘 3 帧
   且 `cleanup()` 后临时目录消失）、  **失败回滚**（半成品 mp4 / 空日期
-  目录不残留、既有文件存活）、**反馈分流**（无 hou.qt 不调 toast、
-  错误走 hscript message），以及**真实 ffmpeg 端到端**
+  目录不残留、既有文件存活）、**反馈分流**（开始通知直调 notify 并借助
+  Qt 主窗回退；``report`` 错误在无 hou.qt 时不走 dev.status/toast、
+  退 hscript message），以及**真实 ffmpeg 端到端**
   （生成 PNG 帧 → 编码 → hffprobe 断言 nb_frames / 24fps / 偶数分辨率；
   找不到 ffmpeg 时跳过）。
 - 打包：`.agents/skills/houtools-release/scripts/pack_zip.py` 的
@@ -284,6 +285,6 @@
   新模块自动进包，但**所有新文件须 git 已跟踪**（`git ls-files`
   白名单会拒绝未跟踪文件）。
 - 从 Git Bash 启 MPlay 做手工验证前要 `env -u HOME`：Git Bash 的
-  `HOME=/c/Users/mahx_` 会让 Houdini 把 `HOUDINI_USER_PREF_DIR` 解析成
-  `C:/Users/mahx_/houdini22.0`，读不到 `Documents/houdini22.0/packages`
+  `HOME=/c/Users/<user>` 会让 Houdini 把 `HOUDINI_USER_PREF_DIR` 解析成
+  `C:/Users/<user>/houdini22.0`，读不到 `Documents/houdini22.0/packages`
   下的 `HouTools.json`，菜单与 ffmpeg env 都不会生效。

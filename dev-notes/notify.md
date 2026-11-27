@@ -54,9 +54,9 @@ notify.clear()                            # 立即收掉全部（各自渐透）
 | 5 | **串行锁死锁教训**——第一版给渐透加互斥锁（怀疑并发渐透打架），排队重试被自己的 `_queued` 再入守卫拦死：toast 卡屏 45s+、点击无响应（click 也走 `_fadeout` 被拦） | 并发渐透实测**无问题**（MCP 探针：两条同步 0.95/0.92→0.05/0.02 衰减），锁已删。教训：给重试路径加守卫时，守卫必须区分"首次进入"与"重试进入" |
 | 6 | **顶层窗坐标**——`pos()`/`move()` 对窗口型 widget 是**全局屏幕坐标**（即使有 parent） | 堆叠计算统一用 `_main_window().mapToGlobal(QPoint(0, y))` 一个基准；补位位移直接在全局坐标上加减 |
 | 7 | **move 压 z 序**——补位 move 之后 toast 可能掉到兄弟窗口之下 | 每次 move 后 `raise_()`；StaysOnTop+Tool 组合保证不进任务栏、不抢焦点、随主窗最小化 |
-| 8 | **reload 期间活跃 toast**——`_ACTIVE` 登记表被 reload 重绑成新空容器 | `try/except NameError` 守卫沿用旧集合（`window_manager._closing` 同款）；旧 toast 实例跨重载继续跑自己的动画（方法引用同一 module dict 的全局常量）；toast **不进 window_manager**（3s 自灭，close_all 不碰） |
+| 8 | **reload 期间活跃 toast**——`_ACTIVE` 登记表被 reload 重绑成新空容器 | `try/except NameError` 守卫沿用旧集合（`window_manager._closing` 同款）；旧 toast 实例跨重载继续跑自己的动画（方法引用同一 module dict 的全局常量）；toast **不进 window_manager**（按等级自灭，通常 2s、error 4s，close_all 不碰） |
 | 9 | **线程**——Qt widget 只能主线程建 | `show()` 检测 `QThread.currentThread() is not app.thread()` → `hou.hdefereval.executeDeferred` 派发主线程；无 hou 的后台线程退日志（与无头同款） |
-| 10 | **无头**——`hou.qt.mainWindow()` 无 GUI 直接异常 | 无 QApplication → `_log_only`（等级映射到日志级别）返回 None；有 app 无 hou → `_main_window` 抛 RuntimeError 被 `show()` 兜底接住 → logger.warning + 退原生状态栏 |
+| 10 | **无头**——`hou.qt.mainWindow()` 无 GUI 直接异常 | 无 QApplication → `_log_only`（等级映射到日志级别）返回 None；有 app 无 hou → `_main_window` 抛异常被 `show()` 兜底接住 → logger.warning + 返回 None，不回退状态栏 |
 | 11 | **dev.status 委托的引用陷阱**——dev 永不重载而 notify 会被重载，模块级 import 会持旧类引用（Anti-Pattern 条款） | `status()` 内**按调用** `import_module` 取最新模块对象；notify 模块本身不可用（导入失败）时退回原生状态栏（旧实现行为，内联在 dev/__init__.py 兜底分支）。**工具侧绕过陷阱**：首版只委托了走 dev.status 的调用点，工具各自的 `_status` 包装/散点直调全在旁路（12 处，重启也不生效）——已收口，见上方「收口记录」 |
 | 12 | **字体**——toast 不在工具窗口子树内，字体 enforcer 的 ChildAdded 兜底够不到 | 构造时显式 `fonts.apply(self)`（换族保字号）；正文 9pt 在 apply **之后**用 QFont 覆写（不走 QSS font-size，避免 QSS/QFont 相互覆盖的顺序不确定性） |
 | 13 | **同屏上限死循环卡死主线程**——`while len(_ACTIVE) >= MAX_VISIBLE: _ACTIVE[0]._fadeout()` 撞上栈底已在渐透（`_fadeout` 对 `_closing` 是 no-op，槽位保留期它还在列表里）永不推进；连发"剪贴板文本失效"提示实测 Houdini 卡死 | 上限只数**存活**（未 `_closing`）的 toast：`_toast_cap_victims()` 返回强收名单（确定性列表收缩，无死循环可能）；smoke test 固化 victim 语义 |
@@ -70,16 +70,19 @@ notify.clear()                            # 立即收掉全部（各自渐透）
 **工具侧另有 12 处旁路直调 `hou.ui.setStatusMessage`**——各自 `_status` 薄
 包装（paste_as_object_merge / paste_bbox / paste_center / dragdrop /
 about_houtools）+ 散点直调（delete_viewport_capture / open_cache_folder /
-capture_viewport_embed / houtools_settings / recipelib.browser
-`_push_houdini_error` / ui.networknav / automation.window 两处配置守卫）。
+capture_viewport_embed / houtools_settings / recipelib.browser / ui.networknav /
+automation.window 两处配置守卫）。
 用户重启后通知仍旧样的根因即此。已全部收口：统一 `from houtools.dev
 import status`（dev 永不重载，from-import 安全，dispatcher 同款）委托，
 消息文本逐字节不变、纯换通道；顺带清掉各处只为状态栏存在的死 `import hou`。
+Recipe Library 后续已移除自身彩色通知条与脉冲组件，结果通知直接按语义调用
+`status()`，同一事件只产生一条 Toast。面板内的临时文字提示也已移除：其显隐会
+改变底部布局并导致 Recipe 面板抖动；拖拽开始、取消与无效落点不再发通知。
 
 **规范：新增通知一律走 `dev.status` 或 `notify.*`，禁止再直调
-`hou.ui.setStatusMessage`**（合法出口只剩两处：notify 的状态栏镜像、
-dev 的 notify 不可用兜底）。`ui/status_flash.py` 是面板内状态栏脉冲
-（面板自身 QLabel），不属全局通知通道，不在收口范围。
+`hou.ui.setStatusMessage`**（合法出口只剩 ``dev/__init__.py`` 的 notify
+模块不可用兜底）。`ui/status_flash.py` 是 HDR Library 的面板内状态栏脉冲
+（HDR Library 仍在用），不属全局通知通道，不在收口范围。
 
 ## 验证记录（MCP 实测，H21 21.0.512）
 

@@ -1,8 +1,9 @@
 """MPlay 工具集的控制台反馈（2026-11 用户拍板：**成功只输出文件路径**）。
 
 实机（H21 21.0.512 MPlay）确认 MPlay 的 ``hou`` 既没有 ``hou.qt`` 也没有
-可用 ``hou.ui``；主程序 toast 链路在这里必然抛 AttributeError 并刷
-traceback，所以 MPlay 分支绝不调用 ``houtools.dev.status``。
+可用 ``hou.ui``。开始通知由 ``start_notice`` 直调 ``ui.notify``，借助其
+Qt 主窗回退显示；错误反馈在无 ``hou.qt`` 时不走 ``dev.status``，依次退
+``hou.ui.displayMessage`` 与 hscript ``message``，避免不可用链路刷 traceback。
 
 行为：
 

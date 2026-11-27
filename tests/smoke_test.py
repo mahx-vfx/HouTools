@@ -167,7 +167,7 @@ def _check_mplay_tools():
             else:
                 sys.modules["hou"] = saved_hou
     # 控制台契约（用户拍板）：成功只输出纯路径；中间状态静默；
-    # 错误一条 + 可见框；MPlay 无 hou.qt 绝不调主程序 toast
+    # 错误一条 + 可见框；report 在 MPlay 无 hou.qt 时不走 dev.status/toast
     from houtools.mplaytools import feedback
     import contextlib
     import io
@@ -4192,27 +4192,54 @@ def main():
                 win._thumb_cache.pop("houtools::pyro::a", None)
 
                 # 应用分发：node 预设无选中 → 引导文案（不触 hou）
-                with patch.object(rl_browser.store, "selected_nodes",
+                with patch.object(rl_browser, "status") as fake_status, \
+                     patch.object(rl_browser.store, "selected_nodes",
                                   return_value=[]):
                     win._apply_recipe(infos[1])
-                assert "选中" in win.status.text(), win.status.text()
+                fake_status.assert_called_once()
+                assert "选中" in fake_status.call_args.args[0]
+                assert fake_status.call_args.kwargs["severity"] == "warning"
                 # tool 无网络编辑器 → 引导文案
-                with patch.object(rl_browser.store, "current_network_editor",
+                with patch.object(rl_browser, "status") as fake_status, \
+                     patch.object(rl_browser.store, "current_network_editor",
                                   return_value=None):
                     win._apply_recipe(infos[0])
-                assert "网络编辑器" in win.status.text(), win.status.text()
+                fake_status.assert_called_once()
+                assert "网络编辑器" in fake_status.call_args.args[0]
+                assert fake_status.call_args.kwargs["severity"] == "warning"
+                # 面板内通知控件已移除；拖拽过程不改变布局，也不发 Toast
+                assert not hasattr(win, "status") and not hasattr(win, "_status_flash")
+                assert not hasattr(win, "drag_hint")
+                assert win.findChild(QtWidgets.QLabel, "statusLabel") is None
+                assert win.findChild(QtWidgets.QLabel, "dragHint") is None
+                splitter_geometry = win.splitter.geometry()
+                with patch.object(rl_browser, "status") as fake_status:
+                    win._start_drag(win.list.item(0))
+                    assert win.splitter.geometry() == splitter_geometry
+                    with patch.object(rl_browser.store, "network_editor_under_cursor",
+                                      return_value=None):
+                        win._finish_drag()
+                    assert win.splitter.geometry() == splitter_geometry
+                    win._cancel_drag()
+                    assert win.splitter.geometry() == splitter_geometry
+                    fake_status.assert_not_called()
                 win.deleteLater()
 
-                # 未配置库文件夹：列表为空，状态栏给「库目录」引导
+                # 未配置库文件夹：列表为空，Toast 给「库目录」引导
                 # （外层 get_lib_dirs 补丁仍在生效，这里覆盖为空）
                 rl_meta.set_lib_dirs([])
                 with patch.object(rl_meta, "get_lib_dirs", return_value=[]), \
                      patch.object(rl_cb, "CODELIB_ROOT",
-                                  Path(tmp) / "empty_vexplib"):
+                                  Path(tmp) / "empty_vexplib"), \
+                     patch.object(rl_browser, "status") as fake_status:
                     win2 = rl_browser._RecipeLibraryWindow()
                     win2.reload()
                 assert win2.list.count() == 0, win2.list.count()
-                assert "库目录" in win2.status.text(), win2.status.text()
+                fake_status.assert_called_once()
+                assert "库目录" in fake_status.call_args.args[0]
+                assert fake_status.call_args.kwargs["severity"] == "warning"
+                assert not hasattr(win2, "status")
+                assert win2.findChild(QtWidgets.QLabel, "statusLabel") is None
                 win2.deleteLater()
         rl_store_ps.path.unlink(missing_ok=True)
     print("RecipeLibrary metadata + window OK")
@@ -4443,6 +4470,8 @@ def main():
                  patch.object(rl_browser, "_UI_SETTINGS", cb_ui_store):
                 wcb = rl_browser._RecipeLibraryWindow()
                 wcb.reload()
+                assert not hasattr(wcb, "status") and not hasattr(wcb, "_status_flash")
+                assert wcb.findChild(QtWidgets.QLabel, "statusLabel") is None
                 assert wcb.list.count() == 2, wcb.list.count()
                 # 搜索框右键不弹 Qt 标准菜单（NoContextMenu，2026-10 用户指定）
                 assert wcb.search.contextMenuPolicy() \
@@ -4517,35 +4546,38 @@ def main():
                 with patch.object(rl_browser.store, "selected_nodes",
                                   return_value=["/obj/n1", "/obj/n2"]), \
                      patch.object(rl_browser.codeblock, "append_to_nodes",
-                                  side_effect=_fake_append):
+                                  side_effect=_fake_append), \
+                     patch.object(rl_browser, "status") as fake_status:
                     wcb._apply_recipe(wcb._info_by_name["smoke_py"])
                 assert calls == {"nodes": ["/obj/n1", "/obj/n2"],
                                  "language": "python",
                                  "code": "print('x')"}, calls
-                assert "追加到 2 个节点" in wcb.status.text()
-                # 应用成功 → 状态栏绿色脉冲动画在跑（2026-10 用户指定）
-                assert getattr(wcb, "_status_flash", None) is not None \
-                    and wcb._status_flash._anim is not None \
-                    and wcb._status_flash._anim.state() \
-                    == QtCore.QAbstractAnimation.Running, \
-                    "应用成功后状态栏应闪烁"
-                # 无选中：不触 append，状态栏引导
-                with patch.object(rl_browser.store, "selected_nodes",
+                fake_status.assert_called_once()
+                assert "追加到 2 个节点" in fake_status.call_args.args[0]
+                assert fake_status.call_args.kwargs["severity"] == "success"
+                # 无选中：不触 append，仅发一条 warning Toast
+                with patch.object(rl_browser, "status") as fake_status, \
+                     patch.object(rl_browser.store, "selected_nodes",
                                   return_value=[]), \
                      patch.object(rl_browser.codeblock, "append_to_nodes",
                                   side_effect=_fake_append) as m_ap:
-                    if wcb._status_flash._anim is not None:
-                        wcb._status_flash._anim.stop()   # 隔离上一次闪烁
                     wcb._apply_recipe(wcb._info_by_name["smoke_py"])
                 assert m_ap.call_count == 0
-                assert "选中" in wcb.status.text()
-                # 全失败不闪（动画未启动或已停）
-                anim = wcb._status_flash._anim
-                assert anim is None or anim.state() \
-                    != QtCore.QAbstractAnimation.Running
-                # 入口层同配方去重（0.75s 窗口，2026-10 用户反馈"闪完再
-                # 快速闪一下"= 同卡第二发漏进来）：窗口内重复双击只应用
-                # 一次；不同配方不受限；失败不占闸
+                fake_status.assert_called_once()
+                assert "选中" in fake_status.call_args.args[0]
+                assert fake_status.call_args.kwargs["severity"] == "warning"
+                # 全失败也只发一条 error Toast，不重复写入旧面板通知条
+                with patch.object(rl_browser, "status") as fake_status, \
+                     patch.object(rl_browser.store, "selected_nodes",
+                                  return_value=["/obj/n1"]), \
+                     patch.object(rl_browser.codeblock, "append_to_nodes",
+                                  return_value=([], ["没有代码参数"])):
+                    assert wcb._apply_recipe(wcb._info_by_name["smoke_py"]) is False
+                fake_status.assert_called_once()
+                assert "追加失败" in fake_status.call_args.args[0]
+                assert fake_status.call_args.kwargs["severity"] == "error"
+                # 入口层同配方去重（1.2s 窗口）：窗口内重复双击只应用
+                # 一次并给 info Toast；不同配方不受限；失败不占闸
                 wcb._last_apply = None
                 with patch.object(rl_browser.store, "selected_nodes",
                                   return_value=["/obj/n1"]), \

@@ -1245,9 +1245,9 @@ body.ds{ font-size:15px; }
   </table>
   </div>
   <ul>
-    <li>未列出的组合一律跳过(状态栏提示)。</li>
+    <li>未列出的组合一律跳过(左下角 Toast 提示)。</li>
     <li>整次操作占用单个 undo 槽,<code>Ctrl+Z</code> 一步撤回。</li>
-    <li>源路径取 OS 剪贴板文本;文本失效时状态栏按原因提示重新复制(不粘贴副本)。</li>
+    <li>源路径取 OS 剪贴板文本;文本失效时左下角 Toast 按原因提示重新复制(不粘贴副本)。</li>
     <li>键位在 <code>HouTools → HouTools Settings...</code> 修改,也可用 Houdini 自带 Hotkey Manager(符号 <code>h.pane.wsheet.houtools_paste_as_object_merge</code>)。</li>
   </ul></div>
 </section>
@@ -1291,7 +1291,7 @@ body.ds{ font-size:15px; }
     <li>节点名自动清洗:取文件名主干,中文等非法字符替换为 <code>_</code>,同名自动加数字后缀(FBX 子网由官方导入器命名)。</li>
     <li>导入的 FBX 节点<strong>不冻结</strong>:按官方导入对话框的 Unlock 选项直接导入(官方 File &gt; Import 默认锁定 file 节点、参数只读),落网即可编辑。</li>
     <li>非 <code>.abc</code>/<code>.fbx</code>/<code>.usd*</code> 文件不受影响;拖到参数框、视口等其他面板的行为与原生完全一致。</li>
-    <li>文件损坏时由节点的错误旗标反馈(坏文件拖到 obj 层级可能静默不建子节点;坏 .fbx 走状态栏提示+日志),创建操作本身不会失败。</li>
+    <li>文件损坏时由节点的错误旗标反馈(坏文件拖到 obj 层级可能静默不建子节点;坏 .fbx 走左下角 Toast 提示+日志),创建操作本身不会失败。</li>
   </ul></div>
 </section>
 <section id="capture-viewport" class="ds-sec">
@@ -1313,7 +1313,7 @@ body.ds{ font-size:15px; }
   <div class="ds-sec-body"><p class="entry">入口:右键目标节点 → <code>Paste Bounding Box [HT]</code> 子菜单(仅同时带三分量 <code>size</code> 与 <code>t</code> 参数的节点显示,如 box;grid 的 <code>size</code> 是二向量,不显示菜单)</p>
   <p>网络编辑器里 Ctrl+C 复制源节点 A,右键目标节点 B,把 A 的包围盒尺寸/中心贴到 B 的 <code>size</code> / <code>t</code>(<code>sizex/y/z ← bbox(A, ...)</code>、<code>tx/y/z ← centroid(A, ...)</code>)——做「刚好包住某个模型」的盒子(碰撞体、代理、bounds 可视化)一步到位。</p>
   <ul>
-    <li><strong>Paste Absolute Values [HT]</strong>:求值后直接写入;B 参数已有的表达式/关键帧清除替换,锁定参数跳过并在状态栏提示。</li>
+    <li><strong>Paste Absolute Values [HT]</strong>:求值后直接写入;B 参数已有的表达式/关键帧清除替换,锁定参数跳过并通过左下角 Toast 提示。</li>
     <li><strong>Paste Expressions [HT]</strong>:写入 <code>bbox()</code> / <code>centroid()</code> 表达式,A 变动时 B 实时跟随;A 与 B 同网络用相对路径(<code>../A</code>),跨层级用绝对路径。</li>
     <li>绝对值与表达式走同一套求值函数,两种模式结果一致;整次操作单个 undo 槽;源节点有 cook 错误时不写入;源与目标是同一节点时跳过。</li>
   </ul></div>
@@ -1325,7 +1325,7 @@ body.ds{ font-size:15px; }
   <ul>
     <li><strong>Paste Absolute Values [HT]</strong>:求值后直接写入。</li>
     <li><strong>Paste Expressions [HT]</strong>:写入 <code>centroid()</code> 链接表达式,A 或 B 变动时 transform 实时跟随;A 与 B 同网络用相对路径(<code>../A</code>),跨层级用绝对路径。</li>
-    <li>transform 按 B 所在网络类别创建(SOP/LOP/COP;其余上下文状态栏提示);整次操作单个 undo 槽;源或目标有 cook 错误时不创建;源与目标是同一节点时跳过。</li>
+    <li>transform 按 B 所在网络类别创建(SOP/LOP/COP;其余上下文通过左下角 Toast 提示);整次操作单个 undo 槽;源或目标有 cook 错误时不创建;源与目标是同一节点时跳过。</li>
   </ul></div>
 </section>
 <section id="video-to-sequence" class="ds-sec">
@@ -1400,8 +1400,8 @@ body.ds{ font-size:15px; }
   <ul>
     <li><strong>双击卡片</strong> = 官方工具架体验:参数照抄,视角不拉远(锚点落在视图外才整组平移到视图中心)。</li>
     <li><strong>拖拽到网络</strong> = 在落点对齐创建整组节点。</li>
-    <li>应用前做网络层级匹配检查,不匹配时左下角状态栏给出中文提示(如 SOP recipe 进 LOP 网络)。</li>
-    <li>应用成功时底部状态栏绿色闪烁反馈,失败红色闪烁;同一配方 1.2 秒内的重复应用自动去重(防双击/拖拽连发重复创建),失败不占去重窗口、可立即重试。</li>
+    <li>应用前做网络层级匹配检查,不匹配时通过项目统一的左下角 Toast 给出中文提示(如 SOP recipe 进 LOP 网络)。</li>
+    <li>拖拽过程不显示面板内文字通知,也不发 Toast,布局保持不变;应用成功发绿色 Toast、失败发红色 Toast;同一配方 1.2 秒内的重复应用自动去重(防双击/拖拽连发重复创建),失败不占去重窗口、可立即重试。</li>
     <li>node / parm / decoration 预设需先选中目标节点。</li>
   </ul>
   <h3 id="recipe-library-h3-2">代码块<a class="h3-anchor" href="#recipe-library-h3-2" aria-label="链接到此小节">#</a></h3>
@@ -1411,7 +1411,7 @@ body.ds{ font-size:15px; }
     <li>代码块卡片右键菜单与 recipe 卡片同套:收藏 / 自定义显示名 / 标签设置 / 自定义颜色 / 设置缩略图等,可给代码块设标签并自定义颜色。</li>
     <li>双击卡片 = 把代码追加到全部选中节点的代码参数(VEX→snippet、Python→python,现有内容非空时空行分隔),整批一个 undo。</li>
     <li>拖入 VEX/Python 编辑框即插入到光标处(自动修复内建编辑器的多行显示);拖到网络编辑器 = 落点并入代码节点,空白处创建对应节点并填码。</li>
-    <li>语言不匹配的拖入自动拒绝:落点参数面板显示异语言代码节点时在拖放层直接拦截、Houdini 的写入不执行;网络通路命中异语言代码节点拒绝并入、也不凭空创建异语言节点;拦截不了的旁路落点红色闪烁提示。</li>
+    <li>语言不匹配的拖入自动拒绝:落点参数面板显示异语言代码节点时在拖放层直接拦截、Houdini 的写入不执行;网络通路命中异语言代码节点拒绝并入、也不凭空创建异语言节点;拦截不了的旁路落点通过左下角 Toast 给出中文提示。</li>
     <li>预览面板为带行号的代码视图(语言/修改时间/行数),右键「编辑代码」;搜索含代码全文。</li>
   </ul>
   <h3 id="recipe-library-h3-3">元数据与文档<a class="h3-anchor" href="#recipe-library-h3-3" aria-label="链接到此小节">#</a></h3>

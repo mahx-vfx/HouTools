@@ -141,9 +141,9 @@ QSS 选择器优先 `objectName` / `[htRole="..."]`，不依赖类型选择器�
 ## 5. Toast / 状态
 
 - **结构/时序/槽位/渐透/补位全部保持不变**（用户拍板）；只换颜色与图标。
-- 底色 `INK_850` + 1px `LINE` + 左侧 2px 语义色条；文字 `TEXT`。
+- Toast 底色 `INK_850` + 整圈 1px 等级语义色描边 + 左侧 4px 同色色条；文字 `TEXT` 9pt，徽标走 SVG。
 - 语义色：success `SUCCESS`、warning `WARNING`、error `ERROR`、info `TEXT_2`。
-- 状态栏：11px `TEXT_3`；成功 `SUCCESS_TEXT`、失败 `ERROR_TEXT`；脉冲机制保留。
+- 面板状态栏仅 HDR Library 使用：11px `TEXT_3`；成功 `SUCCESS_TEXT`、失败 `ERROR_TEXT`；脉冲机制保留。Recipe Library 不留面板通知控件，结果只走 Toast。
 
 ---
 
