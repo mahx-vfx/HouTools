@@ -26,6 +26,9 @@
   `Video to Sequence`；根 objectName=`htWindow`。
 - **`QPushButton#presetBtn:disabled` 规则仍在 `STYLE_SHEET`**（smoke 固化：
   「匹配素材分辨率」灰置外观依赖它）。
+- **数值框不显示上下箭头**（2026-11-28 用户统一要求）：质量、起始帧、
+  帧号位数三个 `QSpinBox` 均设 `QAbstractSpinBox.NoButtons`；公共 QSS
+  另隐藏 `up/down-button` 与箭头，后续数值框也不回退成默认外观。
 - 功能/线程/相机/序列逻辑零改动。
 
 ## 图标按钮改版（2026-11 用户指定）

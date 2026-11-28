@@ -8,6 +8,7 @@ wires up PySide6/Qt paths, so point it at any python313:
 """
 
 import atexit
+import io
 import json
 import os
 import shutil
@@ -172,6 +173,7 @@ def _check_mplay_tools():
     import contextlib
     import io
     import unittest
+    import unittest.mock as mock
 
     class _MPlayHou:
         def __init__(self):
@@ -379,21 +381,63 @@ def _check_mplay_tools():
         except session.MPlaySessionError as exc:
             assert "imgsave" in str(exc)
 
-        # 播放范围：**用户设定的是 playbackRange，不是全局 frameRange**
-        # （实机反馈「没按范围保存」的根因）
-        assert session.playback_range(hou_module=types.SimpleNamespace(
-            playbar=types.SimpleNamespace(playbackRange=lambda: [10, 15],
-                                          frameRange=lambda: [1, 240]))) \
-            == (10, 15)
-        assert session.playback_range(hou_module=types.SimpleNamespace(
-            playbar=types.SimpleNamespace(frameRange=lambda: [3, 7]))) == (3, 7)
+        # MPlay 时间线内层起止框是播放子范围（$RFSTART/$RFEND），
+        # frange 可能返回包含完整序列的外层范围，不能盖过用户当前设定。
+        class _MPlayRangeHou:
+            playbar = types.SimpleNamespace(
+                playbackRange=lambda: [1, 240], frameRange=lambda: [1, 240])
 
-        class _FrangeHou:
+            def hscript(self, command):
+                return {
+                    "echo $RFSTART": ("1\n", ""),
+                    "echo $RFEND": ("20\n", ""),
+                    "frange": ("Frame range: 1 to 50\n", ""),
+                }.get(command, ("", ""))
+
+        assert session.playback_range(hou_module=_MPlayRangeHou()) == (1, 20)
+
+        # 可见四字段是独立 MPlay 的权威候选；四个框必须在同一行，
+        # 首尾锚定全局范围，中间两框相邻且不越过边界。
+        qt_rows = [(
+            {"value": 1, "x": 50, "right": 70, "width": 40},
+            {"value": 4, "x": 100, "right": 120, "width": 40},
+            {"value": 9, "x": 150, "right": 170, "width": 40},
+            {"value": 50, "x": 500, "right": 520, "width": 40},
+        )]
+        assert session._range_from_widget_rows(qt_rows, (1, 50)) == (4, 9)
+        conflicting_row = [dict(field) for field in qt_rows[0]]
+        conflicting_row[1]["value"] = 5
+        conflicting_row[2]["value"] = 8
+        assert session._range_from_widget_rows(
+            qt_rows + [tuple(conflicting_row)], (1, 50)) is None
+        assert session._range_from_widget_rows(qt_rows, (2, 50)) is None
+        range_details = {}
+        assert session.playback_range(
+            hou_module=_MPlayRangeHou(), diagnostics=range_details) == (1, 20)
+        assert range_details["source"] == "$RFSTART/$RFEND"
+        assert range_details["rf_start"] == "1"
+        assert "1 to 50" in range_details["frange_raw"]
+        with mock.patch.object(session, "_visible_qt_playback_range",
+                               return_value=(7, 12)):
+            visible_details = {}
+            assert session.playback_range(
+                hou_module=_MPlayRangeHou(), diagnostics=visible_details) == (7, 12)
+            assert visible_details["source"] == "Qt 可见时间线四字段"
+
+        class _FrangeFallbackHou:
             def hscript(self, command):
                 return ("Frame range: 4 to 9\n", "") \
-                    if command == "frange" else ("", "")
+                    if command == "frange" else ("$RFSTART\n", "")
 
-        assert session.playback_range(hou_module=_FrangeHou()) == (4, 9)
+        assert session.playback_range(hou_module=_FrangeFallbackHou()) == (4, 9)
+
+        class _BrokenFrangeHou:
+            playbar = types.SimpleNamespace(playbackRange=lambda: [1, 240])
+
+            def hscript(self, command):
+                raise RuntimeError("frange unavailable")
+
+        assert session.playback_range(hou_module=_BrokenFrangeHou()) is None
         assert session.playback_range(hou_module=no_hou,
                                       raw="Frame range: 1 to 50\n") == (1, 50)
         assert session.playback_range(hou_module=no_hou, raw="1 6") == (1, 6)
@@ -402,7 +446,11 @@ def _check_mplay_tools():
         clipped = session.filter_sequence_range(spec, (1001, 1002))
         assert clipped.frame_numbers == (1001, 1002) and len(clipped.files) == 2
         assert session.filter_sequence_range(spec, None).frame_count == 3
-        assert session.filter_sequence_range(spec, (9000, 9001)).frame_count == 3
+        try:
+            session.filter_sequence_range(spec, (9000, 9001))
+            raise AssertionError("out-of-range selection must not export all frames")
+        except session.MPlaySessionError as exc:
+            assert "无交集" in str(exc)
 
         # -f 不被支持时回退 -a，但**必须**仍按范围裁剪，不能全量导出
         class _NoRangeFlagHou(_DumpHou):
@@ -418,35 +466,202 @@ def _check_mplay_tools():
         assert noflag_spec.frame_numbers == (2, 3), noflag_spec.frame_numbers
         noflag_dispose()
 
-        # 帧号体系与 playbar 不同时按范围长度截前 N 帧
+        # 帧号体系不同且请求完全落在磁盘跨度外时，不能猜前 N 帧。
         offset = _NoRangeFlagHou()
-        offset_spec, _on, offset_dispose = session.current_sequence(
-            hou_module=offset, output="Flipbook Images\n",
-            frame_range=(1001, 1002))
-        assert offset_spec.frame_count == 2, offset_spec.frame_numbers
+        try:
+            session.current_sequence(
+                hou_module=offset, output="Flipbook Images\n",
+                frame_range=(1001, 1002))
+            raise AssertionError("unmappable in-memory range must fail")
+        except session.MPlaySessionError as exc:
+            assert "无法可靠对应" in str(exc)
+
+        # -f 被接受但 imgsave 仍写全序列时，以落盘帧为准再次裁剪。
+        class _IgnoreRangeHou(_DumpHou):
+            def hscript(self, command):
+                if command.startswith("imgsave "):
+                    self.commands.append(command)
+                    pattern = command.rsplit(" ", 1)[-1]
+                    self.dumped_dir = pattern.rsplit("/", 1)[0]
+                    ext = pattern.rsplit(".", 1)[-1]
+                    for number in (1, 2, 3):
+                        with open(os.path.join(
+                                self.dumped_dir,
+                                "frame.%d.%s" % (number, ext)), "wb") as fh:
+                            fh.write(b"")
+                    return ("", "")
+                return ("Flipbook Images\n", "")
+
+        ignore_range = _IgnoreRangeHou()
+        ignore_spec, _ign, ignore_dispose = session.current_sequence(
+            hou_module=ignore_range, output="Flipbook Images\n",
+            frame_range=(2, 3))
+        assert ignore_spec.frame_numbers == (2, 3), ignore_spec.frame_numbers
+        ignore_dispose()
+
+        # -f 只写请求长度但使用偏移帧号时，接受其明确的范围长度。
+        class _OffsetRangeHou(_DumpHou):
+            def hscript(self, command):
+                if command.startswith("imgsave "):
+                    self.commands.append(command)
+                    pattern = command.rsplit(" ", 1)[-1]
+                    self.dumped_dir = pattern.rsplit("/", 1)[0]
+                    ext = pattern.rsplit(".", 1)[-1]
+                    matched = re.search(r"-f\s+(\d+)\s+(\d+)", command)
+                    start = 1000 + int(matched.group(1))
+                    end = 1000 + int(matched.group(2))
+                    for number in range(start, end + 1):
+                        with open(os.path.join(
+                                self.dumped_dir,
+                                "frame.%d.%s" % (number, ext)), "wb") as fh:
+                            fh.write(b"")
+                    return ("", "")
+                return ("Flipbook Images\n", "")
+
+        offset_range = _OffsetRangeHou()
+        offset_spec, _offr, offset_dispose = session.current_sequence(
+            hou_module=offset_range, output="Flipbook Images\n",
+            frame_range=(1, 2))
+        assert offset_spec.frame_numbers == (1001, 1002), offset_spec.frame_numbers
         offset_dispose()
 
         # 打开的是成片所在文件夹（不再用不稳定的 explorer /select）
         if os.name == "nt":
-            import unittest.mock as mock
             with mock.patch.object(os, "startfile", create=True) as starter:
                 export.reveal_file(os.path.join(td, "clips", "a.mp4"))
                 assert starter.call_args[0][0] == os.path.join(td, "clips")
 
-        # 左下角开始通知：MPlay 无 hou.qt，notify 主窗需有 Qt 回退，
-        # 且 show() 后必须 processEvents（同步转码会冻结事件循环）
-        notify_src = (ROOT / "python3.13libs/houtools/ui/notify.py"
-                      ).read_text(encoding="utf-8")
-        assert "topLevelWidgets" in notify_src
-        feedback_src = (ROOT / "python3.13libs/houtools/mplaytools/feedback.py"
-                        ).read_text(encoding="utf-8")
-        assert "def start_notice" in feedback_src
-        assert "processEvents" in feedback_src
-        tool_src = (ROOT / "python3.13libs/houtools/mplaytools/tools"
-                    "/sequence_to_mp4.py").read_text(encoding="utf-8")
-        assert "feedback.start_notice(" in tool_src
+        # 手动范围模式：取消不读序列、不建文件；确认后传范围并输出纯路径。
+        from houtools.mplaytools.tools import sequence_to_mp4 as _mplay_tool
+        with mock.patch.object(session, "global_frame_range",
+                               return_value=(1, 50)), \
+                mock.patch.object(_mplay_tool, "_ask_range",
+                                  return_value=None), \
+                mock.patch.object(session, "current_sequence") as no_sequence, \
+                mock.patch.object(export, "run_export") as no_export:
+            _mplay_tool.run()
+        no_sequence.assert_not_called()
+        no_export.assert_not_called()
+        assert not hasattr(feedback, "start_notice")
 
-        # 工程目录：优先已保存 .hip 的目录，env HIP=HOME 只是启动快照
+        # 全局默认值：frange 优先，缺失才读 FSTART/FEND；不看旧 RF 范围。
+        class _RangeHou:
+            def hscript(self, command):
+                values = {
+                    "frange": "Frame range: 1 to 50\n",
+                    "echo $FSTART": "1\n", "echo $FEND": "240\n",
+                }
+                return (values.get(command, ""), "")
+        assert session.global_frame_range(_RangeHou()) == (1, 50)
+        class _NoFrangeHou(_RangeHou):
+            def hscript(self, command):
+                if command == "frange":
+                    return ("", "")
+                return super().hscript(command)
+        assert session.global_frame_range(_NoFrangeHou()) == (1, 240)
+
+        # 自定义 UI 字段是当前最可能的权威来源；同名对象不唯一时拒绝猜测。
+        named_objects = [
+            {"objectName": "rangeStartField", "text": "1",
+             "windowName": "main", "parentName": "playback", "properties": {}},
+            {"objectName": "rangeEndField", "text": "10",
+             "windowName": "main", "parentName": "playback", "properties": {}},
+        ]
+        assert session._range_from_named_qt_objects(named_objects) == (
+            (1, 10), "Qt rangeStartField/rangeEndField")
+        property_objects = [
+            {"objectName": "rangeStartField", "text": "",
+             "windowName": "main", "parentName": "playback",
+             "properties": {"value": "1"}},
+            {"objectName": "rangeEndField", "text": "",
+             "windowName": "main", "parentName": "playback",
+             "properties": {"value": "10"}},
+        ]
+        assert session._range_from_named_qt_objects(property_objects) == (
+            (1, 10), "Qt rangeStartField/rangeEndField")
+        assert session._range_from_named_qt_objects([{
+            "objectName": "rangeSlider", "text": "", "windowName": "main",
+            "parentName": "playback", "properties": {"subRange": ["1", "10"]},
+        }]) == ((1, 10), "Qt subRange 属性")
+        assert session._range_from_named_qt_objects(named_objects + [
+            {"objectName": "rangeStartField", "text": "2",
+             "windowName": "other", "parentName": "playback", "properties": {}},
+            {"objectName": "rangeEndField", "text": "11",
+             "windowName": "other", "parentName": "playback", "properties": {}},
+        ]) is None
+
+        class _Signal:
+            def __init__(self):
+                self.slots = []
+
+            def connect(self, slot):
+                self.slots.append(slot)
+
+            def emit(self, *args):
+                for slot in list(self.slots):
+                    slot(*args)
+
+        class _FakeWorker:
+            instances = []
+
+            def __init__(self, sequence, output, fps, ffmpeg, resolution,
+                         cancel_event):
+                self.instances.append(self)
+                self.sequence = sequence
+                self.output = output
+                self.fps = fps
+                self.ffmpeg = ffmpeg
+                self.resolution = resolution
+                self.cancel_event = cancel_event
+                self.progress = _Signal()
+                self.completed = _Signal()
+                self.failed = _Signal()
+                self.cancelled = _Signal()
+                self.finished = _Signal()
+                self.progress_values = []
+
+            def isFinished(self):
+                return False
+
+            def start(self):
+                self.progress_values = list(self.progress.slots)
+                self.progress.emit(100)
+                self.completed.emit(self.output)
+                self.finished.emit()
+
+            def deleteLater(self):
+                pass
+
+        progress_values = []
+        progress_dialog = mock.Mock()
+        progress_dialog.setValue.side_effect = progress_values.append
+        success_output = os.path.join(td, "manual.v001.mp4")
+        settings = {"frame_range": (1, 10), "resolution": (640, 360)}
+        with mock.patch.object(_mplay_tool, "_ask_range",
+                               return_value=settings), \
+                mock.patch.object(_mplay_tool, "_main_window", return_value=None), \
+                mock.patch.object(_mplay_tool.QtWidgets, "QProgressDialog",
+                                  return_value=progress_dialog), \
+                mock.patch.object(_mplay_tool, "_ExportWorker", _FakeWorker), \
+                mock.patch.object(session, "resolve_hip", return_value=td), \
+                mock.patch.object(session, "resolve_hip_name",
+                                  return_value="manual"), \
+                mock.patch.object(session, "session_fps", return_value=24.0), \
+                mock.patch("houtools.videoseq.ffmpeg.find_ffmpeg",
+                           return_value="ffmpeg"), \
+                mock.patch.object(export, "versioned_output_path",
+                                  return_value=success_output), \
+                mock.patch.object(session, "current_sequence",
+                                  return_value=(spec, [], None)) as prepare, \
+                mock.patch.object(export, "reveal_file") as reveal, \
+                contextlib.redirect_stdout(io.StringIO()) as logged:
+            _mplay_tool.run()
+        assert prepare.call_args.kwargs["frame_range"] == (1, 10)
+        assert _FakeWorker.instances[-1].resolution == (640, 360)
+        assert progress_values == [100]
+        reveal.assert_called_once_with(success_output)
+        assert logged.getvalue().splitlines()[-1] == success_output
+
         home_dir = os.path.expanduser("~")
         project_dir = os.path.join(td, "project")
         os.makedirs(project_dir, exist_ok=True)
@@ -491,9 +706,6 @@ def _check_mplay_tools():
         assert session.resolve_hip_name(hou_module=no_hou,
                                         environ={"HIPNAME": "untitled"}) \
             == "untitled"
-        from houtools.mplaytools.tools import sequence_to_mp4 as _mplay_tool
-        assert _mplay_tool._usable_hip(home_dir, "untitled") is True
-        assert _mplay_tool._usable_hip("", "") is False
 
         env = {"HOUTOOLS_MPLAY_HIP": hip,
                "HOUTOOLS_MPLAY_HIPNAME": "myScene"}
@@ -537,6 +749,70 @@ def _check_mplay_tools():
         x264_cmd = export.build_ffmpeg_command(
             "ffmpeg", "frames.txt", first, 24.0, "libx264")
         assert "-crf" in x264_cmd and "-b:v" not in x264_cmd
+
+        progress_cmd = export.build_ffmpeg_command(
+            "ffmpeg", "frames.txt", first, 24.0, "libopenh264", progress=True)
+        assert progress_cmd[progress_cmd.index("-progress") + 1] == "pipe:1"
+
+        class _ProgressProcess:
+            stdout = io.StringIO(
+                "frame=1\nout_time_us=41666\n"
+                "frame=3\nprogress=end\n")
+            returncode = 0
+
+            def wait(self):
+                return self.returncode
+
+            def poll(self):
+                return self.returncode
+
+        progress = []
+        with mock.patch.object(export.subprocess, "Popen",
+                               return_value=_ProgressProcess()):
+            rc, detail = export._run_with_progress(
+                ["ffmpeg"], 3, 24.0, progress.append)
+        assert rc == 0 and detail == ""
+        assert progress == [33, 100]
+
+        # 指定分辨率时先 lanczos 缩放，再裁成 H.264 偶数尺寸。
+        scaled_cmd = export.build_ffmpeg_command(
+            "ffmpeg", "frames.txt", first, 24.0, "libx264",
+            resolution=(641, 361))
+        vf = scaled_cmd[scaled_cmd.index("-vf") + 1]
+        assert vf == ("scale=641:361:flags=lanczos,"
+                      "crop=trunc(iw/2)*2:trunc(ih/2)*2"), vf
+
+        # 取消：首个进度回调后置位，必须终止子进程并抛取消异常。
+        import threading
+        cancel_event = threading.Event()
+
+        class _CancelProcess:
+            def __init__(self):
+                self.stdout = io.StringIO("frame=1\nframe=2\n")
+                self.returncode = None
+                self.terminated = False
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -15
+
+        cancel_process = _CancelProcess()
+        with mock.patch.object(export.subprocess, "Popen",
+                               return_value=cancel_process):
+            try:
+                export._run_with_progress(
+                    ["ffmpeg"], 10, 24.0, lambda _p: cancel_event.set(),
+                    cancel_event=cancel_event)
+                raise AssertionError("expected MPlayExportCancelled")
+            except export.MPlayExportCancelled:
+                pass
+        assert cancel_process.terminated
 
         # 失败回滚：不留半成品 mp4 / 空日期目录（否则下次版本扫描会跳号），
         # 且不碰目录里别人的既有文件
@@ -588,7 +864,11 @@ def _check_mplay_tools():
             print("MPlay export E2E skipped (ffmpeg not found)")
         else:
             out = os.path.join(td, "e2e.mp4")
-            result, codec = export.run_export(spec, out, 24.0, ffmpeg)
+            progress_values = []
+            result, codec = export.run_export(
+                spec, out, 24.0, ffmpeg, progress=progress_values.append,
+                resolution=(640, 360))
+            assert progress_values and progress_values[-1] == 100, progress_values
             assert os.path.getsize(result) > 0 and codec
             probe = find_ffprobe(ffmpeg)
             assert probe, "ffprobe missing next to ffmpeg"
@@ -600,7 +880,7 @@ def _check_mplay_tools():
                 errors="replace", **get_startup_kwargs())
             assert "nb_frames=3" in done.stdout, done.stdout
             assert "avg_frame_rate=24/1" in done.stdout, done.stdout
-            assert "width=320" in done.stdout, done.stdout
+            assert "width=640" in done.stdout, done.stdout
             print("MPlay export E2E OK (%s)" % codec)
     print("MPLAY TOOLS pure logic OK")
 
@@ -1602,10 +1882,111 @@ def main():
     print("find_ffmpeg/find_ffprobe: env 自定义 + 同目录推导 + 回退 OK")
 
     # 真实实例化 Automation 界面（捕获 __init__ 结构损伤）
+    from PySide6 import QtCore, QtTest, QtWidgets
     from PySide6.QtWidgets import (
-        QApplication, QComboBox, QLineEdit, QPushButton, QStackedWidget)
+        QApplication, QComboBox, QDialog, QLabel, QLineEdit, QPushButton,
+        QSpinBox, QStackedWidget)
 
     app = QApplication.instance() or QApplication([])
+    from houtools.mplaytools.tools import sequence_to_mp4 as _spin_tool
+
+    import shiboken6
+    _parent_probe = QtWidgets.QWidget()
+    _parent_probe.resize(800, 600)
+    _parent_probe.show()
+    _tooltip_probe = QtWidgets.QLabel("tooltip")
+    _tooltip_probe.resize(2000, 2000)
+    _tooltip_probe.show()
+    _deleted_label = QtWidgets.QLabel()
+    shiboken6.delete(_deleted_label)
+    app.processEvents()
+    with patch.object(app, "topLevelWidgets",
+                      return_value=[_deleted_label, _tooltip_probe,
+                                    _parent_probe]), \
+            patch.object(QApplication, "activeWindow",
+                         return_value=_deleted_label):
+        assert _spin_tool._main_window() is _parent_probe
+        _parent_dialog = _spin_tool._SettingsDialog(
+            _spin_tool._main_window())
+        assert _parent_dialog.parent() is _parent_probe
+        _parent_dialog.deleteLater()
+    with patch.object(app, "topLevelWidgets",
+                      return_value=[_deleted_label, _tooltip_probe]):
+        assert _spin_tool._main_window() is None
+    _parent_probe.deleteLater()
+    _tooltip_probe.deleteLater()
+
+    _spin_row, _range_spins = _spin_tool._pair_spinboxes((1, 50))
+    assert len(_range_spins) == 2
+    assert all(
+        spin.buttonSymbols() == _spin_tool.QtWidgets.QAbstractSpinBox.NoButtons
+        for spin in _range_spins
+    )
+    _spin_row.deleteLater()
+
+    _focus_dialog = _spin_tool._SettingsDialog()
+    _focus_dialog.resize(400, 300)
+    _focus_group = QtWidgets.QGroupBox("设置", _focus_dialog)
+    _focus_group.setGeometry(10, 10, 380, 280)
+    _focus_edit = QtWidgets.QSpinBox(_focus_group)
+    _focus_edit.move(20, 20)
+    _focus_button = QtWidgets.QPushButton("按钮", _focus_group)
+    _focus_button.move(100, 100)
+    _focus_label = QtWidgets.QLabel("空白提示", _focus_group)
+    _focus_label.move(180, 100)
+    _focus_dialog.show()
+    _focus_dialog.activateWindow()
+    app.processEvents()
+    for _blank_widget in (
+            _focus_dialog, _focus_group, _focus_label):
+        _focus_edit.setFocus()
+        app.processEvents()
+        assert _focus_dialog.focusWidget() is _focus_edit
+        QtTest.QTest.mouseClick(
+            _blank_widget, QtCore.Qt.LeftButton,
+            pos=(_focus_label.rect().center()
+                 if _blank_widget is _focus_label
+                 else QtCore.QPoint(350, 250)))
+        app.processEvents()
+        assert _focus_dialog.focusWidget() is not _focus_edit
+        QtTest.QTest.mouseClick(
+            _focus_edit, QtCore.Qt.LeftButton, pos=QtCore.QPoint(20, 10))
+        app.processEvents()
+        assert _focus_dialog.focusWidget() is _focus_edit
+    QtTest.QTest.mouseClick(_focus_button, QtCore.Qt.LeftButton)
+    app.processEvents()
+    assert _focus_dialog.focusWidget() is _focus_button
+    _focus_edit.setFocus()
+    app.processEvents()
+    with patch.object(_focus_dialog, "childAt", return_value=_deleted_label):
+        QtTest.QTest.mouseClick(
+            _focus_dialog, QtCore.Qt.LeftButton, pos=QtCore.QPoint(350, 250))
+        app.processEvents()
+    assert _focus_dialog.focusWidget() is not _focus_edit
+    QtTest.QTest.mouseClick(
+        _focus_edit, QtCore.Qt.LeftButton, pos=QtCore.QPoint(20, 10))
+    app.processEvents()
+    assert _focus_dialog.focusWidget() is _focus_edit
+    with patch.object(_focus_dialog, "childAt",
+                      side_effect=RuntimeError("Internal C++ object deleted")):
+        QtTest.QTest.mouseClick(
+            _focus_dialog, QtCore.Qt.LeftButton, pos=QtCore.QPoint(350, 250))
+        app.processEvents()
+    assert _focus_dialog.focusWidget() is not _focus_edit
+    _focus_dialog.deleteLater()
+
+    _seen_labels = []
+    def _reject_settings(dialog):
+        _seen_labels.extend(label.text() for label in dialog.findChildren(QLabel))
+        return QDialog.Rejected
+    with patch.object(_spin_tool._SettingsDialog, "exec_", _reject_settings), \
+            patch.object(_spin_tool.session, "global_frame_range",
+                         return_value=(1, 50)), \
+            patch.object(_spin_tool, "_default_resolution",
+                         return_value=(1280, 720)):
+        assert _spin_tool._ask_range() is None
+    assert "H.264" in _seen_labels and "H.264（自动）" not in _seen_labels
+
     from houtools.automation.window import AutomationWindow
 
     win = AutomationWindow()
@@ -2231,6 +2612,10 @@ def main():
     assert not vs_win._res_h_edit.isEnabled()
     assert not vs_win._res_apply_btn.isEnabled()
     assert vs_win._res_w_edit.text() == "" and vs_win._res_h_edit.text() == ""
+    from PySide6.QtWidgets import QAbstractSpinBox as _VseqAbstractSpinBox
+    for spin in (vs_win._quality_spin, vs_win._start_frame_spin,
+                 vs_win._padding_spin):
+        assert spin.buttonSymbols() == _VseqAbstractSpinBox.NoButtons
     # 无 hou 时相机参数写入静默通过（ImportError 兜底路径）
     vs_win._set_camera_background("/obj/no_such_cam", "C:/tmp")
     # 预设下拉：菜单动作数与常量表一致，点选填入宽/高两框（无需 hou）

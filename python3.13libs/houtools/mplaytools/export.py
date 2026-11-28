@@ -24,6 +24,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
+import types
 from datetime import date
 
 from houtools.core.log import get_logger
@@ -40,6 +42,10 @@ OUTPUT_EXTENSION = ".mp4"
 
 class MPlayExportError(RuntimeError):
     """输出路径、编码器探测或 ffmpeg 执行失败。"""
+
+
+class MPlayExportCancelled(MPlayExportError):
+    """用户取消转换；调用方不应作为错误提示。"""
 
 
 def versioned_output_path(hip, hipname, day=None, listdir=None):
@@ -111,16 +117,25 @@ def detect_encoder(ffmpeg, runner=None):
         return FALLBACK_CODEC
 
 
-def build_ffmpeg_command(ffmpeg, concat_path, output, fps, codec, exr=False):
+def build_ffmpeg_command(ffmpeg, concat_path, output, fps, codec, exr=False,
+                         progress=False, resolution=None):
     """拼装序列图 → mp4 命令（纯函数，供冒烟测试固化）。"""
     cmd = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error"]
+    if progress:
+        cmd += ["-progress", "pipe:1"]
     if exr:
         # EXR 是线性编码，默认直通会全片偏暗；解码器选项必须放在 -i 前
         cmd += ["-apply_trc", "iec61966_2_1"]
     cmd += ["-r", "%g" % fps, "-f", "concat", "-safe", "0",
             "-i", concat_path]
-    # H.264 要求偶数宽高；奇数尺寸裁掉最后一列/行
-    cmd += ["-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2"]
+    # H.264 要求偶数宽高；指定分辨率先缩放，奇数尺寸再裁掉最后一列/行
+    filters = []
+    if resolution:
+        width, height = int(resolution[0]), int(resolution[1])
+        if width != 0 and height != 0:
+            filters.append("scale=%d:%d:flags=lanczos" % (width, height))
+    filters.append("crop=trunc(iw/2)*2:trunc(ih/2)*2")
+    cmd += ["-vf", ",".join(filters)]
     cmd += ["-c:v", codec, "-pix_fmt", "yuv420p"]
     if codec == "libx264":
         cmd += ["-crf", "20", "-preset", "veryfast"]
@@ -131,7 +146,83 @@ def build_ffmpeg_command(ffmpeg, concat_path, output, fps, codec, exr=False):
     return cmd
 
 
-def run_export(sequence, output, fps=DEFAULT_FPS, ffmpeg=None, runner=None):
+def _run_with_progress(command, total_frames, fps, callback, cancel_event=None):
+    """流式读取 FFmpeg 进度；stderr 落临时文件，避免管道写满死锁。"""
+    if cancel_event is not None and cancel_event.is_set():
+        raise MPlayExportCancelled("转换已取消")
+    last_percent = -1
+    total_us = max(1.0, total_frames / fps * 1000000.0)
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as errors:
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=errors,
+            text=True, encoding="utf-8", errors="replace",
+            **get_startup_kwargs())
+        stop_watcher = threading.Event()
+        watcher = None
+        if cancel_event is not None:
+            def _watch_cancel():
+                while not stop_watcher.wait(0.1):
+                    if cancel_event.is_set():
+                        if process.poll() is None:
+                            process.terminate()
+                        return
+
+            watcher = threading.Thread(target=_watch_cancel, daemon=True)
+            watcher.start()
+        try:
+            frame = None
+            elapsed_us = None
+            for raw_line in process.stdout:
+                if cancel_event is not None and cancel_event.is_set():
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                    raise MPlayExportCancelled("转换已取消")
+                line = raw_line.strip()
+                key, separator, value = line.partition("=")
+                if not separator:
+                    continue
+                try:
+                    if key == "frame":
+                        frame = int(value)
+                    elif key in ("out_time_us", "out_time_ms"):
+                        divisor = 1 if key == "out_time_us" else 1000
+                        elapsed_us = int(value) / divisor
+                    elif key == "progress" and value in ("end", "continue"):
+                        continue
+                except ValueError:
+                    continue
+                if frame is not None and total_frames > 0:
+                    percent = int(frame * 100 / total_frames)
+                elif elapsed_us is not None:
+                    percent = int(elapsed_us * 100 / total_us)
+                else:
+                    continue
+                percent = max(0, min(100, percent))
+                if percent != last_percent:
+                    callback(percent)
+                    last_percent = percent
+            returncode = process.wait()
+            if cancel_event is not None and cancel_event.is_set():
+                raise MPlayExportCancelled("转换已取消")
+            errors.seek(0)
+            detail = errors.read().strip()[-1500:]
+            return returncode, detail
+        finally:
+            stop_watcher.set()
+            if watcher is not None:
+                watcher.join(timeout=1)
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            process.stdout.close()
+
+
+def run_export(sequence, output, fps=DEFAULT_FPS, ffmpeg=None, runner=None,
+               progress=None, resolution=None, cancel_event=None):
     """执行转码，返回 ``(output_path, codec)``；失败抛 MPlayExportError。
 
     ``runner`` 可注入（默认 subprocess.run），用于无 ffmpeg 环境里的
@@ -169,6 +260,8 @@ def run_export(sequence, output, fps=DEFAULT_FPS, ffmpeg=None, runner=None):
 
     try:
         codec = detect_encoder(ffmpeg, runner=runner)
+        if cancel_event is not None and cancel_event.is_set():
+            raise MPlayExportCancelled("转换已取消")
 
         def _default_run(cmd):
             return subprocess.run(
@@ -182,10 +275,19 @@ def run_export(sequence, output, fps=DEFAULT_FPS, ffmpeg=None, runner=None):
             with open(concat_path, "w", encoding="utf-8") as handle:
                 handle.write(concat_text(sequence.files, fps))
             command = build_ffmpeg_command(ffmpeg, concat_path, output, fps,
-                                           codec, exr=sequence.is_exr)
-            # 成功路径不打印命令（用户要求控制台只留成片路径）；
-            # 失败时 stderr 已足够定位，完整命令不进控制台。
-            done = run(command)
+                                           codec, exr=sequence.is_exr,
+                                           progress=progress is not None,
+                                           resolution=resolution)
+            if progress is not None:
+                returncode, detail = _run_with_progress(
+                    command, sequence.frame_count, fps, progress,
+                    cancel_event=cancel_event)
+                done = types.SimpleNamespace(returncode=returncode,
+                                             stderr=detail)
+            else:
+                # 成功路径不打印命令；调用方已输出实际编码帧范围。
+                # 失败时 stderr 已足够定位，完整命令不进控制台。
+                done = run(command)
             if getattr(done, "returncode", 0) != 0:
                 detail = (getattr(done, "stderr", "") or "").strip()[-1500:]
                 raise MPlayExportError(

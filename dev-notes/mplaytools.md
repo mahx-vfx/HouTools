@@ -143,13 +143,13 @@
   项目统一 toast；没有（MPlay）绝不碰 toast，走
   ``hou.ui``（若有）→ 错误用 hscript ``message`` 弹可见框。
   MPlay 的成功反馈本来就是自动打开的成片文件夹，不需要弹框。
-- **控制台契约（2026-11 用户拍板「成功只输出文件路径」）**：
-  ``report(msg)``（info）**完全静默**；
+- **控制台契约**：普通 ``report(msg)``（info）**完全静默**；
   ``report(msg, error=True)`` 一条 ``logger.error`` + 可见框；
-  ``output_path(path)`` 是成功的唯一出口，只 ``print`` 一行**纯路径**。
-  ``export.run_export`` 也不再打印完整 ffmpeg 命令。
+  ``output_path(path)`` 在成功最后输出一行**纯路径**。
+  当前手动范围模式固定输出实际编码帧诊断（``feedback.console()``，flush），
+  不受普通 info 静默规则限制；``export.run_export`` 不打印完整 ffmpeg 命令。
   ``core/log.py`` 的 StreamHandler 未设 level（DEBUG 也会进控制台），
-  所以中间状态必须真静默，不能靠 ``logger.debug`` 假装隐藏。
+  所以其它中间状态必须真静默，不能靠 ``logger.debug`` 假装隐藏。
 - smoke 注入「无 qt / 无 ui」的假 hou，断言 info 无 stdout、无 toast、
   无弹框；error 恰好一条 ERROR + 走 ``message``；
   ``output_path`` 的 stdout 恰好等于 ``路径 + "\n"``；
@@ -178,13 +178,11 @@
 却是**纯白背景 + 粗黑网格 + 白色物体轮廓**，与所见不符；同时要求控制台
 精简、按用户设定范围导出、路径落到真实工程。
 
-1. **控制台**：见上节「控制台契约」，成功只有一行成片路径。
-2. **范围**：新增 ``playback_range()`` —— 官方 ``frange`` 已由
-   ``hou.playbar.frameRange()`` 取代，优先 HOM，失败回退
-   ``hscript("frange")`` 解析 ``"Frame range: 1 to 50"``。
-   磁盘序列用 ``filter_sequence_range()`` 按帧号取交集；
-   内存序列把范围交给 ``imgsave -f start end``（不再落盘全部帧）。
-   范围与磁盘帧无交集时退回全部帧，不产出空视频。
+1. **控制台**：实际编码帧诊断按「控制台契约」；成功最后追加纯成片路径。
+2. **范围（首次 RF 尝试，后经实机否定）**：曾优先读 MPlay hscript
+   ``echo $RFSTART`` / ``echo $RFEND``，``frange`` 仅在变量不可解析时
+   兜底。该优先级在 mock 中通过，但实机仍不一致，不能视为已验证事实；
+   当前实现与诊断见「手动范围弹窗与后台进度」节。
 3. **画面一致性**：``imgsave`` 显式 ``-g auto -p C``。
    - ``-p C`` 只写颜色平面：ip flipbook 带多 plane，不指定时可能写出
      alpha/其它平面（SideFX/odforce 论坛记载 MPlay 保存的 C/A 平面问题）。
@@ -211,35 +209,122 @@
    ``resolve_hip()`` 先挑非 HOME 的真实工程目录；**全是 HOME 也返回
    可写目录**，不再硬报错（上一版门禁让未同步变量时工具完全不可用）。
    ``HOUTOOLS_MPLAY_DEBUG_PATH=1`` 时 ``diagnose_hip()`` 打印每个来源的
-   实际值，一次点击即可定位 MPlay 变量表。默认关闭、不影响「成功只输出
-   一行路径」。
+   实际值，一次点击即可定位 MPlay 变量表。默认关闭；手动范围模式的
+   实际编码帧诊断独立于该开关，始终输出。
 
-## 三条实机反馈修复（通知 / 范围 / 文件夹）
+## 三条实机反馈修复（历史记录，当前流程见「手动范围弹窗与后台进度」）
+
+本节记录自动范围探测与开始通知方案的演进；其中开始 Toast 已按用户
+后续要求删除，不能把本节的旧行为当作当前实现。
 
 1. **打开的文件夹不对**：``explorer /select,<path>`` 在 MPlay 拉起的进程
    里常打开默认位置，而 ``Popen`` 不抛异常、无法察觉失败。改为直接对
    ``dirname(path)`` 做 ``os.startfile()``（ShellExecute），结果确定；
    三平台一律打开目录，不再尝试选中文件。smoke 用 mock 断言传入的
    参数就是成片所在目录。
-2. **没按用户设定范围**：官方文档明确 ``hou.playbar.frameRange()`` 是
-   **global time range**（默认 1-240），用户拖的 in/out 是
-   ``hou.playbar.playbackRange()`` / hscript ``frange``。旧版优先读
-   frameRange → ``-f 1 240`` 等于导出全部帧。优先级改为
-   ``playbackRange`` → ``frange`` → ``frameRange``（仅兜底）。
-   另修「``-f`` 失败回退 ``-a`` 时静默全量」：现在先试完所有 ``-f``
-   组合，确需 ``-a`` 时也必须 ``filter_sequence_range()`` 裁剪；帧号
-   体系与 playbar 不同（无交集）时按范围长度截前 N 帧，绝不静默全量。
-3. **点击没有开始通知**：MPlay 无 ``hou.qt``，项目 toast 链路在
-   ``ui/notify.py::_main_window()`` 抛 AttributeError。给该函数加
+2. **没按用户设定范围（二次实机修复）**：MPlay 是独立进程，
+   ``hou.playbar.playbackRange()`` / ``frameRange()`` 对应 Houdini 动画
+   播放栏，不是 MPlay 底部可见时间线；旧代码优先读它，即使方法存在
+   也会静默选错。``frange`` 也被证明可能只返回完整序列的外层范围，
+   不是时间线内层起止框。现在优先解析 MPlay hscript ``echo $RFSTART`` /
+   ``echo $RFEND``（当前播放子范围），仅在两者不可解析时回退 ``frange``，
+   始终禁止回退到动画 playbar。smoke 用 ``frange=1–50``、
+   ``RFSTART/RFEND=1/20`` 固化优先级，防止再次把完整范围当成用户设定。
+   另修「``-f`` 失败回退 ``-a`` 时静默全量」：先试完所有 ``-f`` 组合，回退 ``-a`` 后仍按
+   范围裁剪；当时帧号体系不同会截前 N 帧，后续已改为严格校验（见下节）。
+   磁盘序列与范围无交集时明确报错，不偷导全部帧。
+3. **点击没有开始通知（二次实机修复）**：``feedback.start_notice()``
+   移到 ``sequence_to_mp4.run()`` 的第一行，早于读范围、``imgsave``
+   落盘和 ffmpeg 探测；旧代码等序列准备完才提示，用户看到的是
+   「已完成才开始通知」。MPlay 无 ``hou.qt``，项目 toast 链路在
+   ``ui.notify.py::_main_window()`` 抛 AttributeError。给该函数加
    **Qt 回退**（``QApplication.topLevelWidgets()`` 挑最大可见主窗），
    但**只在「有 hou 但缺 hou.qt」时生效** —— 完全无 hou 的无头测试
    仍抛错，保持 smoke 里 ``ht_notify.success(...) is None`` 的既有
    断言（第一版没加这个限制，全量 smoke 直接挂了）。
-   ``feedback.start_notice()`` 调 ``notify.show`` + **``processEvents()``**：
-   同步转码阻塞 Qt 事件循环，不强制刷一次 toast 根本画不出来；转码
-   结束后事件循环恢复，toast 按自己的定时器淡出。失败静默跳过，
-   不进控制台、不打断工具。
+   ``feedback.start_notice()`` 直接调 ``notify.show`` + **``processEvents()``**，
+   不再自行预检 Qt 宿主，避免与 ``notify`` 的主窗回退不一致而静默
+   跳过；同步转码阻塞 Qt 事件循环，不强制刷一次 toast 根本画不出来。
+   失败静默跳过，不进控制台、不打断工具。
    Qt 模拟实测：toast 可见、位于主窗左下（y=684 / 主窗高 700）。
+
+## 可见四字段与实际帧诊断（自动探测版本的历史记录）
+
+前两版分别试过动画 ``hou.playbar`` 与 ``frange``，随后 RF 优先版在 mock
+中通过、实机仍报「没按范围」。以下顺序是自动探测版本的实现记录，后来已
+被手动范围弹窗取代；诊断函数保留供接手人排查：
+
+1. 以 ``frange`` 解析出的外层范围作全局锚点，枚举当前 QApplication 的
+   可见数字控件，按窗口与 y 坐标分行、x 排序，只接受同一行严格四个字段：
+   **全局起 / 播放起 / 播放止 / 全局止**。首尾必须等于外层范围，中间两框
+   有序且位于边界内，四个 x 严格递增；全应用必须唯一命中。滑块、标签、
+   隐藏控件与其它窗口的数字框不参与；不能拿「四个框彼此靠近」当条件，
+   外层起止框本来就可能分居时间线两端。
+2. 四字段不能唯一确认时，回退可解析的 ``$RFSTART/$RFEND``。
+3. 再回退 ``frange``。三者都不可解析时明确报错停止，**绝不把 None 当全帧**。
+4. 始终禁止读取 Houdini 动画 ``hou.playbar``。MPlay 二进制资源里存在
+   ``SI_PlaybackMPlay.ui`` / ``MPLAY_WithPlaybar``，支持自定义 Qt 时间线
+   与 HOM 动画播放栏不是同一状态源；Qt 字段识别是能力探测，不承诺所有
+   MPlay 版本都能命中。
+
+自动探测版本每次点击曾同步输出两类诊断（``flush=True``，先于阻塞转码）：
+
+- ``[MPlay 范围读取]``：RFSTART/RFEND 原始值、frange 原始输出、可见四字段
+  候选、识别到的 Qt 数字控件类名计数、最终采用来源与请求范围。
+- ``[MPlay 输出帧范围]``：请求范围、**实际交给 ffmpeg 的帧号首尾/数量/
+  帧号列表**、缺帧标记，以及磁盘过滤或 ``imgsave -f`` / ``imgsave -a``
+  后裁剪的来源。长列表只显示前 10 + 后 10，数量与首尾始终完整。
+
+成功最后仍追加一行纯成片路径。自动探测版本的验收不能再只看 mock；
+当前手动模式只保留第二类实际编码帧诊断，不再调用范围探针。
+
+内存序列无论 ``imgsave -f`` 是否被接受，落盘后都重新校验：能按帧号裁剪
+就裁剪；``-f`` 只写请求长度但采用偏移帧号时按明确帧数接受；``-a`` 回退
+且同体系时可按请求起点偏移裁剪。请求跨度完全不对应落盘帧时明确失败，
+**不再截前 N 帧猜位置**。smoke 固化「-f 被接受但写全序列仍裁剪」「偏移
+帧号且长度吻合可接受」「完全无法对应必须失败」三种边界。
+
+## 手动范围弹窗与后台进度（2026-11-28 定稿）
+
+自动范围探测已放弃：实机日志始终是 `RFSTART/RFEND=1/240`、`frange=1–50`，
+而用户截图内层范围为 `1–10`。`SI_PlaybackMPlay.ui` 的 `rangeStartField` /
+`rangeEndField` / `subRange` 绑定与 `libSI.dll` 的 `SI_Playback::getRangeStart` /
+`getRangeEnd` 只说明状态存在 C++ 内部，Python 可达的 Qt 树和 HOM 均拿不到；
+`hou.playbar` 是 Houdini 动画播放栏，也不能作为 MPlay 来源。
+
+当前按钮流程：
+
+1. 点击弹**全中文**品牌设置面板：起始/结束、分辨率、编码器。范围默认由
+   `session.global_frame_range()` 提供（**优先 `frange`**，缺失回退
+   `$FSTART/$FEND`）；分辨率默认读磁盘序列首帧，0 表示原始，内存序列在
+   确认落盘后回填实际尺寸；编码器文案固定 `H.264`，其前 `info.svg` 图标
+   悬停/点击显示实际 FFmpeg 路径。数值框统一 `QAbstractSpinBox.NoButtons`，
+   不显示上下箭头；点击面板空白区域清除当前输入框焦点；取消不建临时
+   文件、不调 ffmpeg。弹窗父窗只从有效、可见的普通顶层窗口里选面积最大
+   者，排除 `QLabel`/`QToolTip` 与已删除包装，避免提示气泡生命周期竞态
+   导致 `Internal C++ object (QLabel) already deleted`；空白点击识别也吞掉
+   `childAt` 返回失效包装的 `RuntimeError`，按空白落点清焦点。
+2. 确认后主线程完成 HIP/HIPNAME/FPS/ffmpeg 解析与
+   `current_sequence(frame_range=...)` 准备（`hou`/hscript 不进入工作线程），
+   控制台打印请求范围与实际帧号。
+3. `_ExportWorker(QThread)` 后台调
+   `export.run_export(..., progress=..., resolution=..., cancel_event=...)`；
+   指定分辨率时 FFmpeg 先 `scale=...:flags=lanczos` 再裁成 H.264 偶数尺寸。
+   FFmpeg 加 `-progress pipe:1`，优先按 `frame/总帧数`、回退按
+   `out_time_us/总时长` 推进中文 `QProgressDialog`。stderr 落临时文件，
+   避免管道写满死锁。
+4. 进度取消：按钮置 `threading.Event`，worker 在下一个进度边界 terminate
+   FFmpeg（5 秒未退则 kill），抛 `MPlayExportCancelled` 并回滚半成品；
+   用户取消不弹错误。准备阶段取消在 `current_sequence` 返回后立即收尾。
+5. 成功后关闭进度、打开成片所在目录，最后 `feedback.output_path()` 打印
+   纯路径；临时内存序列在成功/失败/取消收尾均 cleanup。
+6. **开始通知已删除**：弹窗与进度条已让用户全程感知，不再发 toast。
+
+线程生命周期：`_LIVE_WORKERS` 与 `_LIVE_CONTROLLERS` 都用
+`try/except NameError` 守卫活过 Reload；`_ExportController(QObject)` 在
+主线程接收 worker 信号并操作 Qt 窗口（禁止后台线程直接 close/reveal），
+worker `finished` 后摘除两表并 `deleteLater`。
+诊断函数保留供排查，但不再是导出入口。
 
 ## 临时文件与残留（2026-11 用户问询）
 
@@ -275,9 +360,9 @@
   HIP/HIPNAME 解析链、版本升级、concat 转义、编码器挑选、命令拼装，
   **内存序列兜底**（假 hou 收到 `imgsave -a` 后写真帧，断言落盘 3 帧
   且 `cleanup()` 后临时目录消失）、  **失败回滚**（半成品 mp4 / 空日期
-  目录不残留、既有文件存活）、**反馈分流**（开始通知直调 notify 并借助
-  Qt 主窗回退；``report`` 错误在无 hou.qt 时不走 dev.status/toast、
-  退 hscript message），以及**真实 ffmpeg 端到端**
+  目录不残留、既有文件存活）、**中文设置、缩放与取消**（离屏面板文案/
+  默认尺寸、缩放命令、取消终止子进程、成功 reveal + 纯路径；开始通知
+  API 已移除）、以及**真实 ffmpeg 端到端**
   （生成 PNG 帧 → 编码 → hffprobe 断言 nb_frames / 24fps / 偶数分辨率；
   找不到 ffmpeg 时跳过）。
 - 打包：`.agents/skills/houtools-release/scripts/pack_zip.py` 的

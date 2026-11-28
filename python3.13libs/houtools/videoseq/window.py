@@ -32,7 +32,7 @@ from typing import Optional
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QSpinBox, QSlider, QGroupBox, QFormLayout,
+    QPushButton, QSpinBox, QAbstractSpinBox, QSlider, QGroupBox, QFormLayout,
     QFileDialog, QProgressBar, QMenu, QToolTip, QWidget,
     QListWidget, QListWidgetItem, QDialogButtonBox,
 )
@@ -1386,6 +1386,7 @@ class _VideoToSequenceWindow(QDialog):
         self._quality_slider.setRange(1, 100)
         self._quality_slider.setValue(90)
         self._quality_spin = QSpinBox()
+        self._quality_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self._quality_spin.setRange(1, 100)
         self._quality_spin.setValue(90)
         self._quality_spin.setSuffix(" %")
@@ -1401,11 +1402,13 @@ class _VideoToSequenceWindow(QDialog):
         start_lbl = QLabel("起始帧号:")
         start_lbl.setStyleSheet("color: {}; min-width: 80px;".format(_theme.color("TEXT_3")))
         self._start_frame_spin = QSpinBox()
+        self._start_frame_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self._start_frame_spin.setRange(0, 999999)
         self._start_frame_spin.setValue(self._get_rfstart())
         padding_lbl = QLabel("帧号位数:")
         padding_lbl.setStyleSheet("color: {};".format(_theme.color("TEXT_3")))
         self._padding_spin = QSpinBox()
+        self._padding_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self._padding_spin.setRange(1, 8)
         self._padding_spin.setValue(4)
         frame_row.addWidget(start_lbl)

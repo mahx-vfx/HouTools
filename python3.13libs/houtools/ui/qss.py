@@ -140,6 +140,19 @@ QKeySequenceEdit:focus {{
     border: 2px solid {ACCENT};
     padding: 3px 7px;
 }}
+QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 0;
+    height: 0;
+    border: none;
+    background: transparent;
+}}
+QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow {{
+    width: 0;
+    height: 0;
+    image: none;
+}}
 QComboBox::drop-down {{
     border: none;
     width: 24px;

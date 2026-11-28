@@ -375,6 +375,8 @@ def parse_sequence_line(line, listdir=None, hou_module=None):
 
 def _parse_range_text(text):
     """解析 ``"Frame range: 1 to 50"`` / ``"1 50"`` → (1, 50)。"""
+    if isinstance(text, (tuple, list)):
+        text = " ".join(str(item) for item in text)
     matched = re.search(
         r"(-?\d+(?:\.\d+)?)\s+to\s+(-?\d+(?:\.\d+)?)", text or "",
         re.IGNORECASE)
@@ -386,40 +388,529 @@ def _parse_range_text(text):
     return None
 
 
-def playback_range(hou_module=None, raw=None):
-    """读取 MPlay playbar 上**用户设定的播放范围**，返回 (start, end)。
-
-    坑（2026-11 实机反馈「没按范围保存」）：``hou.playbar.frameRange()``
-    官方文档写的是 **global time range**（全局 1-240），不是用户拖的
-    in/out。用户设定的是 ``hou.playbar.playbackRange()``；hscript
-    ``frange`` 命令同样对应 playback range（mplay_batch 的老写法）。
-    优先级：playbackRange → ``frange`` → frameRange（仅兜底）。
-    ``raw`` 供无头测试注入；取不到返回 None（= 全部帧）。
-    """
-    if raw is not None:
-        return _parse_range_text(raw)
-    mod = _hou(hou_module)
-    if mod is None:
-        return None
-    for getter in ("playbackRange", "frameRange"):
-        if getter == "frameRange":
-            # frange 更贴近 MPlay 的 playback range，先试它
-            try:
-                parsed = _parse_range_text(hscript_output("frange", hou_module))
-                if parsed:
-                    return parsed
-            except Exception:
-                pass
+def _numeric_text(widget):
+    for method_name in ("text", "getText"):
+        method = getattr(widget, method_name, None)
+        if method is None:
+            continue
         try:
-            value = getattr(mod.playbar, getter)()
-            return (int(value[0]), int(value[1]))
+            value = method()
         except Exception:
-            pass
+            continue
+        if isinstance(value, (int, float)):
+            return str(value)
+        if value is not None:
+            return str(value)
+    method = getattr(widget, "value", None)
+    if method is not None:
+        try:
+            return str(method())
+        except Exception:
+            return ""
+    return ""
+
+
+_QT_PLAYBACK_NAME_TOKENS = (
+    "rangestartfield", "rangeendfield", "rangeslider",
+    "framefield", "currentframe", "frameslidergad",
+    "si_playback", "playbarcore", "playbar_buttons", "framefieldcore",
+    "startframe", "endframe",
+)
+
+
+def _diagnostic_value(value):
+    try:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", "replace")
+        if isinstance(value, (tuple, list)):
+            return [str(_diagnostic_value(item)) for item in value]
+        return str(value)
+    except Exception:
+        return "<unprintable>"
+
+
+def _qt_property_values(obj):
+    """只读收集动态属性与帧范围相关 meta 属性。"""
+    values = {}
+    try:
+        dynamic_names = list(obj.dynamicPropertyNames())
+    except Exception:
+        dynamic_names = []
+    for raw_name in dynamic_names:
+        try:
+            name = (raw_name.decode("utf-8", "replace")
+                    if isinstance(raw_name, bytes) else str(raw_name))
+            values[name] = _diagnostic_value(obj.property(name))
+        except Exception:
+            continue
+    try:
+        meta = obj.metaObject()
+        for index in range(meta.propertyCount()):
+            prop = meta.property(index)
+            name = prop.name()
+            if not any(token in name.lower() for token in
+                       ("range", "frame", "value", "text", "limit", "start", "end")):
+                continue
+            try:
+                values.setdefault(name, _diagnostic_value(prop.read(obj)))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return values
+
+
+def _qt_accessible_text(widget):
+    try:
+        from PySide6.QtGui import QAccessible
+        interface = QAccessible.queryAccessibleInterface(widget)
+        if interface is None:
+            return {}
+        return {
+            label: str(interface.text(kind))
+            for label, kind in (
+                ("name", QAccessible.Text.Name),
+                ("value", QAccessible.Text.Value),
+                ("description", QAccessible.Text.Description),
+            )
+        }
+    except Exception:
+        return {}
+
+
+def _qt_object_info(obj, widget=None):
+    info = {
+        "objectName": "",
+        "className": "",
+        "parentName": "",
+        "windowName": "",
+        "text": "",
+        "geometry": "",
+        "properties": {},
+        "accessible": {},
+    }
+    try:
+        info["objectName"] = str(obj.objectName() or "")
+        info["className"] = str(obj.metaObject().className())
+        parent = obj.parent()
+        info["parentName"] = str(parent.objectName() or "") if parent else ""
+        info["text"] = _numeric_text(obj).strip()
+        if widget is not None:
+            window = widget.window()
+            info["windowName"] = str(window.objectName() or "")
+            if widget.isVisible():
+                rect = widget.rect()
+                info["geometry"] = "%dx%d@%d,%d" % (
+                    rect.width(), rect.height(), rect.x(), rect.y())
+            info["accessible"] = _qt_accessible_text(widget)
+        info["properties"] = _qt_property_values(obj)
+    except Exception:
+        pass
+    return info
+
+
+def _qt_playback_objects(app, qt_core):
+    """找 MPlay 自定义播放字段；它们通常不是标准 Qt SpinBox。"""
+    objects = []
+    seen = set()
+    for window in app.topLevelWidgets():
+        try:
+            if not window.isVisible():
+                continue
+        except Exception:
+            continue
+        try:
+            candidates = [window]
+            candidates.extend(window.findChildren(qt_core.QObject))
+        except Exception:
+            candidates = [window]
+        for obj in candidates:
+            try:
+                name = str(obj.objectName() or "").lower()
+                class_name = str(obj.metaObject().className()).lower()
+                matched = (
+                    any(token in name for token in _QT_PLAYBACK_NAME_TOKENS)
+                    or any(token in class_name for token in
+                           ("si_playback", "si_range", "si_dopesheet",
+                            "si_simpleplaybar", "rangefield", "playbackfield",
+                            "timeslider"))
+                )
+                if not matched or id(obj) in seen:
+                    continue
+                seen.add(id(obj))
+                objects.append(_qt_object_info(
+                    obj, obj if hasattr(obj, "isVisible") else None))
+            except Exception:
+                continue
+    return objects
+
+
+def _named_field_number(info):
+    candidates = [info.get("text", "")]
+    properties = info.get("properties", {})
+    candidates.extend(properties.get(name, "") for name in
+                      ("value", "text", "currentFrame", "startFrame.val",
+                       "endFrame.val", "startFrame", "endFrame"))
+    for raw in candidates:
+        text = str(raw if raw is not None else "").strip()
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+            return int(float(text))
     return None
 
 
+def _property_number(properties, names):
+    for name in names:
+        raw = properties.get(name, "")
+        text = str(raw if raw is not None else "").strip()
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+            return int(float(text))
+    return None
+
+
+def _range_from_named_qt_objects(objects):
+    """MPlay UI 定义里的 rangeStartField/rangeEndField 是内层播放范围。"""
+    grouped = {}
+    property_ranges = set()
+    property_pairs = set()
+    for info in objects:
+        key = info.get("windowName", "")
+        name = info.get("objectName", "").lower()
+        if name in ("rangestartfield", "startframe"):
+            value = _named_field_number(info)
+            if value is not None:
+                grouped.setdefault(key, {})["start"] = value
+        if name in ("rangeendfield", "endframe"):
+            value = _named_field_number(info)
+            if value is not None:
+                grouped.setdefault(key, {})["end"] = value
+        properties = info.get("properties", {})
+        raw = properties.get("subRange")
+        parsed = _parse_range_text(raw) if raw else None
+        if parsed is not None:
+            property_ranges.add(parsed)
+        start = _property_number(properties, ("startFrame.val", "startFrame"))
+        end = _property_number(properties, ("endFrame.val", "endFrame"))
+        if start is not None and end is not None and start <= end:
+            property_pairs.add((start, end))
+    matches = {
+        (fields["start"], fields["end"])
+        for fields in grouped.values()
+        if "start" in fields and "end" in fields
+        and fields["start"] <= fields["end"]
+    }
+    if len(matches) == 1:
+        return next(iter(matches)), "Qt rangeStartField/rangeEndField"
+    if len(property_pairs) == 1:
+        return next(iter(property_pairs)), "Qt startFrame/endFrame 属性"
+    if len(property_ranges) == 1:
+        return next(iter(property_ranges)), "Qt subRange 属性"
+    return None
+
+
+def _range_from_widget_rows(rows, global_range):
+    """从同一行的四个数字框中取「全局起 / 播放起 / 播放止 / 全局止」。"""
+    if not global_range:
+        return None
+    outer_start, outer_end = sorted(int(value) for value in global_range)
+    matches = set()
+    for row in rows:
+        if len(row) != 4:
+            continue
+        first, play_start, play_end, last = sorted(
+            row, key=lambda field: field["x"])
+        values = [field["value"] for field in
+                  (first, play_start, play_end, last)]
+        if values[0] != outer_start or values[3] != outer_end:
+            continue
+        if not outer_start <= values[1] <= values[2] <= outer_end:
+            continue
+        if first["x"] >= play_start["x"] or play_start["x"] >= play_end["x"]:
+            continue
+        if play_end["x"] >= last["x"]:
+            continue
+        matches.add((values[1], values[2]))
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _visible_qt_playback_range(global_range, diagnostics=None):
+    """读取 MPlay 自定义命名字段，再回退可见四字段；不唯一则返回 None。"""
+    numeric_count = 0
+    classes = {}
+    qt_objects = []
+    try:
+        from PySide6 import QtCore, QtWidgets
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            if diagnostics is not None:
+                diagnostics["qt_app"] = None
+            return None
+        if diagnostics is not None:
+            top_levels = []
+            for window in app.topLevelWidgets():
+                try:
+                    top_levels.append({
+                        "className": str(window.metaObject().className()),
+                        "objectName": str(window.objectName() or ""),
+                        "title": str(window.windowTitle() or ""),
+                        "visible": bool(window.isVisible()),
+                    })
+                except Exception:
+                    continue
+            diagnostics["qt_app"] = {
+                "className": str(app.metaObject().className()),
+                "topLevels": top_levels,
+                "allWidgets": len(app.allWidgets()),
+            }
+        qt_objects = _qt_playback_objects(app, QtCore)
+        if diagnostics is not None:
+            diagnostics["qt_objects"] = qt_objects
+        named = _range_from_named_qt_objects(qt_objects)
+        if named is not None:
+            if diagnostics is not None:
+                diagnostics["qt_range_source"] = named[1]
+            return named[0]
+        grouped = {}
+        for widget in app.allWidgets():
+            try:
+                if not widget.isVisible():
+                    continue
+                class_name = widget.metaObject().className()
+                text = _numeric_text(widget).strip()
+                if not re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+                    continue
+                numeric_count += 1
+                classes[class_name] = classes.get(class_name, 0) + 1
+                value = int(float(text))
+                rect = widget.rect()
+                center = widget.mapToGlobal(QtCore.QPoint(
+                    rect.width() // 2, rect.height() // 2))
+                window = widget.window()
+                key = (id(window), round(center.y() / 4.0))
+                grouped.setdefault(key, []).append({
+                    "value": value, "x": center.x(),
+                })
+            except Exception:
+                continue
+        visible = _range_from_widget_rows(grouped.values(), global_range)
+        if diagnostics is not None:
+            diagnostics["qt_range_source"] = (
+                "Qt 可见时间线四字段" if visible is not None else "Qt 未识别")
+        return visible
+    except Exception as exc:
+        if diagnostics is not None:
+            diagnostics["qt_error"] = str(exc)
+        return None
+    finally:
+        if diagnostics is not None:
+            diagnostics.update(qt_numeric_count=numeric_count,
+                               qt_numeric_classes=classes,
+                               qt_objects=qt_objects)
+
+
+def global_frame_range(hou_module=None):
+    """MPlay 弹窗的默认范围：优先 frange，再回退 $FSTART/$FEND。
+
+    独立 MPlay 的 ``$RFSTART/$RFEND`` 与 ``hou.playbar`` 会返回旧的全局
+    范围，不作为内层播放范围来源；``frange`` 与当前加载序列一致。
+    """
+    try:
+        selected = _parse_range_text(hscript_output("frange", hou_module))
+    except MPlaySessionError:
+        selected = None
+    if selected is not None:
+        return tuple(sorted(selected))
+    start = _hscript_echo("FSTART", hou_module)
+    end = _hscript_echo("FEND", hou_module)
+    try:
+        return (int(start), int(end))
+    except (TypeError, ValueError):
+        return None
+
+
+def playback_range(hou_module=None, raw=None, diagnostics=None):
+    """读取 MPlay 当前播放范围，返回 ``(start, end)``。
+
+    可见时间线的自定义字段与 hscript 变量在独立 MPlay 中不一定同步：先用
+    ``rangeStartField/rangeEndField`` 或 ``subRange`` 取内层播放范围，再回退
+    可见四字段、``$RFSTART/$RFEND``，最后才用 ``frange``。
+    ``diagnostics`` 可注入字典，接收原始值与最终来源。
+    """
+    details = diagnostics if diagnostics is not None else {}
+    if raw is not None:
+        details.update(source="raw", selected=_parse_range_text(raw), raw=raw)
+        return details["selected"]
+
+    errors = []
+
+    def _echo(variable):
+        try:
+            return _hscript_echo(variable, hou_module)
+        except Exception as exc:
+            errors.append("%s: %s" % (variable, exc))
+            return ""
+
+    def _frange():
+        try:
+            return hscript_output("frange", hou_module)
+        except Exception as exc:
+            errors.append("frange: %s" % exc)
+            return ""
+
+    rf_start = _echo("RFSTART")
+    rf_end = _echo("RFEND")
+    frange_raw = _frange()
+    frange = _parse_range_text(frange_raw)
+    rf = None
+    if (re.fullmatch(r"-?\d+(?:\.\d+)?", rf_start or "")
+            and re.fullmatch(r"-?\d+(?:\.\d+)?", rf_end or "")):
+        rf = (int(float(rf_start)), int(float(rf_end)))
+    visible = _visible_qt_playback_range(frange, diagnostics=details)
+    if visible is not None:
+        selected = visible
+        source = details.get("qt_range_source", "Qt 可见时间线四字段")
+    elif rf is not None:
+        selected, source = rf, "$RFSTART/$RFEND"
+    elif frange is not None:
+        selected, source = frange, "frange"
+    else:
+        selected, source = None, "unavailable"
+    if details.get("qt_error"):
+        errors.append("Qt: " + details["qt_error"])
+    details.update(source=source, selected=selected, rf_start=rf_start,
+                   rf_end=rf_end, frange_raw=frange_raw,
+                   visible_range=visible, errors=errors)
+    return selected
+
+
+def diagnose_playback_range(hou_module=None, diagnostics=None):
+    """只读范围探针：汇总变量、查询命令、playbar 与 Qt 自定义字段。"""
+    details = diagnostics if diagnostics is not None else {}
+    selected = playback_range(hou_module=hou_module, diagnostics=details)
+    variables = {}
+    for name in ("FSTART", "FEND", "RFSTART", "RFEND", "F", "FPS",
+                 "NFRAMES", "TSTART", "TEND", "TLENGTH",
+                 "CSTART", "CEND", "CFRAMES"):
+        try:
+            variables[name] = _hscript_echo(name, hou_module)
+        except Exception as exc:
+            variables[name] = "<%s>" % exc
+    queries = {}
+    for command in ("frange", "fset", "fplayback"):
+        try:
+            queries[command] = hscript_output(command, hou_module)
+        except Exception as exc:
+            queries[command] = "<%s>" % exc
+    variable_lines = []
+    try:
+        raw_variables = hscript_output("set -s", hou_module)
+        variable_lines = [
+            line for line in raw_variables.splitlines()
+            if any(token in line.upper() for token in
+                   ("START", "END", "RANGE", "PLAY", "FRAME", "FPS",
+                    "TIME", "NFRAMES"))
+        ]
+    except Exception as exc:
+        variable_lines = ["<set -s: %s>" % exc]
+    playbar = {}
+    mod = _hou(hou_module)
+    if mod is not None:
+        bar = getattr(mod, "playbar", None)
+        if bar is not None:
+            for name in ("frameRange", "playbackRange", "currentFrame"):
+                method = getattr(bar, name, None)
+                if method is None:
+                    continue
+                try:
+                    playbar[name] = _diagnostic_value(method())
+                except Exception as exc:
+                    playbar[name] = "<%s>" % exc
+    details.update(variables=variables, queries=queries, playbar=playbar,
+                   variable_lines=variable_lines,
+                   hou_play_attrs=[
+                       name for name in dir(mod)
+                       if any(token in name.lower() for token in
+                              ("play", "mplay", "frame", "range", "sequence"))
+                   ] if mod is not None else [])
+    return selected
+
+
+def format_playback_diagnostics(details):
+    """范围原始值与来源的一行诊断，供真实 MPlay 日志判断读取是否一致。"""
+    return (
+        "[MPlay 范围读取] RFSTART=%r RFEND=%r frange=%r 可见界面=%r "
+        "Qt数字框=%s 采用=%s 请求=%s%s"
+        % (details.get("rf_start", ""), details.get("rf_end", ""),
+           details.get("frange_raw", ""), details.get("visible_range"),
+           details.get("qt_numeric_classes")
+           or "0（未识别到可见数字控件）",
+           details.get("source", "unavailable"), details.get("selected"),
+           (" 错误=" + "; ".join(details["errors"]))
+           if details.get("errors") else ""))
+
+
+def format_playback_probe(details):
+    """诊断模式的多行只读探针，不触碰序列、临时文件或 ffmpeg。"""
+    lines = ["[MPlay 范围探针]"]
+    variables = details.get("variables", {})
+    if variables:
+        lines.append("  变量 " + " ".join(
+            "%s=%r" % (name, value) for name, value in variables.items()))
+    queries = details.get("queries", {})
+    if queries:
+        lines.append("  hscript " + " ".join(
+            "%s=%r" % (name, value) for name, value in queries.items()))
+    if details.get("playbar"):
+        lines.append("  hou.playbar（仅参考） %r" % details["playbar"])
+    if details.get("hou_play_attrs"):
+        lines.append("  hou 播放相关属性 %r" % details["hou_play_attrs"])
+    if details.get("variable_lines"):
+        lines.append("  set -s 过滤 " + " | ".join(details["variable_lines"]))
+    if "qt_app" in details:
+        lines.append("  QtApplication %r" % details["qt_app"])
+    objects = details.get("qt_objects", [])
+    if not objects:
+        lines.append("  Qt 自定义播放字段：未找到")
+    for info in objects:
+        line = "  Qt %s class=%s text=%r" % (
+            info.get("objectName") or "<未命名>",
+            info.get("className") or "?", info.get("text") or "")
+        if info.get("geometry"):
+            line += " geometry=" + info["geometry"]
+        properties = info.get("properties", {})
+        if properties:
+            line += " props=%r" % properties
+        accessible = {
+            key: value for key, value in info.get("accessible", {}).items()
+            if value
+        }
+        if accessible:
+            line += " accessible=%r" % accessible
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def format_sequence_range(sequence):
+    """实际交给 ffmpeg 的帧号范围、数量与缺口诊断。"""
+    numbers = tuple(sequence.frame_numbers)
+    if not numbers:
+        return "空，共 0 帧"
+    ordered = tuple(sorted(numbers))
+    span = "%d–%d" % (ordered[0], ordered[-1])
+    if len(numbers) <= 20:
+        frames = ", ".join(str(number) for number in numbers)
+    else:
+        frames = "%s … %s" % (
+            ", ".join(str(number) for number in numbers[:10]),
+            ", ".join(str(number) for number in numbers[-10:]))
+    gaps = ""
+    if getattr(sequence, "has_gaps", False):
+        gaps = "；存在缺帧"
+    return "%s，共 %d 帧；实际帧号 [%s]%s" % (
+        span, len(numbers), frames, gaps)
+
+
 def filter_sequence_range(spec, frame_range):
-    """把磁盘序列按帧号限制到 [start, end]；无交集时原样返回。"""
+    """把磁盘序列按帧号限制到 [start, end]；无交集时明确报错。"""
     if not frame_range:
         return spec
     start, end = int(frame_range[0]), int(frame_range[1])
@@ -429,14 +920,43 @@ def filter_sequence_range(spec, frame_range):
              for number, path in zip(spec.frame_numbers, spec.files)
              if start <= number <= end]
     if not pairs:
-        return spec
+        raise MPlaySessionError(
+            "MPlay 设定范围 %d–%d 与序列帧号 %d–%d 无交集"
+            % (start, end, spec.frame_numbers[0], spec.frame_numbers[-1]))
     return replace(spec,
                    files=tuple(path for _number, path in pairs),
                    frame_numbers=tuple(number for number, _path in pairs))
 
 
+def _clip_in_memory_sequence(spec, frame_range, use_range):
+    """校验 imgsave 落盘结果；无法可靠对应时间线时拒绝导出。"""
+    start, end = int(frame_range[0]), int(frame_range[1])
+    if end < start:
+        start, end = end, start
+    try:
+        return filter_sequence_range(spec, (start, end)), "按帧号裁剪"
+    except MPlaySessionError:
+        expected = max(1, end - start + 1)
+        # -f 已只写请求长度时，允许内存序列使用另一套帧号体系。
+        if use_range and spec.frame_count == expected:
+            return spec, "-f 帧数吻合（内存帧号体系不同）"
+        # -a 回退落盘完整序列时，同体系帧号可按起点偏移截取；
+        # 偏移体系没有全局范围可换算，不能猜前 N 帧。
+        offset = start - spec.frame_numbers[0]
+        if offset >= 0 and offset + expected <= spec.frame_count:
+            clipped = replace(
+                spec, files=spec.files[offset:offset + expected],
+                frame_numbers=spec.frame_numbers[offset:offset + expected])
+            return clipped, "按范围起点偏移裁剪"
+        raise MPlaySessionError(
+            "imgsave 落盘帧 %d–%d（%d 帧）无法可靠对应请求范围 %d–%d；"
+            "已停止，避免导出错误帧"
+            % (spec.frame_numbers[0], spec.frame_numbers[-1],
+               spec.frame_count, start, end))
+
+
 def dump_current_sequence(hou_module=None, listdir=None, frame_range=None,
-                         extensions=("jpg", "png")):
+                         extensions=("jpg", "png"), diagnostics=None):
     """把 MPlay 的**内存序列**（拍屏 / ip 渲染）用 ``imgsave`` 临时落盘。
 
     ``seqls -f`` 对这类序列只返回名字（实机 ``'Flipbook Images\\n'``），
@@ -498,15 +1018,19 @@ def dump_current_sequence(hou_module=None, listdir=None, frame_range=None,
                         last_error = "%s 未写出帧（hscript：%r）" % (
                             command, (stderr or "")[:200])
                         continue
-                    if frame_range and not use_range:
-                        clipped = filter_sequence_range(spec, frame_range)
-                        if clipped is spec:
-                            # 帧号体系与 playbar 不同：按范围长度截前 N 帧
-                            count = max(1, end - start + 1)
-                            clipped = replace(
-                                spec, files=spec.files[:count],
-                                frame_numbers=spec.frame_numbers[:count])
+                    if frame_range:
+                        clipped, clip_source = _clip_in_memory_sequence(
+                            spec, frame_range, use_range)
+                        mode = "imgsave -f" if use_range else "imgsave -a"
+                        if diagnostics is not None:
+                            diagnostics.update(
+                                source=mode + " 后" + clip_source,
+                                requested=frame_range)
                         return clipped, cleanup
+                    if diagnostics is not None:
+                        diagnostics.update(
+                            source="imgsave -f" if use_range else "imgsave -a",
+                            requested=frame_range)
                     return spec, cleanup
         raise MPlaySessionError(
             "imgsave 未写出任何帧（序列为空或尚未渲染完成）：%s"
@@ -517,7 +1041,7 @@ def dump_current_sequence(hou_module=None, listdir=None, frame_range=None,
 
 
 def current_sequence(hou_module=None, listdir=None, output=None,
-                     allow_dump=True, frame_range=None):
+                     allow_dump=True, frame_range=None, diagnostics=None):
     """返回 ``(MPlaySequence, warnings, cleanup)``。
 
     1. 按 ``seqls -f`` 找磁盘序列，取第一条有效行；``frame_range`` 非空时
@@ -548,6 +1072,10 @@ def current_sequence(hou_module=None, listdir=None, output=None,
         chosen = filter_sequence_range(specs[0], frame_range)
         if chosen.has_gaps:
             warnings.append("序列帧号不连续，已按磁盘实际帧顺序拼接。")
+        if diagnostics is not None:
+            diagnostics.update(
+                source="磁盘序列帧号过滤" if frame_range else "磁盘序列全帧",
+                requested=frame_range)
         return chosen, warnings, None
 
     if not allow_dump:
@@ -557,7 +1085,8 @@ def current_sequence(hou_module=None, listdir=None, output=None,
     try:
         spec, cleanup = dump_current_sequence(hou_module=hou_module,
                                               listdir=listdir,
-                                              frame_range=frame_range)
+                                              frame_range=frame_range,
+                                              diagnostics=diagnostics)
     except Exception as exc:
         raise MPlaySessionError(
             "MPlay 当前没有可转换的磁盘序列，自动导出内存序列也失败：%s"
